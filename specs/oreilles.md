@@ -1,6 +1,6 @@
 # Les oreilles d'Emory : version 1
 
-Statut : brouillon du 2026-10-08, questions ouvertes tranchées le 2026-10-10 ; à valider par Kris.
+Statut : brouillon du 2026-10-08, en relecture avec Kris le 2026-10-10.
 
 Emory est l'assistant de Kris. Hippocampe est sa mémoire à long terme. Les
 oreilles sont le premier organe : elles transforment ce qui est dit autour de Kris en événements
@@ -13,7 +13,8 @@ au format fixé plus bas, et n'importe quel esprit le lit.
 ## Principes
 
 1. **L'audio ne quitte pas le lieu où il est capté.** Il est traité sur les machines de Kris,
-   dans le même logement. Seul du texte en sort, vers l'esprit.
+   dans le même logement. Seul du texte en sort, vers l'esprit. En version 1, l'audio passe de
+   l'oreille au centre en clair sur le réseau local.
 2. **Rien n'est conservé par défaut.** Ce qui n'est adressé à personne est oublié. Les deux
    exceptions sont la mémoire tampon et les conversations en attente d'identification, toutes
    deux bornées dans le temps (voir plus bas).
@@ -34,57 +35,85 @@ au format fixé plus bas, et n'importe quel esprit le lit.
 
 | Rôle | Machine | Ce qu'elle fait |
 |---|---|---|
-| **L'oreille** | d'abord le PC de Kris avec son casque ; plus tard le Raspberry Pi 4 inutilisé ou une autre machine, avec un micro de pièce | Capte le son et détecte la voix, rien d'autre : un petit programme sans modèle lourd ni état, avec un adaptateur par type de micro. Envoie l'audio des passages parlés au serveur, sur le réseau local, avec le nom de l'oreille. |
-| **Le cerveau auditif** | le serveur (i5-14400, 32 Go, pas de carte graphique aujourd'hui) | Un seul centre pour toutes les oreilles : il reçoit leurs flux et fait le mot de réveil, la transcription, la fin de tour, la reconnaissance des voix, la mémoire tampon, le choix entre deux oreilles qui entendent la même phrase, et l'envoi des événements à l'esprit. |
+| **L'oreille** | d'abord le PC de Kris avec son casque ; plus tard le Raspberry Pi 4 inutilisé ou une autre machine, avec un micro de pièce | Capte le son, rien d'autre : un petit programme sans modèle lourd ni état, avec un adaptateur par type de micro. Envoie l'audio au serveur, sur le réseau local, avec le nom de l'oreille. |
+| **Le cerveau auditif** | le serveur (i5-14400, 32 Go, pas de carte graphique aujourd'hui) | Un seul centre pour toutes les oreilles : il reçoit leurs flux, transcrit et envoie les événements à l'esprit ; pour les oreilles de pièce, il fait en plus le mot de réveil, la fin de tour, la reconnaissance des voix, la mémoire tampon et le choix entre deux oreilles qui entendent la même phrase. |
 
 L'oreille et le serveur sont dans le même logement, et suivent Kris s'il déménage. Le serveur est
 relié en Wi-Fi : un flux de voix fait environ 256 kbit/s, ce qui ne pose aucun problème.
 
-La version 1 a **une seule oreille**, posée devant Kris. Tout est conçu pour en avoir plusieurs :
-chaque oreille a un nom (sa pièce). Quand deux oreilles entendent la même phrase, on garde celle
-qui l'entend le plus fort.
-
 **N'importe quel micro.** Une oreille est une source audio, pas un appareil : le micro du casque
 de Kris sur son PC, un micro USB sur le Raspberry Pi, une matrice ou un micro de conférence dans
-une pièce. La chaîne d'écoute ne dépend que du flux audio et du nom de l'oreille ; chaque type de
-micro n'est qu'un adaptateur de capture.
+une pièce. Chaque type de micro n'est qu'un adaptateur de capture. Chaque oreille a un nom.
 
-**La première oreille est le casque de Kris**, sur son PC, avant tout achat. Le micro de pièce
-se choisit ensuite, quand la chaîne a fait ses preuves avec le casque. (Décidé le 2026-10-10.)
+**Deux sortes d'oreilles** (décidé le 2026-10-10) :
+
+| | Oreille à bouton | Oreille de pièce |
+|---|---|---|
+| Exemple | le casque de Kris sur son PC | un micro posé dans une pièce |
+| Quand elle écoute | entre deux appuis sur un bouton | toujours |
+| Qui parle | Kris, forcément | à reconnaître |
+| Réveil | le bouton | le mot « Emory » |
+| Fin du tour | le second appui | un modèle de fin de tour |
+| Mémoire tampon | non : rien n'est écouté hors des appuis | oui |
+| Version | **1** | plus tard |
+
+**La version 1 est l'oreille à bouton du casque de Kris**, avant tout achat. Le micro de pièce
+se choisit ensuite, quand la chaîne a fait ses preuves avec le casque.
 
 ## La chaîne d'écoute
 
-**Des oreilles bêtes, un seul centre** (décidé le 2026-10-10). Une oreille capte et détecte la voix ;
-tout le reste se fait au centre, pour toutes les oreilles à la fois. La mémoire tampon transcrit
-en continu tout ce qui est dit : toute la parole va au centre de toute façon, si bien qu'un mot de
-réveil sur l'oreille n'économiserait rien. Au centre, il n'y a qu'une carte graphique et qu'un jeu
-de modèles, les empreintes des voix sont au même endroit pour toutes les pièces, et deux oreilles
-qui entendent la même phrase sont départagées. Ajouter un micro ne demande qu'un adaptateur de
-capture. Une oreille hors du logement (un téléphone en déplacement) demandera un transport
-chiffré : hors version 1, le centre ne change pas.
+**Des oreilles bêtes, un seul centre** (décidé le 2026-10-10). Une oreille capte ; tout le reste
+se fait au centre, pour toutes les oreilles à la fois. Au centre, il n'y a qu'une carte graphique
+et qu'un jeu de modèles, les empreintes des voix sont au même endroit pour toutes les pièces, et
+deux oreilles qui entendent la même phrase sont départagées. Ajouter un micro ne demande qu'un
+adaptateur de capture. Une oreille hors du logement (un téléphone en déplacement) demandera un
+transport chiffré : hors version 1, le centre ne change pas.
+
+### L'oreille à bouton (version 1)
 
 ```
-  oreille (×n)          │  centre auditif (un seul, sur le serveur)
+oreille : appui → micro → second appui   │   centre : transcription → événement → esprit
+```
+
+1. **Le bouton.** Un appui ouvre l'écoute, un second la ferme. L'audio entre les deux part au
+   centre. Pas de détection de voix, de mot de réveil ni de fin de tour : c'est Kris qui les fait.
+2. **Transcription**, au centre. Le modèle sera choisi par le banc d'essai plus bas. Les modèles
+   écorchent les noms propres : on leur donne une liste de mots à privilégier (prompt initial ou
+   hotwords), tirée des titres et des alias d'Hippocampe (Emory, Hippocampe, les projets et les
+   proches de Kris, Neo4j…). faster-whisper coupe les silences avant de transcrire, ce qui évite
+   les phrases inventées.
+3. **Qui parle** : Kris, puisque c'est son casque. L'événement porte `locuteur` à `kris`, d'origine
+   `connue`, et `reveil` à `bouton`.
+
+### L'oreille de pièce (plus tard)
+
+```
+  oreille (×n)          │  centre auditif
 micro → détection de voix → mot de réveil → transcription → fin de tour → qui parle → événement → esprit
                         │                ↘ mémoire tampon (toujours, en continu)
 ```
 
-1. **Détection de voix**, sur l'oreille, avec Silero VAD ou équivalent. Le silence, la musique et
-   le bruit ne vont pas plus loin. C'est aussi ce qui empêche les hallucinations de Whisper sur
-   le silence (« Sous-titres réalisés par la communauté d'Amara.org »).
+1. **Détection de voix**, sur l'oreille, avec Silero VAD (un modèle de 2 Mo qui dit si un morceau
+   d'audio contient de la voix). Le silence, la musique et le bruit ne vont pas plus loin. C'est
+   aussi ce qui empêche les hallucinations de Whisper sur le silence (« Sous-titres réalisés par
+   la communauté d'Amara.org »).
 2. **Mot de réveil « Emory »**, au centre, avec openWakeWord entraîné sur ce prénom. Il est
-   **obligatoire en version 1**. Après une réponse d'Emory, une **fenêtre de suite** d'environ
-   10 secondes permet de continuer sans le répéter.
-3. **Transcription**, sur le serveur. Le modèle sera choisi par le banc d'essai plus bas. Le
-   vocabulaire propre à Kris lui est donné : Emory, Hippocampe, les noms de ses projets et de
-   ses proches, tirés des titres et des alias d'Hippocampe.
-4. **Fin de tour**, sur le serveur. Un modèle de fin de tour (comme Smart Turn de Pipecat) écoute
-   l'intonation et lit la phrase. Une pause au milieu d'une phrase ne la coupe pas.
+   **obligatoire** : comprendre sans lui qu'une phrase est adressée à Emory reviendra à l'esprit.
+   Après une réponse d'Emory, une **fenêtre de suite** d'environ 10 secondes permet de continuer
+   sans le répéter. La mémoire tampon transcrit de toute façon toute la parole : un mot de réveil
+   sur l'oreille n'économiserait rien.
+3. **Transcription**, comme pour l'oreille à bouton.
+4. **Fin de tour**. Un modèle de fin de tour (comme Smart Turn de Pipecat) écoute l'intonation et
+   lit la phrase. Une pause au milieu d'une phrase ne la coupe pas.
 5. **Interruption.** Si Kris reprend la parole pendant qu'Emory parle, Emory se tait et écoute.
    Ça concerne aussi la bouche, et sera repris avec elle.
-6. **Qui parle**, sur le serveur. Voir la section « Les voix ».
+6. **Qui parle**. Voir la section « Les voix ».
+7. **Plusieurs oreilles.** Quand deux oreilles entendent la même phrase, on garde celle qui
+   l'entend le plus fort.
 
 ## La mémoire tampon
+
+Elle ne concerne que les oreilles de pièce.
 
 Les **10 dernières minutes** de ce qui a été dit sont transcrites en continu, avec qui parlait,
 puis effacées au fil de l'eau. Elles restent sur le serveur et ne sont envoyées à l'esprit que
@@ -95,6 +124,8 @@ Elles permettent :
 - « Emory, tu as entendu ce qu'il a dit ? ».
 
 ## Les voix
+
+Elles ne concernent que les oreilles de pièce : l'oreille à bouton n'entend que Kris.
 
 **La voix de Kris est enregistrée volontairement.** Une minute de parole, dans plusieurs
 situations (près ou loin du micro, calme ou fatigué). C'est la seule voix enregistrée exprès.
@@ -143,7 +174,7 @@ Un événement par tour de parole adressé à Emory :
   "debut": "2026-10-08T21:14:03.120+02:00",
   "fin": "2026-10-08T21:14:06.870+02:00",
   "texte": "Emory, rappelle-moi ce qu'on avait décidé pour la musique",
-  "locuteur": { "voix": "kris", "personne": "kris", "confiance": 0.94 },
+  "locuteur": { "voix": "kris", "personne": "kris", "origine": "connue", "confiance": 0.94 },
   "confiance_transcription": 0.91,
   "reveil": "mot",
   "contexte": [
@@ -152,10 +183,15 @@ Un événement par tour de parole adressé à Emory :
 }
 ```
 
-- `reveil` vaut `mot` (le mot de réveil) ou `suite` (dans la fenêtre de suite).
+- `reveil` vaut `bouton` (oreille à bouton), `mot` (le mot de réveil) ou `suite` (dans la
+  fenêtre de suite).
 - `contexte` est vide par défaut. Il porte les phrases de la mémoire tampon quand l'esprit les
   demande.
-- `personne` est le slug de la personne dans Hippocampe quand la voix est connue, `null` sinon.
+- `voix` est l'étiquette stable de l'empreinte (`kris`, `voix-7`) ; `personne` est le slug de la
+  personne dans Hippocampe quand la voix a un nom, `null` sinon. Les séparer permet de rattacher
+  après coup à une personne tout ce qu'une voix a dit.
+- `origine` vaut `connue` (Kris a donné le nom) ou `supposee` (le système l'a déduit) : ce que
+  l'esprit écrit à partir d'une voix supposée est marqué `inferred` dans Hippocampe.
 
 **À décider :** le transport entre les oreilles et l'esprit. Un serveur MCP des oreilles, des
 WebSockets, un bus de messages ? Ça dépend de l'esprit. On le gardera simple et documenté.
@@ -174,9 +210,11 @@ Le but : qu'Emory commence à répondre **moins de 2 secondes** après la fin de
 Ce qui rend ça tenable, à reprendre avec l'esprit :
 - **Tout en flux.** On transcrit pendant que Kris parle, et la bouche parle pendant que l'esprit
   écrit.
-- **Deux vitesses.** Une réponse rapide et courte tout de suite, quitte à dire « je regarde ».
-  Le travail long (fouiller Hippocampe, relire la mémoire tampon) se fait en arrière-plan, et
-  Emory revient vers Kris ensuite.
+- **Pas de phrase d'attente** (Kris n'aime pas les assistants qui disent « je regarde » et font
+  attendre). Emory répond tout de suite avec ce qu'il sait ; le travail long (fouiller
+  Hippocampe, relire la mémoire tampon) se fait en parallèle, et quand il aboutit, Emory jette
+  ce qu'il n'a pas encore dit et enchaîne au bord d'une phrase (« … ah, je l'ai : »). Ce qu'il
+  dit en attendant doit être utile, pas du remplissage. À concevoir avec l'esprit et la bouche.
 - **La réflexion sur ce qui s'est passé n'a jamais lieu pendant la réponse.** Ranger, relier,
   identifier les voix : tout ça se fait plus tard, en tâche de fond, comme la consolidation de
   l'hippocampe pendant le sommeil.
@@ -185,11 +223,14 @@ Ce qui rend ça tenable, à reprendre avec l'esprit :
 
 Il doit être fait **avant** de choisir un modèle, sur le serveur.
 
-**Les enregistrements :**
+**Les enregistrements**, faits au casque de Kris, comme l'oreille à bouton :
 - 2 minutes de Kris, en français, avec ses mots : Emory, Hippocampe, Grenier, les noms de ses
   projets, des mots techniques anglais (Neo4j, MCP, Rust) ;
-- 30 secondes de silence et de bruit de fond, pour voir si le modèle invente des phrases ;
-- 1 minute de conversation à deux voix.
+- 30 secondes de silence et de bruit de fond (un appui sans parler), pour voir si le modèle
+  invente des phrases.
+
+La conversation à deux voix et le mot de réveil se mesureront avec l'oreille de pièce : combien
+de fois il rate un « Emory » de Kris, combien de fois il se déclenche seul (pendant une vidéo).
 
 **Les modèles :**
 - Parakeet TDT 0.6B v3 (NVIDIA, multilingue, rapide sur processeur) ;
@@ -201,9 +242,6 @@ Il doit être fait **avant** de choisir un modèle, sur le serveur.
 - le processeur i5-14400 ;
 - la puce graphique intégrée UHD 730, avec OpenVINO, en tenant compte du transcodage vidéo qui
   l'utilise déjà ;
-- la GTX 950, si elle est retrouvée. Elle n'a que 2 Go de mémoire et son architecture est ancienne :
-  les versions récentes de CUDA ne la prennent peut-être plus en charge. Il faut vérifier
-  avant de compter dessus.
 
 **Ce qu'on mesure :**
 - la vitesse, rapportée à la durée de l'audio (il faut être nettement plus rapide que le temps
@@ -242,6 +280,8 @@ Recherche du 2026-10-08 (prix et cotes à revérifier avant d'acheter) :
 
 ## Hors version 1
 
+- L'oreille de pièce : détection de voix, mot de réveil, fin de tour, mémoire tampon, voix
+  (conçue, pas réalisée).
 - Plusieurs oreilles (conçu, pas réalisé).
 - Comprendre qu'une phrase est adressée à Emory sans le mot de réveil : c'est l'esprit qui le
   fera.

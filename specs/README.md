@@ -27,8 +27,6 @@ emory/
   mouth/  eyes/  hands/  mind/   plus tard
 ```
 
-Le dépôt git se crée avec la première unité de travail (le banc d'essai de la transcription).
-
 ## Hippocampe, à part
 
 Hippocampe est la mémoire à long terme : il stocke, valide et retrouve, et ne fait tourner aucune
