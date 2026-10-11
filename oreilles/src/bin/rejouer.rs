@@ -1,7 +1,7 @@
-//! `rejouer [--nats URL] [--ca PEM] [--nkey GRAINE] [--poste NOM] fichier.wav`
+//! `rejouer [--nats URL] [--ca PEM] [--nkey GRAINE] [--poste NOM] [--sans-fin] fichier.wav`
 //!
 //! Joue un fichier WAV sur le bus comme le ferait un poste (`debut`, morceaux de 20 ms au rythme
-//! du temps réel, `fin`), et affiche les phrases et le tour que les oreilles renvoient. C'est
+//! du temps réel, `fin` ; avec `--sans-fin`, le poste « meurt » sans l'envoyer), et affiche les phrases et le tour que les oreilles renvoient. C'est
 //! l'essai de bout en bout des oreilles. Le fichier doit être en 16 kHz mono 16 bits :
 //! `ffmpeg -i entree.wav -ar 16000 -ac 1 -c:a pcm_s16le sortie.wav`.
 
@@ -24,12 +24,14 @@ struct Arguments {
     nats: ConfigNats,
     poste: Appareil,
     fichier: String,
+    sans_fin: bool,
 }
 
 fn arguments() -> Result<Arguments> {
     let mut nats = ConfigNats::default();
     let mut poste = "bureau".parse()?;
     let mut fichier = None;
+    let mut sans_fin = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut valeur = |nom: &str| {
@@ -41,17 +43,19 @@ fn arguments() -> Result<Arguments> {
             "--ca" => nats.ca = Some(Chemin(valeur("--ca")?.into())),
             "--nkey" => nats.nkey = Some(Chemin(valeur("--nkey")?.into())),
             "--poste" => poste = valeur("--poste")?.parse()?,
+            "--sans-fin" => sans_fin = true,
             _ if arg.starts_with("--") => bail!("option inconnue : {arg}"),
             _ => fichier = Some(arg),
         }
     }
     let fichier = fichier.context(
-        "usage : rejouer [--nats URL] [--ca PEM] [--nkey GRAINE] [--poste NOM] fichier.wav",
+        "usage : rejouer [--nats URL] [--ca PEM] [--nkey GRAINE] [--poste NOM] [--sans-fin] fichier.wav",
     )?;
     Ok(Arguments {
         nats,
         poste,
         fichier,
+        sans_fin,
     })
 }
 
@@ -101,6 +105,7 @@ async fn main() -> Result<()> {
         async move {
             loop {
                 tokio::select! {
+                    biased;
                     Some(m) = phrases.next() => {
                         let Ok(p) = serde_json::from_slice::<Phrase>(&m.payload) else { continue };
                         if p.tour != tour { continue }
@@ -141,8 +146,12 @@ async fn main() -> Result<()> {
     }
     sleep_until(depart + son::MORCEAU_MICRO * son_wav.len().div_ceil(morceau) as u32).await;
     let instant_fin = Instant::now();
-    publier(&client, sujets::bouton(&args.poste), &bouton(Etat::Fin)).await?;
-    println!("{}  fin du tour", horloge());
+    if args.sans_fin {
+        println!("{}  le poste meurt : pas de fin", horloge());
+    } else {
+        publier(&client, sujets::bouton(&args.poste), &bouton(Etat::Fin)).await?;
+        println!("{}  fin du tour", horloge());
+    }
 
     let (tour_recu, recu) = tokio::time::timeout(DELAI_TOUR, ecoute)
         .await
