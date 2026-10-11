@@ -14,8 +14,7 @@ répondeur à Hippocampe).
    « c'est quand l'échéance du contrat internet ? ».
 2. **Noter dans Hippocampe** : « note que j'ai prêté la perceuse à Marc ».
 3. **Discuter librement** : « explique-moi X », « aide-moi à réfléchir à Y ».
-4. **Agir** : minuteurs et rappels en version 1. Les autres actions (musique, appareils, bureau
-   de Kris) sont les mains, à spécifier à part.
+4. **Agir** : minuteurs et rappels, et la musique du PC (voir [`mains.md`](mains.md)).
 
 ## Deux parties
 
@@ -74,7 +73,9 @@ module, et ce qui s'ajoutera (les mains, les yeux) devient un module de plus :
 - **le temps** : minuteurs et rappels ;
 - **le web** : chercher et lire une page. La recherche passe par une instance SearXNG sur le
   serveur, en local, sans clé ni abonnement ;
-- **plus tard** : les mains (musique, appareils, bureau de Kris), les yeux.
+- **la musique** : chercher dans Navidrome par l'API Subsonic ;
+- **les mains** : les actions annoncées par la main de chaque appareil (MPRIS sur le PC) ;
+- **plus tard** : les yeux.
 
 ## Hippocampe
 

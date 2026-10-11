@@ -15,22 +15,30 @@ l'esprit. Sa mémoire à long terme n'y est pas : c'est Hippocampe, un projet à
 | **Les mains** | ce qu'Emory fait dans le monde (appareils, services) | [`mains.md`](mains.md) (brouillon) |
 | **L'esprit** | reçoit les événements des organes, décide, lit et écrit dans Hippocampe, répond | [`esprit.md`](esprit.md) (brouillon) |
 
-## Le poste
+## Sur chaque appareil : le poste et la main
 
-**Toute l'intelligence vit sur le serveur ; un appareil n'est qu'un poste de réception et
-d'envoi** (décidé le 2026-10-11). Le poste est un petit programme, le même sur chaque appareil (le
-PC de Kris d'abord, plus tard un Raspberry avec un micro et une enceinte) :
+**Toute l'intelligence vit sur le serveur ; un appareil ne fait que recevoir, envoyer et
+exécuter** (décidé le 2026-10-11). Chaque appareil (le PC de Kris d'abord, plus tard un
+Raspberry avec un micro et une enceinte) fait tourner deux petits programmes, branchés au bus
+avec le nom de l'appareil, sans modèle, sans état, sans décision :
 
-- il capte le micro (en version 1 : entre deux appuis sur un bouton, un raccourci Hyprland sur le
-  PC) et envoie ce flux audio au serveur ;
-- il joue le flux audio qui revient du serveur ;
-- il n'a ni modèle, ni état, ni décision. Un adaptateur par type de micro et de haut-parleur.
+- **le poste**, pour le son : il capte le micro (en version 1 : entre deux appuis sur un bouton,
+  un raccourci Hyprland sur le PC), envoie ce flux au serveur, et joue le flux qui revient ;
+- **la main**, pour agir : elle exécute les commandes de l'esprit sur l'appareil (voir
+  [`mains.md`](mains.md)).
 
-Il garde une seule connexion avec le serveur (une WebSocket), avec son nom. Le serveur sait quel
-poste a entendu Kris, et c'est par lui qu'Emory répond. Le poste est la prise des organes dans une
-pièce : les oreilles et la bouche restent des organes à part, sur le serveur. Un site web pour le
-téléphone pourra plus tard se brancher à la même connexion ; il ne remplace pas le poste sur le
-PC, parce qu'un onglet ne capte pas un raccourci quand il n'a pas le focus.
+Les deux sont **faits de modules, et chaque appareil n'active que les siens**, dans sa
+configuration (`micro`, `haut-parleur` pour le poste ; `mpris` pour la main…). Un module non
+activé ne tourne pas ; il peut ne pas être compilé (features Cargo). Au démarrage, chacun annonce
+sur le bus ce qu'il sait faire, et l'esprit ne propose au LLM que ce qui existe. Ajouter une
+capacité, c'est écrire un module une fois, puis l'activer là où il sert.
+
+Les séparer garde le son, qui est en temps réel, à l'abri d'une action qui plante ou qui traîne.
+
+Le serveur sait quel poste a entendu Kris, et c'est par lui qu'Emory répond. Les oreilles et la
+bouche restent des organes à part, sur le serveur : le poste n'est que leur prise dans la pièce.
+Un site web pour le téléphone pourra plus tard se brancher au bus ; il ne remplace pas le poste
+sur le PC, parce qu'un onglet ne capte pas un raccourci quand il n'a pas le focus.
 
 ## Comment ça tourne
 
@@ -46,7 +54,7 @@ Décidé le 2026-10-11.
 | `bouche` | la bouche : synthétise les phrases et renvoie l'audio au poste |
 | un conteneur par moteur hors processus | voir « Les moteurs » |
 
-**Sur chaque appareil, le poste**, branché au bus.
+**Sur chaque appareil, le poste et la main**, branchés au bus.
 
 **Le bus : NATS.** Un courtier de messages, de la famille de RabbitMQ mais minimaliste : chaque
 programme publie sur des sujets nommés (`oreilles.tour`, `bouche.dire`…) et s'abonne à ceux qui
@@ -71,7 +79,7 @@ Un appui pendant qu'Emory parle : le poste coupe le son de lui-même, `esprit` a
 envoie `bouche.stop`. Les noms des sujets et le format de chaque message sont dans `contrat/`,
 la seule chose que les programmes partagent.
 
-**Nos programmes sont en Rust** : le poste, `oreilles`, `esprit`, `bouche`. Pas de Python dans notre code.
+**Nos programmes sont en Rust** : `poste`, `main`, `oreilles`, `esprit`, `bouche`. Pas de Python dans notre code.
 
 **Les moteurs sont des adaptateurs, dans le langage qu'ils veulent.** Un moteur de modèle
 (transcription, synthèse, LLM) se branche derrière l'organe qui s'en sert, de deux façons :
@@ -98,12 +106,12 @@ sans toucher aux autres.
 emory/
   specs/        cette vue d'ensemble, puis une spec par organe
   contrat/      les sujets du bus et le format des messages
-  poste/        le poste, un adaptateur par micro et par haut-parleur
+  poste/        le poste : le son de l'appareil, un module par micro et par haut-parleur
   oreilles/     le centre auditif
   bouche/       la bouche
   esprit/       l'esprit
   moteurs/      les moteurs hors processus, un dossier chacun
-  mains/        les mains, une par chose pilotée (la musique d'abord)
+  main/         la main : les actions sur l'appareil, un module par capacité
   yeux/         plus tard
 ```
 
