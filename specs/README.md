@@ -1,6 +1,6 @@
 # Emory
 
-Statut : vue d'ensemble décidée avec Kris le 2026-10-10, le poste ajouté le 2026-10-11.
+Statut : vue d'ensemble décidée avec Kris le 2026-10-10, le poste et l'architecture ajoutés le 2026-10-11.
 
 Emory est l'assistant de Kris. Tout ce qui fait l'assistant est dans ce projet : les organes et
 l'esprit. Sa mémoire à long terme n'y est pas : c'est Hippocampe, un projet à part.
@@ -32,24 +32,79 @@ pièce : les oreilles et la bouche restent des organes à part, sur le serveur. 
 téléphone pourra plus tard se brancher à la même connexion ; il ne remplace pas le poste sur le
 PC, parce qu'un onglet ne capte pas un raccourci quand il n'a pas le focus.
 
+## Comment ça tourne
+
+Décidé le 2026-10-11.
+
+**Sur le serveur, des conteneurs Docker** déployés par Dokploy (depuis `~/Projects/home-infra`) :
+
+| Conteneur | Rôle |
+|---|---|
+| `nats` | le bus de messages |
+| `ears` | le centre auditif : reçoit l'audio des postes, transcrit, publie le tour de parole |
+| `mind` | l'esprit : garde la conversation, appelle le LLM et les outils, envoie les phrases à dire |
+| `mouth` | la bouche : synthétise les phrases et renvoie l'audio au poste |
+| un conteneur par moteur hors processus | voir « Les moteurs » |
+
+**Sur chaque appareil, le poste**, branché au bus.
+
+**Le bus : NATS.** Un courtier de messages, de la famille de RabbitMQ mais minimaliste : chaque
+programme publie sur des sujets nommés (`ears.tour`, `mouth.dire`…) et s'abonne à ceux qui
+l'intéressent ; NATS livre aussitôt, en moins d'une milliseconde sur le réseau local, et fait
+aussi les demandes avec réponse. Les organes ne se connaissent pas : ils ne connaissent que le
+bus et les sujets. Le poste s'y branche en TCP (client `async-nats`) ; un site web passera par le
+WebSocket que NATS sait aussi servir. La persistance (JetStream) existe si un jour il en faut.
+
+Un échange, avec l'oreille à bouton :
+
+```
+1. appui    poste → station.<poste>.bouton (début), puis station.<poste>.audio (le flux)
+2. appui    poste → station.<poste>.bouton (fin)
+3. ears     transcrit → ears.tour {texte, locuteur, poste…}
+4. mind     ajoute à la conversation, appelle le LLM en flux avec ses outils ;
+            chaque phrase écrite → mouth.dire {poste, texte}
+5. mouth    synthétise → station.<poste>.audio.retour
+6. poste    joue le son
+```
+
+Un appui pendant qu'Emory parle : le poste coupe le son de lui-même, `mind` arrête le LLM et
+envoie `mouth.stop`. Les noms des sujets et le format de chaque message sont dans `contract/`,
+la seule chose que les programmes partagent.
+
+**Nos programmes sont en Rust** : le poste, `ears`, `mind`, `mouth`. Pas de Python dans notre code.
+
+**Les moteurs sont des adaptateurs, dans le langage qu'ils veulent.** Un moteur de modèle
+(transcription, synthèse, LLM) se branche derrière l'organe qui s'en sert, de deux façons :
+
+- **dans le binaire Rust**, quand c'est une bibliothèque C/C++ (whisper.cpp par `whisper-rs`,
+  sherpa-onnx) : rien à déployer en plus ;
+- **hors processus**, dans un conteneur à lui avec une petite API locale, quel que soit son
+  langage (un moteur Python comme faster-whisper ou Pocket TTS, le serveur Rust de Kyutai, l'API
+  d'un LLM dans le cloud). Un aller-retour local et un conteneur de plus, rien d'autre.
+
+Le langage d'un moteur n'est donc pas un critère de choix ; à qualité égale, on préfère un moteur
+dans le binaire, pour un conteneur de moins. Changer de moteur ne touche qu'un adaptateur.
+
+**Tout tourne en local, sauf l'esprit**, pour lequel il n'y aura sans doute pas le choix (décidé
+le 2026-10-11).
+
 ## Le dépôt
 
-Un seul projet, un monorepo : un dossier par organe, chaque organe tourne comme un programme à part,
-et ils ne se parlent que par un **contrat** commun (le format des événements entre organes), dans
-un dossier à lui. Un organe se change sans toucher aux autres.
+Un seul projet, un monorepo, un workspace Cargo : un dossier par programme, et un **contrat**
+commun (les sujets du bus et le format des messages), dans un dossier à lui. Un organe se change
+sans toucher aux autres.
 
 ```
 emory/
   specs/        cette vue d'ensemble, puis une spec par organe
-  contract/     le format des événements entre organes et des flux du poste
+  contract/     les sujets du bus et le format des messages
   station/      le poste, un adaptateur par micro et par haut-parleur
   ears/         le centre auditif
-  mouth/        la synthèse de la voix
-  eyes/  hands/  mind/   plus tard
+  mouth/        la bouche
+  mind/         l'esprit
+  engines/      les moteurs hors processus, un dossier chacun
+  eyes/  hands/   plus tard
 ```
-
-**Tout tourne en local, sauf l'esprit** pour lequel il n'y aura sans doute pas le choix (décidé le
-2026-10-11).
 
 ## Hippocampe, à part
 

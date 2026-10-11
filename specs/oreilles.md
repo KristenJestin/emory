@@ -80,8 +80,8 @@ oreille : appui → micro → second appui   │   centre : transcription → é
 2. **Transcription**, au centre. Le modèle sera choisi par le banc d'essai plus bas. Les modèles
    écorchent les noms propres : on leur donne une liste de mots à privilégier (prompt initial ou
    hotwords), tirée des titres et des alias d'Hippocampe (Emory, Hippocampe, les projets et les
-   proches de Kris, Neo4j…). faster-whisper coupe les silences avant de transcrire, ce qui évite
-   les phrases inventées.
+   proches de Kris, Neo4j…). Les silences sont coupés avant la transcription (Silero VAD, intégré
+   à faster-whisper comme à sherpa-onnx), ce qui évite les phrases inventées.
 3. **Qui parle** : Kris, puisque c'est son casque. L'événement porte `locuteur` à `kris`, d'origine
    `connue`, et `reveil` à `bouton`.
 
@@ -193,8 +193,8 @@ Un événement par tour de parole adressé à Emory :
 - `origine` vaut `connue` (Kris a donné le nom) ou `supposee` (le système l'a déduit) : ce que
   l'esprit écrit à partir d'une voix supposée est marqué `inferred` dans Hippocampe.
 
-**À décider :** le transport entre les oreilles et l'esprit. Un serveur MCP des oreilles, des
-WebSockets, un bus de messages ? Ça dépend de l'esprit. On le gardera simple et documenté.
+L'événement est publié sur le bus NATS, sujet `ears.tour` (voir le [README](README.md)) ; son
+format exact est dans `contract/`.
 
 ## La latence
 
@@ -237,6 +237,10 @@ de fois il rate un « Emory » de Kris, combien de fois il se déclenche seul (p
 - faster-whisper `small` et `large-v3-turbo` en int8 ;
 - whisper.cpp ;
 - Voxtral Mini, si sa taille le permet.
+
+Chaque modèle est un moteur, branché à `ears` (en Rust) dans le binaire ou hors processus (voir
+« Les moteurs » dans le [README](README.md)) : son langage n'est pas un critère. Le banc note
+quand même comment chacun se branche, puisqu'à qualité égale un moteur dans le binaire l'emporte.
 
 **Sur quoi :**
 - le processeur i5-14400 ;
@@ -291,5 +295,4 @@ Recherche du 2026-10-08 (prix et cotes à revérifier avant d'acheter) :
 ## Questions ouvertes
 
 1. Le micro de pièce à acheter, après l'essai avec le casque.
-2. Le transport des événements vers l'esprit : dépend de la conception de l'esprit.
-3. Le modèle de transcription : choisi par le banc d'essai.
+2. Le modèle de transcription : choisi par le banc d'essai.
