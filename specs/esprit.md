@@ -27,31 +27,42 @@ répondeur à Hippocampe).
 - **le flux** : la réponse du LLM est découpée en phrases au fil de l'eau, chaque phrase part
   aussitôt vers la bouche (`bouche.dire`) ;
 - **l'interruption** : un appui pendant qu'Emory parle arrête le LLM et envoie `bouche.stop` ;
-- **les outils** : il exécute ce que le LLM demande (lire, chercher, écrire dans Hippocampe ;
-  poser un minuteur, un rappel) et lui rend le résultat ;
+- **les outils** : il sert le serveur MCP d'Emory (plus bas) et exécute ce que le LLM demande ;
 - **les minuteurs et les rappels** : il les garde, et à l'échéance Emory le dit sur le poste ;
 - **la tâche de fond** : après la fermeture d'une conversation, il demande au LLM ce qui mérite
   d'être gardé et l'écrit dans Hippocampe. Jamais pendant la réponse.
 
 **Le LLM**, branché derrière par un adaptateur (voir « Les moteurs » dans le
 [README](README.md)). Il reçoit la conversation, ses consignes et la liste des outils, et répond
-en texte. Le changer ne touche pas au relais.
+en texte, en appelant les outils du serveur MCP d'Emory (plus bas). Le changer ne touche pas au
+relais.
 
 **Pour commencer : Claude (Haiku ou Sonnet) par ACP** (décidé le 2026-10-11). `esprit` est un
 client ACP (Agent Client Protocol, la crate officielle `agent-client-protocol`) et pilote Claude
 Code par l'adaptateur `claude-agent-acp`, dans un conteneur moteur à lui :
 
 - c'est l'abonnement Claude de Kris qui paie, pas l'API ; chaque échange prend sur son quota ;
-- les outils lui sont fournis par MCP : Hippocampe, et un serveur MCP d'`esprit` pour les
-  minuteurs et les rappels ;
-- la recherche et la lecture sur le web sont les outils de Claude Code (WebSearch, WebFetch) ;
-- **tous ses autres outils sont coupés** (shell, lecture et écriture de fichiers) : sur le
-  serveur, Emory n'a que les outils qu'on lui donne ;
+- **Claude Code n'a aucun de ses propres outils** (ni shell, ni fichiers, ni web) : tout ce
+  qu'Emory peut faire passe par **un seul serveur MCP, celui d'Emory**, servi par `esprit`
+  (décidé le 2026-10-11) ;
 - la session ACP reste ouverte le temps d'une conversation, pour ne pas repayer le démarrage.
 
 À mesurer avant tout : le délai jusqu'au premier mot. Claude Code charge des consignes et des
 outils plus lourds qu'un appel direct à l'API ; si le premier mot dépasse nettement une seconde,
 l'adaptateur API (payé à l'usage) ou un modèle local prendra le relais.
+
+## Le serveur MCP d'Emory
+
+Le LLM ne voit qu'un seul jeu d'outils : celui que sert `esprit`. Il les exécute, les journalise
+et en garde le contrôle ; changer de LLM ne change pas les outils. Chaque groupe d'outils est un
+module, et ce qui s'ajoutera (les mains, les yeux) devient un module de plus :
+
+- **Hippocampe** : `esprit` relaie les outils d'Hippocampe (lire, chercher, écrire…), avec la clé
+  `emory` ;
+- **le temps** : minuteurs et rappels ;
+- **le web** : chercher et lire une page. La recherche passe par une instance SearXNG sur le
+  serveur, en local, sans clé ni abonnement ;
+- **plus tard** : les mains (musique, appareils, bureau de Kris), les yeux.
 
 ## Hippocampe
 
