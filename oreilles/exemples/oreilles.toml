@@ -1,0 +1,24 @@
+# Configuration des oreilles : `oreilles exemples/oreilles.toml`
+# Les modèles : `scripts/telecharger-modeles.sh` (dans ~/.cache/emory/modeles/).
+
+[nats]
+url = "nats://127.0.0.1:4222"
+# Sur le serveur verrouillé : le certificat de l'autorité (TLS exigé s'il est donné) et le
+# fichier de la graine de la clé nkey de ce programme.
+# ca = "/etc/emory/ca.pem"
+# nkey = "/etc/emory/oreilles.nk"
+
+[modeles]
+vad = "~/.cache/emory/modeles/silero_vad.onnx"
+parakeet = "~/.cache/emory/modeles/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+
+[transcription]
+fils = 4
+corrections = "exemples/corrections.tsv"
+
+# Réglages de Silero VAD ; les valeurs données sont celles du banc d'essai.
+[vad]
+seuil = 0.5
+silence_min = 0.5
+parole_min = 0.25
+parole_max = 20.0

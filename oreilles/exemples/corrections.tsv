@@ -1,0 +1,6 @@
+# motif (expression régulière, mots entiers, sans tenir compte de la casse)<TAB>remplacement
+# Les règles passent dans l'ordre. Ne corriger que des formes qui ne sont pas des mots français.
+hippocamp|hypocamp|hipocampe|hypocampe	Hippocampe
+et maury|emori	Emory
+dockploy|docploy|dock ploy	Dokploy
+omarchi|omarche	Omarchy
