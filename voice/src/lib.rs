@@ -19,16 +19,40 @@ use tracing::{info, warn};
 use config::Config;
 use device::Input;
 
-/// Runs the voice until the program stops (Ctrl-C or SIGTERM).
+/// Everything the mind says to the voice, on one subscription: `voice.say` and `voice.stop`.
+/// (`voice.<device>.speaking` has three tokens and is not matched.) One subscription keeps the
+/// order of the mind: a `Stop` cannot overtake the sentences sent before it.
+const VOICE_SUBJECTS: &str = "voice.*";
+
+/// What a message of [`VOICE_SUBJECTS`] is, from its subject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoiceMessage {
+    Say,
+    Stop,
+}
+
+fn voice_message(subject: &str) -> Option<VoiceMessage> {
+    match subject {
+        subjects::SAY => Some(VoiceMessage::Say),
+        subjects::STOP => Some(VoiceMessage::Stop),
+        _ => None,
+    }
+}
+
+/// Runs the voice until the program stops (Ctrl-C or SIGTERM). Fails if the bus subscription ends.
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let nats = nats::connect(&config).await?;
-    let engine = engine::Engine::new(&config.engine_url, &config.voice)?;
+    let engine = engine::Engine::new(
+        &config.engine_url,
+        &config.voice,
+        config.engine_idle_timeout(),
+        config.engine_concurrency,
+    )?;
     match engine.warm_up().await {
         Ok(()) => info!(engine = %config.engine_url, voice = %config.voice, "engine ready"),
         Err(e) => warn!("engine not ready yet, the first sentence will be slow or lost: {e:#}"),
     }
-    let mut say = nats.subscribe(subjects::SAY).await?;
-    let mut stop = nats.subscribe(subjects::STOP).await?;
+    let mut messages = nats.subscribe(VOICE_SUBJECTS).await?;
     info!(nats = %config.nats_url, "the voice is listening");
 
     let mut devices: HashMap<Device, (device::Inbox, tokio::task::JoinHandle<()>)> = HashMap::new();
@@ -42,27 +66,34 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             .clone()
     };
     let mut shutdown = std::pin::pin!(shutdown_signal());
-    loop {
+    let ended = loop {
         tokio::select! {
-            Some(message) = say.next() => match serde_json::from_slice::<Say>(&message.payload) {
-                Ok(s) => { let _ = inbox_of(&s.device).send(Input::Say(s)); }
-                Err(e) => warn!("unreadable Say: {e}"),
-            },
-            Some(message) = stop.next() => match serde_json::from_slice::<Stop>(&message.payload) {
-                Ok(s) => { let _ = inbox_of(&s.device).send(Input::Stop(s.turn)); }
-                Err(e) => warn!("unreadable Stop: {e}"),
-            },
-            () = &mut shutdown => break,
-            else => break,
+            message = messages.next() => {
+                let Some(message) = message else {
+                    break Some(anyhow::anyhow!("the bus subscription {VOICE_SUBJECTS} has ended"));
+                };
+                match voice_message(&message.subject) {
+                    Some(VoiceMessage::Say) => match serde_json::from_slice::<Say>(&message.payload) {
+                        Ok(s) => { let _ = inbox_of(&s.device).send(Input::Say(s)); }
+                        Err(e) => warn!("unreadable Say: {e}"),
+                    },
+                    Some(VoiceMessage::Stop) => match serde_json::from_slice::<Stop>(&message.payload) {
+                        Ok(s) => { let _ = inbox_of(&s.device).send(Input::Stop(s.turn)); }
+                        Err(e) => warn!("unreadable Stop: {e}"),
+                    },
+                    None => {}
+                }
+            }
+            () = &mut shutdown => break None,
         }
-    }
+    };
     info!("stopping");
     for (inbox, handle) in devices.into_values() {
         let _ = inbox.send(Input::Shutdown);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
     }
     nats.flush().await.ok();
-    Ok(())
+    ended.map_or(Ok(()), Err)
 }
 
 async fn shutdown_signal() {
@@ -71,5 +102,37 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_voice_subscription_is_dispatched_on_the_subject() {
+        assert_eq!(voice_message("voice.say"), Some(VoiceMessage::Say));
+        assert_eq!(voice_message("voice.stop"), Some(VoiceMessage::Stop));
+        assert_eq!(voice_message("voice.other"), None);
+        assert_eq!(voice_message("voice.office.speaking"), None);
+    }
+
+    #[test]
+    fn the_subscription_carries_say_and_stop_and_not_speaking() {
+        // `*` stands for exactly one token.
+        let carried = |subject: &str| {
+            let (pattern, subject): (Vec<_>, Vec<_>) = (
+                VOICE_SUBJECTS.split('.').collect(),
+                subject.split('.').collect(),
+            );
+            pattern.len() == subject.len()
+                && pattern
+                    .iter()
+                    .zip(&subject)
+                    .all(|(p, s)| *p == "*" || p == s)
+        };
+        assert!(carried(subjects::SAY) && carried(subjects::STOP));
+        let office = "office".parse().unwrap();
+        assert!(!carried(&subjects::speaking(&office)));
     }
 }
