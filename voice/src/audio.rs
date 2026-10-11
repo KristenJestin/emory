@@ -25,9 +25,9 @@ pub fn parse_wav_header(bytes: &[u8]) -> Result<WavHeader, String> {
         return Err("the engine did not answer a WAV".to_owned());
     }
     let mut format = None;
-    let mut at = 12;
+    let mut at = 12usize;
     loop {
-        if bytes.len() < at + 8 {
+        if bytes.len() < at.saturating_add(8) {
             return Ok(WavHeader::Incomplete);
         }
         let id = &bytes[at..at + 4];
@@ -40,8 +40,12 @@ pub fn parse_wav_header(bytes: &[u8]) -> Result<WavHeader, String> {
             });
         }
         let body = at + 8;
-        let end = body.saturating_add(size + size % 2);
+        // A block is padded to an even size.
+        let end = body.saturating_add(size.saturating_add(size % 2));
         if id == b"fmt " {
+            if size < 16 {
+                return Err(format!("WAV fmt block of {size} bytes, 16 are needed"));
+            }
             if bytes.len() < body + 16 {
                 return Ok(WavHeader::Incomplete);
             }
@@ -200,6 +204,33 @@ mod tests {
         ));
         assert!(parse_wav_header(&wav_header(24_000, 8)).is_err());
         assert!(parse_wav_header(b"<html>not a wav at all</html>").is_err());
+    }
+
+    #[test]
+    fn a_fmt_block_shorter_than_sixteen_bytes_is_an_error() {
+        // A fmt block of 8 bytes, followed by what would be read as its missing fields.
+        let mut h = b"RIFF".to_vec();
+        h.extend(0xFFFF_FFFFu32.to_le_bytes());
+        h.extend(b"WAVEfmt ");
+        h.extend(8u32.to_le_bytes());
+        h.extend([0u8; 8]);
+        h.extend(b"data");
+        h.extend(1_000u32.to_le_bytes());
+        h.extend([0u8; 64]);
+        assert!(parse_wav_header(&h).is_err());
+        // The same with nothing after the short block yet: still an error, not "incomplete".
+        assert!(parse_wav_header(&h[..28]).is_err());
+    }
+
+    #[test]
+    fn a_huge_block_size_does_not_overflow() {
+        let mut h = wav_header(24_000, 16);
+        let data = h.split_off(36);
+        h.extend(b"LIST");
+        h.extend(u32::MAX.to_le_bytes());
+        h.extend(data);
+        // The block is declared 4 GiB long: we simply have not seen the end of it.
+        assert_eq!(parse_wav_header(&h), Ok(WavHeader::Incomplete));
     }
 
     fn feed(chunker: &mut Chunker, pieces: &[usize]) -> Vec<Vec<u8>> {

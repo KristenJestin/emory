@@ -72,11 +72,14 @@ pub fn action(d: &Device, name: &str) -> Option<String> {
 }
 
 /// The device of a subject `ear.<name>.…`, `mouth.<name>.…`, `hands.<name>.…` or
-/// `voice.<name>.…`.
+/// `voice.<name>.speaking`. The other subjects of the voice (`voice.say`, `voice.stop`) have no
+/// device: the device is in their message.
 pub fn device_of_subject(subject: &str) -> Option<Device> {
-    let mut parts = subject.split('.');
-    match parts.next()? {
-        "ear" | "mouth" | "hands" | "voice" => Device::new(parts.next()?).ok(),
+    let parts: Vec<&str> = subject.split('.').collect();
+    match parts[..] {
+        ["ear" | "mouth" | "hands", name, ..] | ["voice", name, "speaking"] => {
+            Device::new(name).ok()
+        }
         _ => None,
     }
 }

@@ -6,22 +6,31 @@
 //! sentence at a time, away from the async executor.
 
 use std::{
-    path::Path,
-    sync::mpsc,
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow};
+use contract::TurnId;
 use sherpa_onnx::{
     OfflineModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
     SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
 };
-use tokio::sync::oneshot;
-use tracing::{debug, error};
+use tokio::sync::{oneshot, watch};
+use tracing::{debug, warn};
 
 use crate::config::{ModelsConfig, TranscriptionConfig, VadConfig};
 
 const SAMPLE_RATE: i32 = 16_000;
+
+/// How many sentences, all turns together, may wait for Parakeet. A sentence takes 1.4 s to
+/// transcribe on the E cores, so this is well over half a minute of backlog: reached only when the
+/// transcription has fallen far behind.
+const TRANSCRIPTION_BACKLOG: usize = 16;
+/// How many idle detectors the pool keeps (a detector is a few MB).
+const IDLE_DETECTORS: usize = 4;
 
 /// A sentence that the VAD has closed.
 pub struct Segment {
@@ -74,6 +83,12 @@ impl Detector {
         self.collect()
     }
 
+    /// Forgets everything: the detector is ready for another turn.
+    fn reset(&mut self) {
+        self.vad.reset();
+        self.vad.clear();
+    }
+
     fn collect(&mut self) -> Vec<Segment> {
         let mut segments = Vec::new();
         while let Some(segment) = self.vad.front() {
@@ -85,6 +100,53 @@ impl Detector {
         }
         segments
     }
+}
+
+/// The detectors, created once and handed from turn to turn: loading the Silero model from the
+/// disk (4 ms) is done at start, not on the loop that follows the bus.
+#[derive(Clone)]
+pub struct DetectorPool(Arc<PoolInner>);
+
+struct PoolInner {
+    model: PathBuf,
+    settings: VadConfig,
+    idle: Mutex<Vec<Detector>>,
+}
+
+impl DetectorPool {
+    /// Loads a first detector, so that a model that does not load stops the program at start.
+    pub fn new(model: &Path, settings: &VadConfig) -> Result<Self> {
+        let first = Detector::new(model, settings)?;
+        Ok(Self(Arc::new(PoolInner {
+            model: model.to_owned(),
+            settings: settings.clone(),
+            idle: Mutex::new(vec![first]),
+        })))
+    }
+
+    /// A detector ready for a turn: an idle one, or a new one if every one is in use.
+    pub fn take(&self) -> Result<Detector> {
+        let idle = lock(&self.0.idle).pop();
+        match idle {
+            Some(detector) => Ok(detector),
+            None => Detector::new(&self.0.model, &self.0.settings),
+        }
+    }
+
+    /// Takes a detector back, once its turn is over.
+    pub fn give_back(&self, mut detector: Detector) {
+        detector.reset();
+        let mut idle = lock(&self.0.idle);
+        if idle.len() < IDLE_DETECTORS {
+            idle.push(detector);
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// What a transcription returns.
@@ -103,10 +165,126 @@ struct Job {
     reply: oneshot::Sender<Result<Transcription, String>>,
 }
 
+/// What happens to a job pushed on a [`JobQueue`].
+#[derive(Debug, PartialEq, Eq)]
+enum Pushed<T> {
+    Queued,
+    /// The queue was full: the oldest job of the same turn was dropped to make room.
+    DroppedOldest(T),
+    /// The queue was full and holds nothing of this turn: the new job is refused.
+    Refused(T),
+}
+
+/// The jobs waiting for the transcription thread: bounded, and never blocking the one who pushes.
+/// When it is full, the oldest pending sentence of the same turn is dropped (the others belong to
+/// other turns, which are not ours to cut); if the turn has none waiting, the new one is refused.
+struct JobQueue<T> {
+    state: Mutex<QueueState<T>>,
+    ready: Condvar,
+    capacity: usize,
+}
+
+struct QueueState<T> {
+    jobs: VecDeque<(TurnId, T)>,
+    closed: bool,
+}
+
+impl<T> JobQueue<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            state: Mutex::new(QueueState {
+                jobs: VecDeque::new(),
+                closed: false,
+            }),
+            ready: Condvar::new(),
+            capacity,
+        }
+    }
+
+    fn push(&self, turn: TurnId, job: T) -> Pushed<T> {
+        let mut state = lock(&self.state);
+        let mut dropped = None;
+        if state.jobs.len() >= self.capacity {
+            let Some(oldest) = state.jobs.iter().position(|(t, _)| *t == turn) else {
+                return Pushed::Refused(job);
+            };
+            dropped = state.jobs.remove(oldest).map(|(_, job)| job);
+        }
+        state.jobs.push_back((turn, job));
+        drop(state);
+        self.ready.notify_one();
+        match dropped {
+            Some(job) => Pushed::DroppedOldest(job),
+            None => Pushed::Queued,
+        }
+    }
+
+    /// The next job, waiting for one; `None` once the queue is closed and empty.
+    fn pop(&self) -> Option<T> {
+        let mut state = lock(&self.state);
+        loop {
+            if let Some((_, job)) = state.jobs.pop_front() {
+                return Some(job);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        lock(&self.state).closed = true;
+        self.ready.notify_all();
+    }
+}
+
+/// Closes the queue when the last [`Transcriber`] is gone: the thread then ends quietly.
+struct Closer(Arc<JobQueue<Job>>);
+
+impl Drop for Closer {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// Tells that the thread has ended, however it ended (a panic unwinds through it too).
+struct Stopped(watch::Sender<bool>);
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
+/// Runs `work` on each job of the queue, on a thread of its own. The receiver turns `true` when
+/// the thread has ended.
+fn spawn_worker<T: Send + 'static>(
+    name: &str,
+    queue: Arc<JobQueue<T>>,
+    mut work: impl FnMut(T) + Send + 'static,
+) -> std::io::Result<watch::Receiver<bool>> {
+    let (stopped, watch) = watch::channel(false);
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || {
+            let _stopped = Stopped(stopped);
+            while let Some(job) = queue.pop() {
+                work(job);
+            }
+        })?;
+    Ok(watch)
+}
+
 /// Parakeet on a thread of its own: the sentences pass one by one, in the order they arrive.
 #[derive(Clone)]
 pub struct Transcriber {
-    send: mpsc::Sender<Job>,
+    queue: Arc<JobQueue<Job>>,
+    stopped: watch::Receiver<bool>,
+    _closer: Arc<Closer>,
 }
 
 impl Transcriber {
@@ -142,32 +320,34 @@ impl Transcriber {
             "Parakeet ready"
         );
 
-        let (send, receive) = mpsc::channel::<Job>();
-        std::thread::Builder::new()
-            .name("transcription".to_owned())
-            .spawn(move || {
-                for job in receive {
-                    let wait = job.queued.elapsed();
-                    let started = Instant::now();
-                    let result = transcribe(&recognizer, &job.samples)
-                        .map(|text| Transcription {
-                            text,
-                            duration: started.elapsed(),
-                            wait,
-                        })
-                        .map_err(|e| format!("{e:#}"));
-                    if job.reply.send(result).is_err() {
-                        debug!("transcription done, but nobody is waiting for it any more");
-                    }
-                }
-            })
-            .context("transcription thread")?;
-        Ok(Self { send })
+        let queue = Arc::new(JobQueue::new(TRANSCRIPTION_BACKLOG));
+        let stopped = spawn_worker("transcription", queue.clone(), move |job: Job| {
+            let wait = job.queued.elapsed();
+            let started = Instant::now();
+            let result = transcribe(&recognizer, &job.samples)
+                .map(|text| Transcription {
+                    text,
+                    duration: started.elapsed(),
+                    wait,
+                })
+                .map_err(|e| format!("{e:#}"));
+            if job.reply.send(result).is_err() {
+                debug!("transcription done, but nobody is waiting for it any more");
+            }
+        })
+        .context("transcription thread")?;
+        Ok(Self {
+            _closer: Arc::new(Closer(queue.clone())),
+            queue,
+            stopped,
+        })
     }
 
-    /// Queues a sentence; the reply arrives when its turn has come.
+    /// Queues a sentence of the turn; the reply arrives when its turn has come. Never blocks: when
+    /// the backlog is full, the oldest pending sentence of the same turn gets an error instead.
     pub fn transcribe(
         &self,
+        turn: TurnId,
         samples: Vec<f32>,
     ) -> oneshot::Receiver<Result<Transcription, String>> {
         let (reply, wait) = oneshot::channel();
@@ -176,12 +356,30 @@ impl Transcriber {
             queued: Instant::now(),
             reply,
         };
-        if self.send.send(job).is_err() {
-            error!("the transcription thread has stopped");
+        match self.queue.push(turn, job) {
+            Pushed::Queued => {}
+            Pushed::DroppedOldest(dropped) => {
+                warn!(%turn, "transcription backlog full: the oldest pending sentence of the turn is dropped");
+                let _ = dropped.reply.send(Err(BACKLOG_FULL.to_owned()));
+            }
+            Pushed::Refused(refused) => {
+                warn!(%turn, "transcription backlog full: the new sentence is dropped");
+                let _ = refused.reply.send(Err(BACKLOG_FULL.to_owned()));
+            }
         }
         wait
     }
+
+    /// Resolves when the transcription thread has ended (it panicked): the service is deaf from
+    /// then on.
+    pub async fn stopped(&self) {
+        let mut stopped = self.stopped.clone();
+        // The sender lives as long as the thread; if it is gone, the thread is gone.
+        let _ = stopped.wait_for(|stopped| *stopped).await;
+    }
 }
+
+const BACKLOG_FULL: &str = "dropped, the transcription backlog is full";
 
 fn transcribe(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String> {
     let stream = recognizer.create_stream();
@@ -203,4 +401,80 @@ fn path_string(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_owned)
         .with_context(|| format!("path is not UTF-8: {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn() -> TurnId {
+        TurnId::new()
+    }
+
+    #[test]
+    fn jobs_come_out_in_the_order_they_went_in() {
+        let (queue, t) = (JobQueue::new(4), turn());
+        for job in 0..3 {
+            assert_eq!(queue.push(t, job), Pushed::Queued);
+        }
+        assert_eq!(queue.pop(), Some(0));
+        assert_eq!(queue.pop(), Some(1));
+        assert_eq!(queue.pop(), Some(2));
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_oldest_sentence_of_the_same_turn() {
+        let (queue, mine, other) = (JobQueue::new(3), turn(), turn());
+        queue.push(mine, "mine 0");
+        queue.push(other, "other 0");
+        queue.push(mine, "mine 1");
+        assert_eq!(queue.push(mine, "mine 2"), Pushed::DroppedOldest("mine 0"));
+        // The other turn kept its place, and the order of the rest is unchanged.
+        assert_eq!(queue.pop(), Some("other 0"));
+        assert_eq!(queue.pop(), Some("mine 1"));
+        assert_eq!(queue.pop(), Some("mine 2"));
+    }
+
+    #[test]
+    fn a_full_queue_refuses_a_turn_that_has_nothing_waiting() {
+        let (queue, a, b) = (JobQueue::new(2), turn(), turn());
+        queue.push(a, "a 0");
+        queue.push(a, "a 1");
+        assert_eq!(queue.push(b, "b 0"), Pushed::Refused("b 0"));
+        assert_eq!(queue.pop(), Some("a 0"));
+        assert_eq!(queue.pop(), Some("a 1"));
+    }
+
+    #[test]
+    fn a_closed_queue_ends_once_empty() {
+        let (queue, t) = (JobQueue::new(2), turn());
+        queue.push(t, 1);
+        queue.close();
+        assert_eq!(queue.pop(), Some(1));
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_panics_is_reported_as_stopped() {
+        let queue = Arc::new(JobQueue::new(2));
+        let stopped = spawn_worker("test-panic", queue.clone(), |_: u8| panic!("boom")).unwrap();
+        assert!(!*stopped.borrow());
+        queue.push(turn(), 1);
+        let mut stopped = stopped;
+        tokio::time::timeout(Duration::from_secs(5), stopped.wait_for(|s| *s))
+            .await
+            .expect("the thread is reported as stopped")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_ends_quietly_is_reported_as_stopped_too() {
+        let queue = Arc::new(JobQueue::<u8>::new(2));
+        let mut stopped = spawn_worker("test-quiet", queue.clone(), |_| {}).unwrap();
+        queue.close();
+        tokio::time::timeout(Duration::from_secs(5), stopped.wait_for(|s| *s))
+            .await
+            .expect("the thread is reported as stopped")
+            .unwrap();
+    }
 }

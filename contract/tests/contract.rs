@@ -157,6 +157,10 @@ fn the_subjects() {
         Some(office.clone())
     );
     assert_eq!(subjects::device_of_subject("hearing.turn"), None);
+    // `say` and `stop` are not devices: only `voice.<device>.speaking` has one.
+    assert_eq!(subjects::device_of_subject("voice.say"), None);
+    assert_eq!(subjects::device_of_subject("voice.stop"), None);
+    assert_eq!(subjects::device_of_subject("voice.office.other"), None);
     assert_eq!(
         subjects::action_of_subject("hands.office.mpris.pause"),
         Some("mpris.pause")

@@ -82,7 +82,9 @@ emory-ear : appui → micro → second appui   │   hearing : transcription →
    GlobalShortcuts du xdg-desktop-portal, en appui court pour basculer ou en appui maintenu pour
    parler, comme sa touche de dictée ; sur un Raspberry, `button` est un vrai bouton. Un appui
    ouvre l'écoute, un second la ferme. L'audio entre les deux part au
-   centre, en flux. Pas de mot de réveil ni de fin de tour : c'est Kris qui les fait.
+   centre, en flux. Pas de mot de réveil ni de fin de tour : c'est Kris qui les fait. Un tour est
+borné à 120 s (`max_turn`, réglable, décidé le 2026-10-11) : au-delà, `hearing` le ferme comme avec
+`end`, avec un avertissement dans son journal, même si l'oreille continue d'envoyer du son.
 2. **Découpage en phrases**, au centre, pendant que Kris parle (décidé le 2026-10-11). `emory-ear`
    n'envoie que l'audio brut ; c'est `hearing`, sur le serveur, qui y fait passer Silero VAD :
    une phrase s'ouvre quand Kris parle et se ferme après un court silence. Chaque phrase fermée
@@ -102,7 +104,10 @@ emory-ear : appui → micro → second appui   │   hearing : transcription →
    Hippocampe, les projets et les proches de Kris, Neo4j…) :
    - une liste de mots à privilégier, donnée au modèle (prompt initial ou hotwords) ;
    - **une table de corrections appliquée après la transcription** (« Hippocamp » →
-     « Hippocampe », « Chris » → « Kris ») : la liste seule ne suffit pas.
+     « Hippocampe », « Chris » → « Kris ») : la liste seule ne suffit pas. Une ligne dont le
+     motif commence par `=` est une chaîne littérale (pour les entrées générées depuis les titres
+     d'Hippocampe), les autres restent des expressions régulières ; texte et table sont comparés
+     en NFC (2026-10-11).
 4. **Qui parle** : Kris, puisque c'est son casque. L'événement porte `speaker` à `kris`, d'origine
    `known`, et `wake` à `button`.
 
