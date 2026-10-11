@@ -1,0 +1,13 @@
+[package]
+name = "contrat"
+version = "0.1.0"
+description = "Les sujets du bus d'Emory et le format des messages"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+ulid = { version = "1", features = ["serde"] }
