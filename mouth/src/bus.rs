@@ -40,6 +40,26 @@ pub async fn connect(config: &Config) -> anyhow::Result<async_nats::Client> {
         .with_context(|| format!("connecting to NATS {}", config.bus))
 }
 
+/// The sample rates and numbers of channels `emory-mouth` accepts. The contract allows any, but
+/// nothing sensible is outside these, and a garbage header must not make the resampler allocate
+/// gigabytes.
+pub const SAMPLE_RATES: std::ops::RangeInclusive<u32> = 8_000..=192_000;
+pub const CHANNELS: std::ops::RangeInclusive<u16> = 1..=8;
+
+fn check_format(format: Format) -> Result<(), String> {
+    if SAMPLE_RATES.contains(&format.sample_rate) && CHANNELS.contains(&format.channels) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported audio format {format} (accepted: {} to {} Hz, {} to {} channels)",
+            SAMPLE_RATES.start(),
+            SAMPLE_RATES.end(),
+            CHANNELS.start(),
+            CHANNELS.end(),
+        ))
+    }
+}
+
 /// Reads an audio message of the voice.
 pub fn parse_chunk(message: &async_nats::Message) -> Result<Chunk, String> {
     let message_headers = message.headers.as_ref().ok_or("no headers")?;
@@ -54,6 +74,7 @@ pub fn parse_chunk(message: &async_nats::Message) -> Result<Chunk, String> {
     let format: Format = required(headers::FORMAT)?
         .parse()
         .map_err(|e| format!("{}: {e}", headers::FORMAT))?;
+    check_format(format)?;
     // Not on every message of a hand-made stream: sentence 0 then.
     let sentence = header(headers::SENTENCE)
         .map(|s| s.parse().map_err(|e| format!("{}: {e}", headers::SENTENCE)))
@@ -189,5 +210,69 @@ pub async fn stop_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_nats::HeaderMap;
+
+    use super::*;
+
+    fn message(format: &str, sentence: Option<&str>) -> async_nats::Message {
+        let mut headers = HeaderMap::new();
+        headers.insert(headers::TURN, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        headers.insert(headers::SEQ, "7");
+        headers.insert(headers::FORMAT, format);
+        if let Some(sentence) = sentence {
+            headers.insert(headers::SENTENCE, sentence);
+            headers.insert(headers::END, "1");
+        }
+        async_nats::Message {
+            subject: "mouth.home.audio".into(),
+            reply: None,
+            payload: vec![0; 480].into(),
+            headers: Some(headers),
+            status: None,
+            description: None,
+            length: 0,
+        }
+    }
+
+    #[test]
+    fn reads_a_chunk() {
+        let chunk = parse_chunk(&message("s16le;24000;1", Some("2"))).unwrap();
+        assert_eq!((chunk.seq, chunk.sentence, chunk.end), (7, 2, true));
+        assert_eq!(chunk.format.sample_rate, 24_000);
+        assert_eq!(chunk.pcm.len(), 480);
+        let chunk = parse_chunk(&message("s16le;24000;1", None)).unwrap();
+        assert_eq!((chunk.sentence, chunk.end), (0, false));
+    }
+
+    #[test]
+    fn refuses_formats_outside_the_limits() {
+        for format in [
+            "s16le;7999;1",
+            "s16le;192001;1",
+            "s16le;4000000000;1",
+            "s16le;24000;9",
+            "s16le;24000;0",
+            "pcm;24000;1",
+        ] {
+            assert!(parse_chunk(&message(format, None)).is_err(), "{format}");
+        }
+        for format in ["s16le;8000;1", "s16le;192000;8"] {
+            assert!(parse_chunk(&message(format, None)).is_ok(), "{format}");
+        }
+    }
+
+    #[test]
+    fn refuses_missing_or_bad_headers() {
+        let mut m = message("s16le;24000;1", None);
+        m.headers = None;
+        assert!(parse_chunk(&m).is_err());
+        let mut m = message("s16le;24000;1", None);
+        m.headers.as_mut().unwrap().insert(headers::SEQ, "x");
+        assert!(parse_chunk(&m).is_err());
     }
 }

@@ -40,8 +40,13 @@ impl Converter {
     /// Converts a chunk to interleaved `f32` samples in the output format.
     pub fn convert(&mut self, format: Format, pcm: &[u8]) -> Vec<f32> {
         if self.source != Some(format) {
+            // The state of the resampler (the last sample, the fractional position) is kept
+            // when only the channels change, since it works on the mono mix at the same rate.
+            // With another rate it is reset: at the seam, one sample of silence.
+            if self.source.map(|f| f.sample_rate) != Some(format.sample_rate) {
+                self.resampler = Resampler::new(format.sample_rate, self.sample_rate);
+            }
             self.source = Some(format);
-            self.resampler = Resampler::new(format.sample_rate, self.sample_rate);
         }
         let channels = format.channels as usize;
         let frame = 2 * channels;
@@ -195,6 +200,22 @@ mod tests {
         let mut c = Converter::new(format(48_000, 1));
         assert_eq!(c.convert(format(24_000, 1), &pcm(&[1; 240])).len(), 480);
         assert_eq!(c.convert(format(48_000, 1), &pcm(&[1; 240])).len(), 240);
+    }
+
+    #[test]
+    fn the_resampler_state_survives_a_change_of_channels_at_the_same_rate() {
+        let ramp: Vec<i16> = (0..400).map(|i| i * 50).collect();
+        let mut whole = Converter::new(format(48_000, 1));
+        let expected = whole.convert(format(24_000, 1), &pcm(&ramp));
+        // The same ramp, the second half sent as stereo (both channels equal).
+        let mut c = Converter::new(format(48_000, 1));
+        let mut got = c.convert(format(24_000, 1), &pcm(&ramp[..200]));
+        let stereo: Vec<i16> = ramp[200..].iter().flat_map(|s| [*s, *s]).collect();
+        got.extend(c.convert(format(24_000, 2), &pcm(&stereo)));
+        assert_eq!(got.len(), expected.len());
+        for (a, b) in got.iter().zip(&expected) {
+            assert!((a - b).abs() < 1e-4);
+        }
     }
 
     #[test]
