@@ -4,7 +4,11 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use hearing::{
-    bus, config::Config, corrections::Corrections, engine::Transcriber, service::Service,
+    bus,
+    config::Config,
+    corrections::Corrections,
+    engine::{DetectorPool, Transcriber},
+    service::Service,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -33,15 +37,17 @@ async fn main() -> Result<()> {
         .await
         .context("starting Parakeet")??;
 
+    let detectors = DetectorPool::new(config.models.vad.as_ref(), &config.vad)?;
+
     let client = bus::connect(&config.nats, "hearing", true).await?;
     info!(url = %config.nats.url, "connected to the bus");
 
     Service {
         client,
-        vad: config.models.vad,
-        vad_settings: config.vad,
+        detectors,
         transcriber,
         corrections: Arc::new(corrections),
+        max_turn: config.turns.max_turn(),
     }
     .run()
     .await

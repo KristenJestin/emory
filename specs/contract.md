@@ -80,7 +80,10 @@ l'appareil d'un sujet qui commence par `ear`, `mouth`, `hands` ou `voice`.
 ```
 
 `state` vaut `start` ou `end`. Le son du tour part entre les deux. Une oreille qui meurt entre les
-deux n'enverra jamais `end` : `hearing` ferme le tour de lui-même après 3 s sans son.
+deux n'enverra jamais `end` : `hearing` ferme le tour de lui-même après 3 s sans son. Une oreille
+qui continue d'envoyer du son sans jamais envoyer `end` ne tient pas le tour ouvert pour toujours :
+`hearing` le ferme aussi après `max_turn` (120 s par défaut, ajouté le 2026-10-11), comme avec `end`,
+avec un avertissement dans son journal.
 
 ### `Sentence`
 
@@ -109,6 +112,9 @@ Le tour entier, au second appui, une fois la dernière phrase transcrite. C'est 
 }
 ```
 
+- `start` et `end` suivent l'horloge de l'oreille quand elle en a une (`start` du bouton `start`,
+  `end` du bouton `end`), et celle du serveur sinon : silence, remplacement par un nouveau tour,
+  durée maximale, arrêt de `hearing` (ajouté le 2026-10-11).
 - `text` est vide quand rien n'a été entendu : l'esprit sait quand même que le tour est fini.
 - En version 1, c'est le casque de Kris : `speaker` est Kris, d'origine `known`, et `wake`
   vaut `button`. Les autres champs de `hearing.md` (`transcription_confidence`, `context`) et

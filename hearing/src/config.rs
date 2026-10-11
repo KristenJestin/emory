@@ -1,6 +1,9 @@
 //! The configuration: a TOML file given as argument to the program.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
@@ -39,6 +42,8 @@ pub struct Config {
     pub transcription: TranscriptionConfig,
     #[serde(default)]
     pub vad: VadConfig,
+    #[serde(default)]
+    pub turns: TurnsConfig,
 }
 
 /// The connection to the bus. Development uses neither `ca` nor `nkey`; the locked-down server
@@ -125,6 +130,27 @@ impl Default for VadConfig {
     }
 }
 
+/// The limits of a turn.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TurnsConfig {
+    /// The turn closes by itself, as with `end`, after this long, in seconds: an ear that keeps
+    /// streaming without ever sending the end would hold it open forever.
+    pub max_turn: f32,
+}
+
+impl Default for TurnsConfig {
+    fn default() -> Self {
+        Self { max_turn: 120.0 }
+    }
+}
+
+impl TurnsConfig {
+    pub fn max_turn(&self) -> Duration {
+        Duration::from_secs_f32(self.max_turn.max(1.0))
+    }
+}
+
 impl Config {
     pub fn read(path: &Path) -> Result<Self> {
         let text =
@@ -152,6 +178,22 @@ mod tests {
         assert_eq!(config.transcription.threads, 4);
         assert!(config.transcription.corrections.is_none());
         assert_eq!(config.vad.min_silence, 0.5);
+        assert_eq!(config.turns.max_turn(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_maximum_length_of_a_turn_is_set_in_seconds() {
+        let config: Config = toml::from_str(
+            r#"
+            [models]
+            vad = "/m/v.onnx"
+            parakeet = "/m/p"
+            [turns]
+            max_turn = 45.5
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.turns.max_turn(), Duration::from_secs_f32(45.5));
     }
 
     #[test]

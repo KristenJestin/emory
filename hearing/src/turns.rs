@@ -21,6 +21,9 @@ pub enum Reason {
     Replaced,
     /// No audio for [`contract::audio::SILENCE_CLOSES_TURN`]: the ear is dead.
     Silence,
+    /// The turn has lasted the maximum length (`max_turn`): the ear keeps streaming without ever
+    /// sending the end.
+    MaxLength,
     /// The program is stopping.
     Shutdown,
 }
@@ -68,6 +71,7 @@ pub enum Chunk<'a, S> {
 struct Open<S> {
     turn: TurnId,
     start: Timestamp,
+    opened: Instant,
     next_seq: u32,
     last_audio: Instant,
     session: S,
@@ -76,13 +80,16 @@ struct Open<S> {
 pub struct Turns<S> {
     open: HashMap<Device, Open<S>>,
     silence: Duration,
+    max_turn: Duration,
 }
 
 impl<S> Turns<S> {
-    pub fn new(silence: Duration) -> Self {
+    /// `silence` closes a turn without audio, `max_turn` closes a turn however long it streams.
+    pub fn new(silence: Duration, max_turn: Duration) -> Self {
         Self {
             open: HashMap::new(),
             silence,
+            max_turn,
         }
     }
 
@@ -108,6 +115,7 @@ impl<S> Turns<S> {
             Open {
                 turn,
                 start: at,
+                opened: now,
                 next_seq: 0,
                 last_audio: now,
                 session: create(),
@@ -145,17 +153,26 @@ impl<S> Turns<S> {
         self.close(device, Reason::End)
     }
 
-    /// Closes the turns that have received no audio for long enough.
+    /// Closes the turns that have received no audio for long enough, and those that have lasted
+    /// longer than the maximum length.
     pub fn expire(&mut self, now: Instant) -> Vec<Closed<S>> {
-        let expired: Vec<Device> = self
+        let expired: Vec<(Device, Reason)> = self
             .open
             .iter()
-            .filter(|(_, o)| now.saturating_duration_since(o.last_audio) >= self.silence)
-            .map(|(device, _)| device.clone())
+            .filter_map(|(device, o)| {
+                let reason = if now.saturating_duration_since(o.opened) >= self.max_turn {
+                    Reason::MaxLength
+                } else if now.saturating_duration_since(o.last_audio) >= self.silence {
+                    Reason::Silence
+                } else {
+                    return None;
+                };
+                Some((device.clone(), reason))
+            })
             .collect();
         expired
             .iter()
-            .filter_map(|device| self.close(device, Reason::Silence))
+            .filter_map(|(device, reason)| self.close(device, *reason))
             .collect()
     }
 
@@ -168,7 +185,8 @@ impl<S> Turns<S> {
             .collect()
     }
 
-    fn close(&mut self, device: &Device, reason: Reason) -> Option<Closed<S>> {
+    /// Closes the turn of the device, whichever it is.
+    pub fn close(&mut self, device: &Device, reason: Reason) -> Option<Closed<S>> {
         let open = self.open.remove(device)?;
         Some(Closed {
             device: device.clone(),
@@ -190,8 +208,10 @@ mod tests {
         name.parse().unwrap()
     }
 
+    const MAX_TURN: Duration = Duration::from_secs(120);
+
     fn machine() -> Turns<Vec<u32>> {
-        Turns::new(SILENCE_CLOSES_TURN)
+        Turns::new(SILENCE_CLOSES_TURN, MAX_TURN)
     }
 
     fn open(m: &mut Turns<Vec<u32>>, d: &Device, t: TurnId, now: Instant) -> Opening<Vec<u32>> {
@@ -330,11 +350,44 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_that_keeps_streaming_closes_at_the_maximum_length() {
+        let (mut m, d, t, start) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, start);
+        // The audio never stops, so the silence never closes it.
+        for second in 0..120 {
+            feed(
+                &mut m,
+                &d,
+                t,
+                second,
+                start + Duration::from_secs(second.into()),
+            );
+        }
+        let almost = start + MAX_TURN - Duration::from_millis(1);
+        assert!(m.expire(almost).is_empty());
+        let closed = m.expire(start + MAX_TURN);
+        assert_eq!(closed.len(), 1);
+        assert_eq!((closed[0].reason, closed[0].turn), (Reason::MaxLength, t));
+        assert_eq!(closed[0].session.len(), 120);
+        assert!(m.end(&d, t).is_none());
+    }
+
+    #[test]
     fn a_turn_that_never_had_audio_expires_too() {
         let (mut m, d, t, start) = (machine(), device("office"), TurnId::new(), Instant::now());
         open(&mut m, &d, t, start);
         assert!(m.expire(start + Duration::from_secs(1)).is_empty());
         assert_eq!(m.expire(start + Duration::from_secs(3)).len(), 1);
+    }
+
+    #[test]
+    fn a_turn_can_be_closed_by_the_device_alone() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
+        assert!(m.close(&d, Reason::Replaced).is_none());
+        open(&mut m, &d, t, now);
+        let closed = m.close(&d, Reason::Replaced).unwrap();
+        assert_eq!((closed.reason, closed.turn), (Reason::Replaced, t));
+        assert_eq!(m.open_count(), 0);
     }
 
     #[test]
