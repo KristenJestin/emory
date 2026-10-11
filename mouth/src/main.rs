@@ -77,18 +77,23 @@ async fn run() -> anyhow::Result<()> {
     let device = config.device()?;
     let speaker = config.mouth()?.speaker.clone();
 
-    let (played_tx, played_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut sink: Box<dyn Sink> = match &args.wav {
-        Some(file) => Box::new(WavSink::new(file.clone(), played_tx)),
-        None => Box::new(SpeakerSink::open(&speaker, played_tx)?),
-    };
     if args.check {
         match &args.wav {
             Some(_) => println!("device {device}: WAV output"),
-            None => println!("device {device}: speaker {speaker:?} opens"),
+            None => {
+                let sink = SpeakerSink::open(&speaker)?;
+                println!(
+                    "device {device}: speaker {speaker:?} ({}) opens: {}",
+                    sink.name, sink.buffer
+                );
+            }
         }
         return Ok(());
     }
+    let mut sink: Box<dyn Sink> = match &args.wav {
+        Some(file) => Box::new(WavSink::new(file.clone())),
+        None => Box::new(SpeakerSink::open(&speaker)?),
+    };
 
     let client = bus::connect(&config).await?;
     bus::run(
@@ -96,7 +101,6 @@ async fn run() -> anyhow::Result<()> {
         &device,
         &speaker,
         sink.as_mut(),
-        played_rx,
         bus::stop_signal(),
     )
     .await

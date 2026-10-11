@@ -3,20 +3,19 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use contract::{
     Announce, Button, Device, Program, State, TurnId,
     audio::{Format, headers},
     subjects,
 };
 use futures_util::StreamExt;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     config::Config,
     jitter::{Cause, Chunk, Jitter, Output, Settings},
-    sink::{Played, Sink},
+    sink::Sink,
 };
 
 /// How often the jitter buffer is told that time passes.
@@ -118,7 +117,6 @@ pub async fn run(
     device: &Device,
     speaker: &str,
     sink: &mut dyn Sink,
-    mut played: UnboundedReceiver<Played>,
     shutdown: impl Future<Output = ()>,
 ) -> anyhow::Result<()> {
     let mut audio = client.subscribe(subjects::mouth_audio(device)).await?;
@@ -128,6 +126,7 @@ pub async fn run(
     info!(%device, speaker, "listening on {}", subjects::mouth_audio(device));
 
     let mut jitter = Jitter::new(Settings::default());
+    let mut played = Vec::new();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tokio::pin!(shutdown);
@@ -162,16 +161,23 @@ pub async fn run(
                 announce(client, device, speaker).await?;
                 continue;
             }
-            Some((mark, at)) = played.recv() => {
-                info!(
-                    turn = %mark.turn,
-                    sentence = mark.sentence,
-                    "first sample played {:.0} ms after the first chunk was received",
-                    at.saturating_duration_since(mark.received).as_secs_f64() * 1e3,
-                );
-                continue;
+            _ = tick.tick() => {
+                sink.take_played(&mut played);
+                for (mark, at) in played.drain(..) {
+                    info!(
+                        turn = %mark.turn,
+                        sentence = mark.sentence,
+                        "first sample played {:.0} ms after the first chunk was received",
+                        at.saturating_duration_since(mark.received).as_secs_f64() * 1e3,
+                    );
+                }
+                // The output is gone: the program ends, its supervisor starts it again.
+                if let Some(failure) = sink.failure() {
+                    error!("the output failed, stopping: {failure}");
+                    bail!("the output failed: {failure}");
+                }
+                jitter.poll(Instant::now())
             }
-            _ = tick.tick() => jitter.poll(Instant::now()),
         };
         apply(sink, outputs, None);
     }
