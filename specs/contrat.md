@@ -95,15 +95,16 @@ Le tour entier, au second appui, une fois la dernière phrase transcrite. C'est 
   "fin": "…",
   "texte": "on en est où sur emory et les oreilles",
   "reveil": "bouton",
-  "locuteur": null,
+  "locuteur": { "voix": "kris", "personne": "kris", "origine": "connue", "confiance": 1.0 },
   "contexte": []
 }
 ```
 
 - `texte` est vide quand rien n'a été entendu : l'esprit sait quand même que le tour est fini.
-- `locuteur` reste `null` tant que les voix ne sont pas reconnues ; `reveil` vaut toujours
-  `bouton`. Les champs de `oreilles.md` (`locuteur`, `confiance_transcription`, `contexte`)
-  arrivent avec l'oreille de pièce, sans casser le contrat.
+- En version 1, c'est le casque de Kris : `locuteur` est Kris, d'origine `connue`, et `reveil`
+  vaut `bouton`. Les autres champs de `oreilles.md` (`confiance_transcription`, `contexte`) et
+  les autres voix arrivent avec l'oreille de pièce, sans casser le contrat. `locuteur` vaut
+  `null` quand la voix n'est pas reconnue.
 
 ### `Dire` et `Stop`
 
