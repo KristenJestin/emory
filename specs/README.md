@@ -89,8 +89,8 @@ passe sur une connexion dédiée (WebSocket, WebRTC) sans toucher au reste.
 **Le bus est verrouillé dès le départ.** Le serveur NATS ne tourne que sur le serveur ; un
 appareil n'a qu'une bibliothèque cliente, et c'est lui qui se connecte : rien n'est ouvert sur le
 PC. Toutes les connexions sont en TLS ; chaque appareil et chaque organe a sa propre clé (nkey),
-avec des droits par sujet : l'oreille du bureau ne publie que sur `ear.office.*`, les mains du
-bureau n'écoutent que `hands.office.*`, seul `mind` publie sur `hands.*`. Un appareil volé ou
+avec des droits par sujet : l'oreille de l'appareil `office` ne publie que sur `ear.office.*`, les mains de l'appareil
+`office` n'écoutent que `hands.office.*`, seul `mind` publie sur `hands.*`. Un appareil volé ou
 compromis ne sort pas de ses sujets.
 
 Un échange, avec l'oreille à bouton :
