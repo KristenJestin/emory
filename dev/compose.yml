@@ -1,5 +1,5 @@
-# Le bus et le moteur de voix pour développer sur le PC, sur 127.0.0.1, sans TLS ni clés.
-# Le bus verrouillé (TLS, nkeys, droits par sujet) arrive avec le déploiement sur le serveur.
+# The bus and the voice engine, to develop on the PC, on 127.0.0.1, without TLS or keys.
+# The locked-down bus (TLS, nkeys, rights per subject) comes with the deployment on the server.
 #   docker compose -f dev/compose.yml up -d
 name: emory-dev
 
@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   pocket:
-    build: ../moteurs/pocket
+    build: ../engines/pocket
     ports:
       - "127.0.0.1:8000:8000"
     environment:

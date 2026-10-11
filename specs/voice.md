@@ -1,13 +1,14 @@
-# La bouche d'Emory : version 1
+# La bouche et la voix d'Emory : version 1
 
-Statut : brouillon du 2026-10-11, à valider par Kris.
+Statut : brouillon du 2026-10-11, à valider par Kris. Noms passés en anglais le 2026-10-11.
 
-La bouche fait parler Emory : elle reçoit le texte de l'esprit, le transforme en voix sur le
-serveur, et envoie le flux audio au poste qui a entendu Kris (voir le [README](README.md)).
+La bouche fait parler Emory. Elle a deux parties (voir le [README](README.md)) : `voice`, sur le
+serveur, reçoit le texte de `mind`, le transforme en voix et envoie le flux audio à la bouche de
+l'appareil qui a entendu Kris ; `emory-mouth`, sur l'appareil, joue ce flux.
 
 ## Principes
 
-1. **La voix se fabrique sur le serveur, en local.** Le poste ne fait que jouer le flux qui
+1. **La voix se fabrique sur le serveur, en local.** `emory-mouth` ne fait que jouer le flux qui
    revient. Aucun service de synthèse dans le cloud en version 1.
 2. **En flux, phrase par phrase.** La bouche commence à parler dès que l'esprit a écrit sa
    première phrase. Le but : le premier son moins de 0,2 s après la réception d'une phrase.
@@ -16,14 +17,15 @@ serveur, et envoie le flux audio au poste qui a entendu Kris (voir le [README](R
    pas encore dites et la bouche enchaîne au bord de la phrase en cours (« … ah, je l'ai : »),
    jamais au milieu d'un mot. Ce qui est dit en attendant doit être utile, pas du remplissage.
 4. **Le moteur est un adaptateur.** Changer de moteur (passer sur la carte graphique, ou au cloud
-   un jour) ne touche ni à l'esprit ni au poste.
-5. **Emory ne gêne pas le reste du serveur**, avec les mêmes limites que les oreilles.
+   un jour) ne touche ni à `mind` ni à `emory-mouth`.
+5. **Emory ne gêne pas le reste du serveur**, avec les mêmes limites que `hearing`.
 
 ## L'interruption
 
-En version 1, un appui sur le bouton pendant qu'Emory parle le fait taire : la bouche coupe le
-flux et jette ce qui restait à dire, et le poste se met à écouter. Avec l'oreille de pièce,
-plus tard, ce sera la reprise de parole de Kris (voir [`oreilles.md`](oreilles.md)).
+En version 1, un appui sur le bouton pendant qu'Emory parle le fait taire : `emory-mouth` jette le
+son du tour dès l'appui, `voice` coupe le flux et jette ce qui restait à dire (`voice.stop`), et
+`emory-ear` se met à écouter. Avec l'oreille de pièce, plus tard, ce sera la reprise de parole de
+Kris (voir [`hearing.md`](hearing.md)).
 
 ## Le moteur
 
@@ -40,7 +42,7 @@ Recherche du 2026-10-11 (chiffres des éditeurs, rien de mesuré chez Kris) :
   mémoire vidéo), Chatterbox (pas de vrai flux), XTTS v2 (projet arrêté, licence non commerciale).
 
 Le moteur est un adaptateur (voir « Les moteurs » dans le [README](README.md)) : Pocket TTS est
-en Python, il tourne donc dans un conteneur à lui, que `bouche` (en Rust) appelle
+en Python, il tourne donc dans un conteneur à lui, que `voice` (en Rust) appelle
 (`pocket-tts serve` fournit déjà un serveur HTTP) ; des portages en Rust existent mais sont trop
 jeunes (0 à 5 étoiles en octobre 2026). Le serveur de Kyutai pour le 1.6B est en Rust.
 
@@ -65,7 +67,7 @@ des fichiers, pas pour parler en flux.
 
 - **Les mots anglais et les noms propres** : un moteur français lit « Neo4j » ou « MCP » à la
   française. Un lexique de prononciation les remplace avant la synthèse (« MCP » → « èm cé pé »),
-  tiré, comme le vocabulaire des oreilles, des titres et des alias d'Hippocampe.
+  tiré, comme le vocabulaire de `hearing`, des titres et des alias d'Hippocampe.
 - **Les nombres, les dates et les heures** sont écrits en toutes lettres avant la synthèse ; le
   plus simple est de le demander à l'esprit.
 
@@ -76,4 +78,4 @@ des fichiers, pas pour parler en flux.
 2. La lecture des nombres, des sigles et des noms propres par Pocket : pas encore écoutée en
    détail, le lexique et l'écriture en toutes lettres restent prévus.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
-   pas encore dites) : sujets `bouche.dire` et `bouche.stop` du bus, format à fixer dans `contract/`.
+   pas encore dites) : sujets `voice.say` et `voice.stop` du bus, format fixé dans `contract/` (`Say`, avec `last` sur la dernière phrase ; voir [`contract.md`](contract.md)).

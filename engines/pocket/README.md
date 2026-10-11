@@ -1,23 +1,23 @@
-# Pocket TTS, le moteur de voix de la bouche
+# Pocket TTS, the voice engine of the voice
 
-Kyutai Pocket TTS (`pocket-tts` 3.3.0), modèle français `french` (6 couches), voix `estelle`.
-Le serveur est celui de la bibliothèque (`pocket-tts serve`) ; `serve.py` ne fait que le lancer
-avec les réglages de l'environnement, parce que la bibliothèque fixe elle-même le nombre de fils
-de torch à 1 et qu'on veut pouvoir le changer.
+Kyutai Pocket TTS (`pocket-tts` 3.3.0), `french` model (6 layers), `estelle` voice. The server is
+the library's own (`pocket-tts serve`); `serve.py` only starts it with the settings from the
+environment, because the library pins the number of torch threads to 1 itself and we want to be
+able to change it.
 
-| Variable | Défaut | |
+| Variable | Default | |
 |---|---|---|
-| `POCKET_LANGUAGE` | `french` | le modèle (`french_24l` : trop lent sans carte graphique) |
-| `POCKET_VOICE` | `estelle` | la voix par défaut |
-| `POCKET_THREADS` | `1` | les fils de torch |
+| `POCKET_LANGUAGE` | `french` | the model (`french_24l`: too slow without a graphics card) |
+| `POCKET_VOICE` | `estelle` | the default voice |
+| `POCKET_THREADS` | `1` | the torch threads |
 | `POCKET_PORT` | `8000` | |
 
-L'API : `GET /health`, et `POST /tts` (formulaire `text`, `voice_url` facultatif) qui rend un WAV
-mono 16 bits à 24 kHz diffusé pendant le calcul. Le modèle et l'état de la voix sont chargés une
-fois au démarrage. Les poids se téléchargent au premier démarrage dans `/cache` (`HF_HOME`) : y
-monter un volume. Fermer la connexion arrête le calcul.
+The API: `GET /health`, and `POST /tts` (form with `text`, optional `voice_url`) which returns a
+mono 16-bit WAV at 24 kHz streamed while it is computed. The model and the voice state are loaded
+once at start. The weights are downloaded on first start into `/cache` (`HF_HOME`): mount a volume
+there. Closing the connection stops the computation.
 
 ```
-docker compose -f dev/compose.yml up -d     # le bus et le moteur, sur 127.0.0.1
-curl -s -X POST http://127.0.0.1:8000/tts -F 'text=Bonjour.' -o bonjour.wav
+docker compose -f dev/compose.yml up -d     # the bus and the engine, on 127.0.0.1
+curl -s -X POST http://127.0.0.1:8000/tts -F 'text=Bonjour.' -o hello.wav
 ```
