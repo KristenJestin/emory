@@ -57,6 +57,12 @@ et 0,98 s (Sonnet) en médiane quand il répond directement, mais 3,4 à 4,3 s q
 outil avant de répondre, parce qu'il fait alors deux allers-retours. Haiku n'est pas plus rapide
 que Sonnet. Une session s'ouvre en 0,5 s, une fois par conversation.
 
+Seconde mesure le même jour, avec les fiches d'Hippocampe déjà jointes à la question (112 tours) :
+premier mot en **0,68 s** en médiane pour Haiku avec `effort: "low"` (pire 1,5 s), 0,84 s pour
+Sonnet ; aucun appel d'outil, réponses justes, deux ou trois phrases. Haiku écrit encore des
+chiffres (« le 2 septembre ») dans un tiers des réponses : la bouche normalise les nombres de
+toute façon.
+
 ## Le serveur MCP d'Emory
 
 Le LLM ne voit qu'un seul jeu d'outils : celui que sert `esprit`. Il les exécute, les journalise
@@ -106,6 +112,6 @@ d'Hippocampe pour répondre, partent chez le fournisseur du LLM. L'audio, lui, n
 
 ## Questions ouvertes
 
-1. Haiku ou Sonnet : aussi rapides l'un que l'autre en premier mot ; à trancher sur la qualité
-   des réponses et le quota.
+1. Haiku 5.5 en `effort: "low"` par défaut (le plus rapide et le moins cher en quota), Sonnet si
+   les réponses manquent de soin : à confirmer à l'usage.
 2. La durée d'une conversation avant sa fermeture : 30 minutes pour commencer, réglée à l'usage.
