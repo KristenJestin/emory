@@ -22,7 +22,7 @@ répondeur à Hippocampe).
 **Le relais**, notre programme `esprit`, en Rust, sans IA. Tout ce qui demande d'être prévisible :
 
 - **la conversation en cours** : les échanges depuis le premier appui, gardés en mémoire ; la
-  conversation se ferme après quelques minutes sans échange (réglable, 5 minutes pour commencer) ;
+  conversation se ferme après un temps sans échange, réglable, large pour commencer (30 minutes) ;
 - **le routage** : la réponse part vers le poste qui a entendu Kris ;
 - **le flux** : la réponse du LLM est découpée en phrases au fil de l'eau, chaque phrase part
   aussitôt vers la bouche (`bouche.dire`) ;
@@ -36,6 +36,22 @@ répondeur à Hippocampe).
 **Le LLM**, branché derrière par un adaptateur (voir « Les moteurs » dans le
 [README](README.md)). Il reçoit la conversation, ses consignes et la liste des outils, et répond
 en texte. Le changer ne touche pas au relais.
+
+**Pour commencer : Claude (Haiku ou Sonnet) par ACP** (décidé le 2026-10-11). `esprit` est un
+client ACP (Agent Client Protocol, la crate officielle `agent-client-protocol`) et pilote Claude
+Code par l'adaptateur `claude-agent-acp`, dans un conteneur moteur à lui :
+
+- c'est l'abonnement Claude de Kris qui paie, pas l'API ; chaque échange prend sur son quota ;
+- les outils lui sont fournis par MCP : Hippocampe, et un serveur MCP d'`esprit` pour les
+  minuteurs et les rappels ;
+- la recherche et la lecture sur le web sont les outils de Claude Code (WebSearch, WebFetch) ;
+- **tous ses autres outils sont coupés** (shell, lecture et écriture de fichiers) : sur le
+  serveur, Emory n'a que les outils qu'on lui donne ;
+- la session ACP reste ouverte le temps d'une conversation, pour ne pas repayer le démarrage.
+
+À mesurer avant tout : le délai jusqu'au premier mot. Claude Code charge des consignes et des
+outils plus lourds qu'un appel direct à l'API ; si le premier mot dépasse nettement une seconde,
+l'adaptateur API (payé à l'usage) ou un modèle local prendra le relais.
 
 ## Hippocampe
 
@@ -69,8 +85,6 @@ d'Hippocampe pour répondre, partent chez le fournisseur du LLM. L'audio, lui, n
 
 ## Questions ouvertes
 
-1. Le modèle. Critères : premier mot en moins d'une seconde, bon français, bon usage des outils,
-   coût. Dans le cloud pour commencer (l'API se paie à part de l'abonnement Claude) ; un modèle
-   local quand il y aura une carte graphique, si un modèle de cette taille suffit.
-2. La recherche sur le web pour la discussion libre : un outil de plus, et un coût de plus.
-3. La durée d'une conversation avant sa fermeture : 5 minutes pour commencer, réglée à l'usage.
+1. Haiku ou Sonnet : le premier mot de Haiku arrive plus vite, Sonnet répond mieux ; à mesurer.
+2. Le délai de Claude Code par ACP jusqu'au premier mot (voir plus haut).
+3. La durée d'une conversation avant sa fermeture : 30 minutes pour commencer, réglée à l'usage.
