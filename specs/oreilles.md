@@ -209,7 +209,7 @@ Un événement par tour de parole adressé à Emory :
   l'esprit écrit à partir d'une voix supposée est marqué `inferred` dans Hippocampe.
 
 L'événement est publié sur le bus NATS, sujet `oreilles.tour` (voir le [README](README.md)) ; son
-format exact est dans `contrat/`.
+format exact est dans `contract/`.
 
 ## La latence
 

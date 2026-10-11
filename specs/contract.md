@@ -3,7 +3,7 @@
 Statut : décidé avec Kris le 2026-10-11.
 
 Le contrat est la seule chose que les programmes d'Emory partagent : les sujets du bus et le format
-de chaque message. Il vit dans `contrat/`, une crate Rust sans réseau (des types `serde`, des
+de chaque message. Il vit dans `contract/`, une crate Rust sans réseau (des types `serde`, des
 constantes, des fonctions qui fabriquent les sujets) ; chaque programme en dépend et ne connaît
 rien d'autre des autres.
 

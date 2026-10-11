@@ -1,6 +1,6 @@
 //! Le contrat d'Emory : les sujets du bus et le format de chaque message.
 //!
-//! La seule chose que les programmes partagent (voir `specs/contrat.md`). Pas de réseau ici :
+//! La seule chose que les programmes partagent (voir `specs/contract.md`). Pas de réseau ici :
 //! des types, des constantes et les fonctions qui fabriquent les sujets.
 //!
 //! Le contrat grandit sans casser : un champ nouveau est facultatif, et les champs inconnus sont

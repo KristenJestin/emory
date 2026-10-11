@@ -1,5 +1,5 @@
 [package]
-name = "contrat"
+name = "contract"
 version = "0.1.0"
 description = "Les sujets du bus d'Emory et le format des messages"
 edition.workspace = true

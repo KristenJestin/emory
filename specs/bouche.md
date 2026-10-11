@@ -76,4 +76,4 @@ des fichiers, pas pour parler en flux.
 2. La lecture des nombres, des sigles et des noms propres par Pocket : pas encore écoutée en
    détail, le lexique et l'écriture en toutes lettres restent prévus.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
-   pas encore dites) : sujets `bouche.dire` et `bouche.stop` du bus, format à fixer dans `contrat/`.
+   pas encore dites) : sujets `bouche.dire` et `bouche.stop` du bus, format à fixer dans `contract/`.

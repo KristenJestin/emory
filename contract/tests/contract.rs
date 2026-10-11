@@ -1,6 +1,6 @@
-//! Les exemples de `specs/contrat.md` se lisent et se réécrivent à l'identique.
+//! Les exemples de `specs/contract.md` se lisent et se réécrivent à l'identique.
 
-use contrat::{son, sujets, *};
+use contract::{son, sujets, *};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
