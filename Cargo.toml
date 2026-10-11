@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["contract"]
+members = ["contract", "bouche"]
 
 [workspace.package]
 edition = "2024"

@@ -1,0 +1,29 @@
+[package]
+name = "bouche"
+version = "0.1.0"
+description = "La bouche d'Emory : les phrases à dire, synthétisées par le moteur, renvoyées au poste"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+contract.workspace = true
+serde.workspace = true
+anyhow = "1"
+async-nats = "0.50"
+bytes = "1"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "bouche"
+path = "src/main.rs"
+
+[[bin]]
+name = "bouche-essai"
+path = "src/bin/essai.rs"

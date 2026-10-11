@@ -1,4 +1,4 @@
-# Le bus pour développer sur le PC : NATS seul, sur 127.0.0.1, sans TLS ni clés.
+# Le bus et le moteur de voix pour développer sur le PC, sur 127.0.0.1, sans TLS ni clés.
 # Le bus verrouillé (TLS, nkeys, droits par sujet) arrive avec le déploiement sur le serveur.
 #   docker compose -f dev/compose.yml up -d
 name: emory-dev
@@ -11,3 +11,17 @@ services:
       - "127.0.0.1:8222:8222"
     command: ["--http_port", "8222"]
     restart: unless-stopped
+
+  pocket:
+    build: ../moteurs/pocket
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      POCKET_THREADS: "1"
+    volumes:
+      # The weights (a few hundred MB) are downloaded on the first start.
+      - pocket-cache:/cache
+    restart: unless-stopped
+
+volumes:
+  pocket-cache:
