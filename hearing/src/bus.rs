@@ -1,52 +1,49 @@
-//! La connexion au bus NATS : en clair pour développer, en TLS avec une nkey sur le serveur.
+//! The connection to the NATS bus: in the clear for development, in TLS with an nkey on the
+//! server.
 
 use anyhow::{Context, Result};
 use async_nats::ConnectOptions;
 use serde::Serialize;
 
-use crate::config::ConfigNats;
+use crate::config::NatsConfig;
 
-/// Se connecte au bus sous le nom `nom`. Avec `attendre`, un bus qui n'est pas encore là au
-/// démarrage n'est pas une erreur : la connexion réessaie.
-pub async fn connecter(
-    config: &ConfigNats,
-    nom: &str,
-    attendre: bool,
-) -> Result<async_nats::Client> {
+/// Connects to the bus under the name `name`. With `wait`, a bus that is not there yet at start-up
+/// is not an error: the connection retries.
+pub async fn connect(config: &NatsConfig, name: &str, wait: bool) -> Result<async_nats::Client> {
     let mut options = match &config.nkey {
-        Some(chemin) => {
-            let graine = std::fs::read_to_string(chemin)
-                .with_context(|| format!("lecture de la graine nkey {}", chemin.0.display()))?;
-            ConnectOptions::with_nkey(graine.trim().to_owned())
+        Some(path) => {
+            let seed = std::fs::read_to_string(path)
+                .with_context(|| format!("reading the nkey seed {}", path.0.display()))?;
+            ConnectOptions::with_nkey(seed.trim().to_owned())
         }
         None => ConnectOptions::new(),
     }
-    .name(nom);
+    .name(name);
     if let Some(ca) = &config.ca {
         options = options
             .add_root_certificates(ca.0.clone())
             .require_tls(true);
     }
-    if attendre {
+    if wait {
         options = options.retry_on_initial_connect();
     }
     options
         .connect(&config.url)
         .await
-        .with_context(|| format!("connexion à {}", config.url))
+        .with_context(|| format!("connecting to {}", config.url))
 }
 
-/// Publie un message JSON et attend qu'il soit parti vers le serveur.
-pub async fn publier<T: Serialize>(
+/// Publishes a JSON message and waits for it to leave for the server.
+pub async fn publish<T: Serialize>(
     client: &async_nats::Client,
-    sujet: impl async_nats::subject::ToSubject,
+    subject: impl async_nats::subject::ToSubject,
     message: &T,
 ) -> Result<()> {
-    let charge = serde_json::to_vec(message).context("sérialisation du message")?;
+    let payload = serde_json::to_vec(message).context("serialising the message")?;
     client
-        .publish(sujet, charge.into())
+        .publish(subject, payload.into())
         .await
-        .context("publication")?;
-    client.flush().await.context("envoi vers le serveur")?;
+        .context("publishing")?;
+    client.flush().await.context("sending to the server")?;
     Ok(())
 }

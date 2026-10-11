@@ -1,24 +1,24 @@
-# oreilles
+# hearing
 
-Les oreilles d'Emory, version 1 : l'oreille à bouton (`specs/oreilles.md`). Du son des postes
-(`poste.*.audio`) aux phrases (`oreilles.phrase`) et au tour entier (`oreilles.tour`), par Silero VAD
-et Parakeet TDT 0.6B v3 int8 (sherpa-onnx, dans le binaire).
-
-```sh
-oreilles/scripts/telecharger-modeles.sh          # modèles dans ~/.cache/emory/modeles/
-docker compose -f dev/compose.yml up -d           # le NATS de développement
-cargo run --release -p oreilles -- oreilles/exemples/oreilles.toml
-```
-
-Essai de bout en bout, dans un autre terminal (le fichier doit être en 16 kHz mono 16 bits :
-`ffmpeg -i entree.wav -ar 16000 -ac 1 -c:a pcm_s16le sortie.wav`) :
+The hearing of Emory, version 1: the button ear's server side (`specs/hearing.md`). From the audio
+of the ears (`ear.*.audio`) to the sentences (`hearing.sentence`) and the whole turn
+(`hearing.turn`), with Silero VAD and Parakeet TDT 0.6B v3 int8 (sherpa-onnx, inside the binary).
 
 ```sh
-cargo run --release -p oreilles --bin rejouer -- sortie.wav
+hearing/scripts/download-models.sh               # models in ~/.cache/emory/models/
+docker compose -f dev/compose.yml up -d           # the development NATS
+cargo run --release -p hearing -- hearing/examples/hearing.toml
 ```
 
-`rejouer` joue le fichier comme un poste (`debut`, morceaux de 20 ms au rythme du temps réel,
-`fin`), affiche les phrases et le tour renvoyés, et le temps de la fin au tour.
+End-to-end try, in another terminal (the file must be 16 kHz mono 16-bit:
+`ffmpeg -i input.wav -ar 16000 -ac 1 -c:a pcm_s16le output.wav`):
 
-Les journaux (`RUST_LOG=info`) donnent, par phrase, sa durée et son temps de transcription, et par
-tour le temps de la `fin` au `Tour` publié. Ils ne contiennent jamais le texte dit.
+```sh
+cargo run --release -p hearing --bin hearing-replay -- output.wav
+```
+
+`hearing-replay` plays the file like an ear (`start`, 20 ms chunks at real-time pace, `end`),
+prints the sentences and the turn that come back, and the time from the end to the turn.
+
+The logs (`RUST_LOG=info`) give, per sentence, its duration and its transcription time, and per
+turn the time from the `end` to the published `Turn`. They never contain the text said.

@@ -1,8 +1,9 @@
-//! Le service : les messages du bus entrent, les phrases et les tours transcrits sortent.
+//! The service: the bus messages come in, the transcribed sentences and turns go out.
 //!
-//! Une seule tâche suit le bus et la machine des tours ; la transcription est ailleurs (voir
-//! [`crate::moteur`]). Chaque tour a sa tâche de publication, qui reçoit les phrases dans l'ordre
-//! où elles ont été fermées, attend leur transcription, les publie, puis publie le tour.
+//! A single task follows the bus and the state machine of the turns; the transcription is
+//! elsewhere (see [`crate::engine`]). Each turn has its publishing task, which receives the
+//! sentences in the order they were closed, waits for their transcription, publishes them, then
+//! publishes the turn.
 
 use std::{
     collections::HashMap,
@@ -14,7 +15,8 @@ use anyhow::Result;
 use async_nats::Client;
 use chrono::TimeDelta;
 use contract::{
-    Appareil, Bouton, Etat, IdTour, Locuteur, Origine, Phrase, Quand, Reveil, Tour, son, sujets,
+    Button, Device, Origin, Sentence, Speaker, State, Timestamp, Turn, TurnId, Wake, audio,
+    subjects,
 };
 use futures_util::StreamExt;
 use tokio::{
@@ -25,372 +27,368 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    audio,
-    bus::publier,
-    config::{Chemin, ConfigVad},
+    audio as ear_audio,
+    bus::publish,
+    config::{ConfigPath, VadConfig},
     corrections::Corrections,
-    moteur::{Detecteur, Segment, Transcripteur, Transcription},
-    tours::{Debut, Ferme, Postes, Raison, Son},
+    engine::{Detector, Segment, Transcriber, Transcription},
+    turns::{Chunk, Closed, Opening, Reason, Turns},
 };
 
-/// Le rythme auquel on regarde si un tour s'est tu.
-const GUET: Duration = Duration::from_millis(250);
-/// Ce qu'on attend, à l'arrêt, que les tours en cours finissent de partir.
-const DELAI_ARRET: Duration = Duration::from_secs(10);
+/// How often we look whether a turn has gone quiet.
+const WATCH: Duration = Duration::from_millis(250);
+/// How long, on shutdown, we wait for the turns in progress to finish leaving.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Une phrase déposée au transcripteur, dont on attend le texte.
-struct Attente {
-    debut: Quand,
-    fin: Quand,
-    duree: Duration,
-    reponse: oneshot::Receiver<Result<Transcription, String>>,
+/// A sentence handed to the transcriber, whose text is awaited.
+struct Pending {
+    start: Timestamp,
+    end: Timestamp,
+    duration: Duration,
+    reply: oneshot::Receiver<Result<Transcription, String>>,
 }
 
 enum Message {
-    Phrase(Attente),
-    Fin {
-        fin: Quand,
+    Sentence(Pending),
+    End {
+        end: Timestamp,
         instant: Instant,
-        raison: Raison,
+        reason: Reason,
     },
 }
 
-/// Un tour en cours : son détecteur, et la file vers la tâche qui publie.
+/// A turn in progress: its detector, and the queue to the task that publishes.
 struct Session {
-    detecteur: Detecteur,
-    transcripteur: Transcripteur,
-    file: mpsc::UnboundedSender<Message>,
-    debut: Quand,
-    echantillons: u64,
+    detector: Detector,
+    transcriber: Transcriber,
+    queue: mpsc::UnboundedSender<Message>,
+    start: Timestamp,
+    samples: u64,
 }
 
 impl Session {
-    fn alimenter(&mut self, son: &[f32]) {
-        self.echantillons += son.len() as u64;
-        let segments = self.detecteur.alimenter(son);
-        self.envoyer(segments);
+    fn feed(&mut self, audio: &[f32]) {
+        self.samples += audio.len() as u64;
+        let segments = self.detector.feed(audio);
+        self.send(segments);
     }
 
-    /// Ferme le tour : la phrase en cours est transcrite à son tour, puis le tour part.
-    fn fermer(mut self, fin: Quand, instant: Instant, raison: Raison) {
-        let segments = self.detecteur.vider();
-        self.envoyer(segments);
-        let _ = self.file.send(Message::Fin {
-            fin,
+    /// Closes the turn: the sentence in progress is transcribed in its turn, then the turn goes.
+    fn close(mut self, end: Timestamp, instant: Instant, reason: Reason) {
+        let segments = self.detector.flush();
+        self.send(segments);
+        let _ = self.queue.send(Message::End {
+            end,
             instant,
-            raison,
+            reason,
         });
     }
 
-    fn envoyer(&self, segments: Vec<Segment>) {
+    fn send(&self, segments: Vec<Segment>) {
         for segment in segments {
-            let depart = |echantillons: u64| {
-                self.debut + TimeDelta::microseconds((echantillons * 1_000_000 / 16_000) as i64)
+            let moment = |samples: u64| {
+                self.start + TimeDelta::microseconds((samples * 1_000_000 / 16_000) as i64)
             };
-            let duree = segment.duree();
-            let attente = Attente {
-                debut: depart(segment.debut),
-                fin: depart(segment.debut + segment.echantillons.len() as u64),
-                duree,
-                reponse: self.transcripteur.transcrire(segment.echantillons),
+            let duration = segment.duration();
+            let pending = Pending {
+                start: moment(segment.start),
+                end: moment(segment.start + segment.samples.len() as u64),
+                duration,
+                reply: self.transcriber.transcribe(segment.samples),
             };
-            let _ = self.file.send(Message::Phrase(attente));
+            let _ = self.queue.send(Message::Sentence(pending));
         }
     }
 }
 
-/// Un avertissement par poste et par tour, pas un par morceau de son (50 par seconde).
+/// One warning per device and turn, not one per audio chunk (50 per second).
 #[derive(Default)]
-struct Avertissements(HashMap<(Appareil, &'static str), IdTour>);
+struct Warnings(HashMap<(Device, &'static str), TurnId>);
 
-impl Avertissements {
-    fn premiere_fois(&mut self, poste: &Appareil, genre: &'static str, tour: IdTour) -> bool {
-        self.0.insert((poste.clone(), genre), tour) != Some(tour)
+impl Warnings {
+    fn first_time(&mut self, device: &Device, kind: &'static str, turn: TurnId) -> bool {
+        self.0.insert((device.clone(), kind), turn) != Some(turn)
     }
 }
 
 pub struct Service {
     pub client: Client,
-    pub vad: Chemin,
-    pub reglages_vad: ConfigVad,
-    pub transcripteur: Transcripteur,
+    pub vad: ConfigPath,
+    pub vad_settings: VadConfig,
+    pub transcriber: Transcriber,
     pub corrections: Arc<Corrections>,
 }
 
 impl Service {
-    /// Écoute le bus jusqu'à l'arrêt du programme (Ctrl-C ou SIGTERM).
-    pub async fn executer(self) -> Result<()> {
-        let mut boutons = self.client.subscribe(sujets::TOUS_LES_BOUTONS).await?;
-        let mut sons = self.client.subscribe(sujets::TOUS_LES_SONS).await?;
+    /// Listens to the bus until the program stops (Ctrl-C or SIGTERM).
+    pub async fn run(self) -> Result<()> {
+        let mut buttons = self.client.subscribe(subjects::ALL_BUTTONS).await?;
+        let mut audios = self.client.subscribe(subjects::ALL_EAR_AUDIO).await?;
         info!(
-            boutons = sujets::TOUS_LES_BOUTONS,
-            sons = sujets::TOUS_LES_SONS,
-            "oreilles à l'écoute"
+            buttons = subjects::ALL_BUTTONS,
+            audio = subjects::ALL_EAR_AUDIO,
+            "hearing is listening"
         );
 
-        let mut postes = Postes::<Session>::new(son::SILENCE_QUI_FERME_LE_TOUR);
+        let mut turns = Turns::<Session>::new(audio::SILENCE_CLOSES_TURN);
         let mut publications = JoinSet::new();
-        let mut avertis = Avertissements::default();
-        let mut guet = tokio::time::interval(GUET);
-        guet.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let arret = arret();
-        tokio::pin!(arret);
+        let mut warned = Warnings::default();
+        let mut watch = tokio::time::interval(WATCH);
+        watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let stop = shutdown_signal();
+        tokio::pin!(stop);
 
         loop {
             tokio::select! {
-                Some(message) = boutons.next() => {
-                    self.bouton(&mut postes, &mut publications, message);
+                Some(message) = buttons.next() => {
+                    self.button(&mut turns, &mut publications, message);
                 }
-                Some(message) = sons.next() => {
-                    traiter_son(&mut postes, &mut avertis, message);
+                Some(message) = audios.next() => {
+                    handle_audio(&mut turns, &mut warned, message);
                 }
-                _ = guet.tick() => {
-                    for ferme in postes.expirer(Instant::now()) {
-                        warn!(poste = %ferme.poste, tour = %ferme.tour, "plus de son : le tour est fermé");
-                        fermer(ferme, contract::maintenant(), Instant::now());
+                _ = watch.tick() => {
+                    for closed in turns.expire(Instant::now()) {
+                        warn!(device = %closed.device, turn = %closed.turn, "no more audio: the turn is closed");
+                        close(closed, contract::now(), Instant::now());
                     }
                     while publications.try_join_next().is_some() {}
                 }
-                _ = &mut arret => break,
+                _ = &mut stop => break,
                 else => break,
             }
         }
 
-        info!("arrêt : fermeture des tours en cours");
-        for ferme in postes.tout_fermer() {
-            fermer(ferme, contract::maintenant(), Instant::now());
+        info!("stopping: closing the turns in progress");
+        for closed in turns.close_all() {
+            close(closed, contract::now(), Instant::now());
         }
-        let fini = tokio::time::timeout(DELAI_ARRET, async {
+        let finished = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
             while publications.join_next().await.is_some() {}
         })
         .await;
-        if fini.is_err() {
-            warn!("des tours n'ont pas fini de partir");
+        if finished.is_err() {
+            warn!("some turns did not finish leaving");
         }
         Ok(())
     }
 
-    fn bouton(
+    fn button(
         &self,
-        postes: &mut Postes<Session>,
+        turns: &mut Turns<Session>,
         publications: &mut JoinSet<()>,
         message: async_nats::Message,
     ) {
-        let Some(poste) = sujets::appareil_du_sujet(&message.subject) else {
-            warn!(sujet = %message.subject, "bouton sur un sujet sans poste");
+        let Some(device) = subjects::device_of_subject(&message.subject) else {
+            warn!(subject = %message.subject, "button on a subject without a device");
             return;
         };
-        let bouton: Bouton = match serde_json::from_slice(&message.payload) {
-            Ok(bouton) => bouton,
-            Err(erreur) => {
-                warn!(%poste, %erreur, "bouton illisible");
+        let button: Button = match serde_json::from_slice(&message.payload) {
+            Ok(button) => button,
+            Err(error) => {
+                warn!(%device, %error, "unreadable button");
                 return;
             }
         };
-        let maintenant = Instant::now();
-        match bouton.etat {
-            Etat::Debut => {
-                let (file, reception) = mpsc::unbounded_channel();
+        let now = Instant::now();
+        match button.state {
+            State::Start => {
+                let (queue, receive) = mpsc::unbounded_channel();
                 let session =
-                    Detecteur::nouveau(self.vad.as_ref(), &self.reglages_vad).map(|detecteur| {
-                        Session {
-                            detecteur,
-                            transcripteur: self.transcripteur.clone(),
-                            file,
-                            debut: bouton.quand,
-                            echantillons: 0,
-                        }
+                    Detector::new(self.vad.as_ref(), &self.vad_settings).map(|detector| Session {
+                        detector,
+                        transcriber: self.transcriber.clone(),
+                        queue,
+                        start: button.at,
+                        samples: 0,
                     });
                 let session = match session {
                     Ok(session) => session,
-                    Err(erreur) => {
-                        warn!(%poste, tour = %bouton.tour, "{erreur:#}");
+                    Err(error) => {
+                        warn!(%device, turn = %button.turn, "{error:#}");
                         return;
                     }
                 };
-                match postes.debut(&poste, bouton.tour, bouton.quand, maintenant, || session) {
-                    Debut::Doublon => debug!(%poste, tour = %bouton.tour, "début déjà reçu"),
-                    Debut::Ouvert { remplace } => {
-                        if let Some(ancien) = remplace {
-                            warn!(%poste, tour = %ancien.tour, "nouveau début : l'ancien tour est fermé");
-                            fermer(ancien, contract::maintenant(), maintenant);
+                match turns.start(&device, button.turn, button.at, now, || session) {
+                    Opening::Duplicate => {
+                        debug!(%device, turn = %button.turn, "start already received")
+                    }
+                    Opening::Opened { replaced } => {
+                        if let Some(old) = replaced {
+                            warn!(%device, turn = %old.turn, "new start: the old turn is closed");
+                            close(old, contract::now(), now);
                         }
-                        info!(%poste, tour = %bouton.tour, "début du tour");
-                        publications.spawn(publier_tour(
+                        info!(%device, turn = %button.turn, "turn started");
+                        publications.spawn(publish_turn(
                             self.client.clone(),
-                            poste,
-                            bouton.tour,
-                            bouton.quand,
-                            reception,
+                            device,
+                            button.turn,
+                            button.at,
+                            receive,
                             self.corrections.clone(),
                         ));
                     }
                 }
             }
-            Etat::Fin => match postes.fin(&poste, bouton.tour) {
-                Some(ferme) => fermer(ferme, bouton.quand, maintenant),
-                None => debug!(%poste, tour = %bouton.tour, "fin d'un tour qui n'est pas ouvert"),
+            State::End => match turns.end(&device, button.turn) {
+                Some(closed) => close(closed, button.at, now),
+                None => debug!(%device, turn = %button.turn, "end of a turn that is not open"),
             },
         }
     }
 }
 
-fn fermer(ferme: Ferme<Session>, fin: Quand, instant: Instant) {
-    ferme.session.fermer(fin, instant, ferme.raison);
+fn close(closed: Closed<Session>, end: Timestamp, instant: Instant) {
+    closed.session.close(end, instant, closed.reason);
 }
 
-fn traiter_son(
-    postes: &mut Postes<Session>,
-    avertis: &mut Avertissements,
-    message: async_nats::Message,
-) {
-    let Some(poste) = sujets::appareil_du_sujet(&message.subject) else {
+fn handle_audio(turns: &mut Turns<Session>, warned: &mut Warnings, message: async_nats::Message) {
+    let Some(device) = subjects::device_of_subject(&message.subject) else {
         return;
     };
-    let entete = match audio::lire_entetes(message.headers.as_ref()) {
-        Ok(entete) => entete,
-        Err(erreur) => {
-            warn!(%poste, "son jeté : {erreur:#}");
+    let header = match ear_audio::read_headers(message.headers.as_ref()) {
+        Ok(header) => header,
+        Err(error) => {
+            warn!(%device, "audio thrown away: {error:#}");
             return;
         }
     };
-    let echantillons = match audio::echantillons(&message.payload) {
-        Ok(e) => e,
-        Err(erreur) => {
-            warn!(%poste, tour = %entete.tour, "son jeté : {erreur:#}");
+    let samples = match ear_audio::samples(&message.payload) {
+        Ok(s) => s,
+        Err(error) => {
+            warn!(%device, turn = %header.turn, "audio thrown away: {error:#}");
             return;
         }
     };
-    match postes.son(&poste, entete.tour, entete.seq, Instant::now()) {
-        Son::Accepte { session, trou } => {
-            if let Some(trou) = trou {
+    match turns.audio(&device, header.turn, header.seq, Instant::now()) {
+        Chunk::Accepted { session, gap } => {
+            if let Some(gap) = gap {
                 warn!(
-                    %poste, tour = %entete.tour,
-                    attendu = trou.attendu, recu = trou.recu,
-                    manquants = trou.recu - trou.attendu,
-                    "trou dans le son"
+                    %device, turn = %header.turn,
+                    expected = gap.expected, received = gap.received,
+                    missing = gap.received - gap.expected,
+                    "gap in the audio"
                 );
             }
-            session.alimenter(&echantillons);
+            session.feed(&samples);
         }
-        Son::Ancien => {
-            if avertis.premiere_fois(&poste, "ancien", entete.tour) {
-                warn!(%poste, tour = %entete.tour, seq = entete.seq, "morceau de son en double ou en retard : jeté");
+        Chunk::Stale => {
+            if warned.first_time(&device, "stale", header.turn) {
+                warn!(%device, turn = %header.turn, seq = header.seq, "duplicate or late audio chunk: thrown away");
             }
         }
-        Son::Inconnu => {
-            if avertis.premiere_fois(&poste, "inconnu", entete.tour) {
-                warn!(%poste, tour = %entete.tour, "son d'un tour qui n'est pas ouvert : jeté");
+        Chunk::Unknown => {
+            if warned.first_time(&device, "unknown", header.turn) {
+                warn!(%device, turn = %header.turn, "audio of a turn that is not open: thrown away");
             }
         }
     }
 }
 
-/// La tâche d'un tour : publie ses phrases dans l'ordre, puis le tour.
-async fn publier_tour(
+/// The task of a turn: publishes its sentences in order, then the turn.
+async fn publish_turn(
     client: Client,
-    poste: Appareil,
-    tour: IdTour,
-    debut: Quand,
-    mut file: mpsc::UnboundedReceiver<Message>,
+    device: Device,
+    turn: TurnId,
+    start: Timestamp,
+    mut queue: mpsc::UnboundedReceiver<Message>,
     corrections: Arc<Corrections>,
 ) {
-    let mut textes: Vec<String> = Vec::new();
-    let mut fermeture = None;
-    while let Some(message) = file.recv().await {
+    let mut texts: Vec<String> = Vec::new();
+    let mut closing = None;
+    while let Some(message) = queue.recv().await {
         match message {
-            Message::Phrase(attente) => {
-                let Attente {
-                    debut,
-                    fin,
-                    duree,
-                    reponse,
-                } = attente;
-                let numero = textes.len() as u32;
-                let transcription = match reponse.await {
+            Message::Sentence(pending) => {
+                let Pending {
+                    start,
+                    end,
+                    duration,
+                    reply,
+                } = pending;
+                let index = texts.len() as u32;
+                let transcription = match reply.await {
                     Ok(Ok(transcription)) => transcription,
-                    Ok(Err(erreur)) => {
-                        warn!(%poste, %tour, "phrase non transcrite : {erreur}");
+                    Ok(Err(error)) => {
+                        warn!(%device, %turn, "sentence not transcribed: {error}");
                         continue;
                     }
                     Err(_) => {
-                        warn!(%poste, %tour, "phrase non transcrite : le fil de transcription s'est arrêté");
+                        warn!(%device, %turn, "sentence not transcribed: the transcription thread has stopped");
                         continue;
                     }
                 };
-                let texte = corrections.appliquer(&transcription.texte);
+                let text = corrections.apply(&transcription.text);
                 info!(
-                    %poste, %tour, numero,
-                    audio_ms = duree.as_millis() as u64,
-                    transcription_ms = transcription.duree.as_millis() as u64,
-                    attente_ms = transcription.attente.as_millis() as u64,
-                    caracteres = texte.chars().count(),
-                    "phrase transcrite"
+                    %device, %turn, index,
+                    audio_ms = duration.as_millis() as u64,
+                    transcription_ms = transcription.duration.as_millis() as u64,
+                    wait_ms = transcription.wait.as_millis() as u64,
+                    characters = text.chars().count(),
+                    "sentence transcribed"
                 );
-                if texte.trim().is_empty() {
-                    debug!(%poste, %tour, "phrase sans texte : jetée");
+                if text.trim().is_empty() {
+                    debug!(%device, %turn, "sentence without text: thrown away");
                     continue;
                 }
-                let phrase = Phrase {
-                    tour,
-                    poste: poste.clone(),
-                    numero,
-                    texte: texte.clone(),
-                    debut,
-                    fin,
+                let sentence = Sentence {
+                    turn,
+                    device: device.clone(),
+                    index,
+                    text: text.clone(),
+                    start,
+                    end,
                 };
-                if let Err(erreur) = publier(&client, sujets::PHRASE, &phrase).await {
-                    warn!(%poste, %tour, "phrase non publiée : {erreur:#}");
+                if let Err(error) = publish(&client, subjects::SENTENCE, &sentence).await {
+                    warn!(%device, %turn, "sentence not published: {error:#}");
                 }
-                textes.push(texte);
+                texts.push(text);
             }
-            Message::Fin {
-                fin,
+            Message::End {
+                end,
                 instant,
-                raison,
+                reason,
             } => {
-                fermeture = Some((fin, instant, raison));
+                closing = Some((end, instant, reason));
                 break;
             }
         }
     }
-    let (fin, instant, raison) =
-        fermeture.unwrap_or_else(|| (contract::maintenant(), Instant::now(), Raison::Arret));
-    let phrases = textes.len();
-    let message = Tour {
-        tour,
-        poste: poste.clone(),
-        debut,
-        fin,
-        texte: textes.join(" "),
-        reveil: Reveil::Bouton,
-        locuteur: Some(Locuteur {
-            voix: "kris".to_owned(),
-            personne: Some("kris".to_owned()),
-            origine: Origine::Connue,
-            confiance: 1.0,
+    let (end, instant, reason) =
+        closing.unwrap_or_else(|| (contract::now(), Instant::now(), Reason::Shutdown));
+    let sentences = texts.len();
+    let message = Turn {
+        turn,
+        device: device.clone(),
+        start,
+        end,
+        text: texts.join(" "),
+        wake: Wake::Button,
+        speaker: Some(Speaker {
+            voice: "kris".to_owned(),
+            person: Some("kris".to_owned()),
+            origin: Origin::Known,
+            confidence: 1.0,
         }),
-        confiance_transcription: None,
-        contexte: Vec::new(),
+        transcription_confidence: None,
+        context: Vec::new(),
     };
-    let resultat = publier(&client, sujets::TOUR, &message).await;
-    let fin_vers_tour = instant.elapsed();
-    match resultat {
+    let result = publish(&client, subjects::TURN, &message).await;
+    let end_to_turn = instant.elapsed();
+    match result {
         Ok(()) => info!(
-            %poste, %tour, ?raison, phrases,
-            caracteres = message.texte.chars().count(),
-            fin_vers_tour_ms = fin_vers_tour.as_millis() as u64,
-            "tour publié"
+            %device, %turn, ?reason, sentences,
+            characters = message.text.chars().count(),
+            end_to_turn_ms = end_to_turn.as_millis() as u64,
+            "turn published"
         ),
-        Err(erreur) => warn!(%poste, %tour, "tour non publié : {erreur:#}"),
+        Err(error) => warn!(%device, %turn, "turn not published: {error:#}"),
     }
 }
 
-async fn arret() {
+async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut terme = signal(SignalKind::terminate()).expect("signal SIGTERM");
+    let mut term = signal(SignalKind::terminate()).expect("SIGTERM signal");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = terme.recv() => {}
+        _ = term.recv() => {}
     }
 }

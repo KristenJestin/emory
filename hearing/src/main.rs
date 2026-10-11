@@ -1,10 +1,10 @@
-//! `oreilles <configuration.toml>` : le centre auditif d'Emory (oreille à bouton).
+//! `hearing <configuration.toml>`: the auditory centre of Emory (button ear).
 
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
-use oreilles::{
-    bus, config::Config, corrections::Corrections, moteur::Transcripteur, service::Service,
+use hearing::{
+    bus, config::Config, corrections::Corrections, engine::Transcriber, service::Service,
 };
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -15,35 +15,34 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let Some(chemin) = std::env::args_os().nth(1).map(PathBuf::from) else {
-        eprintln!("usage : oreilles <configuration.toml>");
+    let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
+        eprintln!("usage: hearing <configuration.toml>");
         std::process::exit(2);
     };
-    let config = Config::lire(&chemin)?;
+    let config = Config::read(&path)?;
 
     let corrections = match &config.transcription.corrections {
-        Some(chemin) => Corrections::lire(chemin.as_ref())?,
+        Some(path) => Corrections::read(path.as_ref())?,
         None => Corrections::default(),
     };
-    info!(regles = corrections.len(), "table de corrections");
+    info!(rules = corrections.len(), "corrections table");
 
-    let modeles = config.modeles.clone();
-    let reglages = config.transcription.clone();
-    let transcripteur =
-        tokio::task::spawn_blocking(move || Transcripteur::demarrer(&modeles, &reglages))
-            .await
-            .context("démarrage de Parakeet")??;
+    let models = config.models.clone();
+    let settings = config.transcription.clone();
+    let transcriber = tokio::task::spawn_blocking(move || Transcriber::start(&models, &settings))
+        .await
+        .context("starting Parakeet")??;
 
-    let client = bus::connecter(&config.nats, "oreilles", true).await?;
-    info!(url = %config.nats.url, "connecté au bus");
+    let client = bus::connect(&config.nats, "hearing", true).await?;
+    info!(url = %config.nats.url, "connected to the bus");
 
     Service {
         client,
-        vad: config.modeles.vad,
-        reglages_vad: config.vad,
-        transcripteur,
+        vad: config.models.vad,
+        vad_settings: config.vad,
+        transcriber,
         corrections: Arc::new(corrections),
     }
-    .executer()
+    .run()
     .await
 }

@@ -1,24 +1,24 @@
-# Configuration des oreilles : `oreilles exemples/oreilles.toml`
-# Les modèles : `scripts/telecharger-modeles.sh` (dans ~/.cache/emory/modeles/).
+# Configuration of the hearing: `hearing examples/hearing.toml`
+# The models: `scripts/download-models.sh` (into ~/.cache/emory/models/).
 
 [nats]
 url = "nats://127.0.0.1:4222"
-# Sur le serveur verrouillé : le certificat de l'autorité (TLS exigé s'il est donné) et le
-# fichier de la graine de la clé nkey de ce programme.
+# On the locked-down server: the certificate of the authority (TLS is required if it is given) and
+# the file with the seed of this program's nkey.
 # ca = "/etc/emory/ca.pem"
-# nkey = "/etc/emory/oreilles.nk"
+# nkey = "/etc/emory/hearing.nk"
 
-[modeles]
-vad = "~/.cache/emory/modeles/silero_vad.onnx"
-parakeet = "~/.cache/emory/modeles/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+[models]
+vad = "~/.cache/emory/models/silero_vad.onnx"
+parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 
 [transcription]
-fils = 4
-corrections = "exemples/corrections.tsv"
+threads = 4
+corrections = "examples/corrections.tsv"
 
-# Réglages de Silero VAD ; les valeurs données sont celles du banc d'essai.
+# Silero VAD settings; the values given are those of the test bench.
 [vad]
-seuil = 0.5
-silence_min = 0.5
-parole_min = 0.25
-parole_max = 20.0
+threshold = 0.5
+min_silence = 0.5
+min_speech = 0.25
+max_speech = 20.0

@@ -1,5 +1,5 @@
-# motif (expression régulière, mots entiers, sans tenir compte de la casse)<TAB>remplacement
-# Les règles passent dans l'ordre. Ne corriger que des formes qui ne sont pas des mots français.
+# pattern (regular expression, whole words, case-insensitive)<TAB>replacement
+# The rules apply in order. Only correct forms that are not French words.
 hippocamp|hypocamp|hipocampe|hypocampe	Hippocampe
 et maury|emori	Emory
 dockploy|docploy|dock ploy	Dokploy

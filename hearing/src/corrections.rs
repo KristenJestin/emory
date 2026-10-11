@@ -1,12 +1,12 @@
-//! La table de corrections, appliquée après la transcription (`specs/oreilles.md`).
+//! The corrections table, applied after the transcription (`specs/hearing.md`).
 //!
-//! Un fichier TSV, une règle par ligne : `motif<TAB>remplacement`. Le motif est une expression
-//! régulière (`a|b` pour plusieurs formes), cherchée sur des mots entiers, sans tenir compte de la
-//! casse. Les lignes vides et celles qui commencent par `#` sont ignorées. Les règles passent dans
-//! l'ordre du fichier : « chris net » doit précéder « chris ».
+//! A TSV file, one rule per line: `pattern<TAB>replacement`. The pattern is a regular expression
+//! (`a|b` for several forms), searched on whole words, case-insensitively. Empty lines and those
+//! starting with `#` are ignored. The rules apply in the order of the file: « chris net » must
+//! come before « chris ».
 //!
-//! Elle ne doit corriger que des formes qui ne sont pas des mots français : « trafic » ou
-//! « chris » se font réécrire sinon.
+//! It must only correct forms that are not French words: « trafic » or « chris » would be
+//! rewritten otherwise.
 
 use std::path::Path;
 
@@ -14,62 +14,59 @@ use anyhow::{Context, Result, bail};
 use regex::{NoExpand, Regex};
 
 #[derive(Debug)]
-struct Regle {
-    motif: Regex,
-    remplacement: String,
+struct Rule {
+    pattern: Regex,
+    replacement: String,
 }
 
 #[derive(Debug, Default)]
 pub struct Corrections {
-    regles: Vec<Regle>,
+    rules: Vec<Rule>,
 }
 
 impl Corrections {
-    pub fn lire(chemin: &Path) -> Result<Self> {
-        let texte = std::fs::read_to_string(chemin)
-            .with_context(|| format!("lecture de {}", chemin.display()))?;
-        Self::depuis_tsv(&texte).with_context(|| format!("table {}", chemin.display()))
+    pub fn read(path: &Path) -> Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Self::from_tsv(&text).with_context(|| format!("table {}", path.display()))
     }
 
-    pub fn depuis_tsv(texte: &str) -> Result<Self> {
-        let mut regles = Vec::new();
-        for (i, ligne) in texte.lines().enumerate() {
-            if ligne.trim().is_empty() || ligne.starts_with('#') {
+    pub fn from_tsv(text: &str) -> Result<Self> {
+        let mut rules = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((motif, remplacement)) = ligne.split_once('\t') else {
-                bail!(
-                    "ligne {} : motif et remplacement séparés par une tabulation",
-                    i + 1
-                );
+            let Some((pattern, replacement)) = line.split_once('\t') else {
+                bail!("line {}: pattern and replacement separated by a tab", i + 1);
             };
-            let motif = Regex::new(&format!(r"(?i)\b(?:{})\b", motif.trim()))
-                .with_context(|| format!("ligne {} : motif invalide", i + 1))?;
-            regles.push(Regle {
-                motif,
-                remplacement: remplacement.trim().to_owned(),
+            let pattern = Regex::new(&format!(r"(?i)\b(?:{})\b", pattern.trim()))
+                .with_context(|| format!("line {}: invalid pattern", i + 1))?;
+            rules.push(Rule {
+                pattern,
+                replacement: replacement.trim().to_owned(),
             });
         }
-        Ok(Self { regles })
+        Ok(Self { rules })
     }
 
     pub fn len(&self) -> usize {
-        self.regles.len()
+        self.rules.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.regles.is_empty()
+        self.rules.is_empty()
     }
 
-    pub fn appliquer(&self, texte: &str) -> String {
-        let mut texte = texte.to_owned();
-        for regle in &self.regles {
-            texte = regle
-                .motif
-                .replace_all(&texte, NoExpand(&regle.remplacement))
+    pub fn apply(&self, text: &str) -> String {
+        let mut text = text.to_owned();
+        for rule in &self.rules {
+            text = rule
+                .pattern
+                .replace_all(&text, NoExpand(&rule.replacement))
                 .into_owned();
         }
-        texte
+        text
     }
 }
 
@@ -78,8 +75,8 @@ mod tests {
     use super::*;
 
     fn table() -> Corrections {
-        Corrections::depuis_tsv(
-            "# motif\tremplacement\n\
+        Corrections::from_tsv(
+            "# pattern\treplacement\n\
              hippocamp|hypocamp\tHippocampe\n\
              \n\
              chris net\tkrisnet\n\
@@ -90,52 +87,52 @@ mod tests {
     }
 
     #[test]
-    fn corrige_sans_tenir_compte_de_la_casse() {
+    fn corrects_regardless_of_case() {
         assert_eq!(
-            table().appliquer("Hippocamp et HYPOCAMP"),
+            table().apply("Hippocamp et HYPOCAMP"),
             "Hippocampe et Hippocampe"
         );
     }
 
     #[test]
-    fn ne_corrige_que_des_mots_entiers() {
+    fn only_corrects_whole_words() {
         let t = table();
-        assert_eq!(t.appliquer("christophe"), "christophe");
-        assert_eq!(t.appliquer("anti-chris, chris."), "anti-Kris, Kris.");
-        assert_eq!(t.appliquer("hippocampes"), "hippocampes");
+        assert_eq!(t.apply("christophe"), "christophe");
+        assert_eq!(t.apply("anti-chris, chris."), "anti-Kris, Kris.");
+        assert_eq!(t.apply("hippocampes"), "hippocampes");
     }
 
     #[test]
-    fn les_regles_passent_dans_l_ordre_du_fichier() {
+    fn the_rules_apply_in_the_order_of_the_file() {
         assert_eq!(
-            table().appliquer("sur chris net et chris"),
+            table().apply("sur chris net et chris"),
             "sur krisnet et Kris"
         );
     }
 
     #[test]
-    fn les_lettres_accentuees_sont_des_lettres() {
+    fn accented_letters_are_letters() {
         let t = table();
-        assert_eq!(t.appliquer("l'émery"), "l'Emory");
-        assert_eq!(t.appliquer("rémery"), "rémery");
+        assert_eq!(t.apply("l'émery"), "l'Emory");
+        assert_eq!(t.apply("rémery"), "rémery");
     }
 
     #[test]
-    fn le_remplacement_est_pris_tel_quel() {
-        let t = Corrections::depuis_tsv("prix\t$1 et \\0\n").unwrap();
-        assert_eq!(t.appliquer("le prix"), "le $1 et \\0");
+    fn the_replacement_is_taken_as_it_is() {
+        let t = Corrections::from_tsv("prix\t$1 et \\0\n").unwrap();
+        assert_eq!(t.apply("le prix"), "le $1 et \\0");
     }
 
     #[test]
-    fn une_table_vide_ne_change_rien() {
-        let t = Corrections::depuis_tsv("").unwrap();
+    fn an_empty_table_changes_nothing() {
+        let t = Corrections::from_tsv("").unwrap();
         assert!(t.is_empty());
-        assert_eq!(t.appliquer("rien à faire"), "rien à faire");
+        assert_eq!(t.apply("rien à faire"), "rien à faire");
     }
 
     #[test]
-    fn une_ligne_sans_tabulation_ou_un_motif_invalide_est_refuse() {
-        assert!(Corrections::depuis_tsv("sans tabulation\n").is_err());
-        assert!(Corrections::depuis_tsv("(ouvert\tx\n").is_err());
+    fn a_line_without_a_tab_or_an_invalid_pattern_is_refused() {
+        assert!(Corrections::from_tsv("sans tabulation\n").is_err());
+        assert!(Corrections::from_tsv("(ouvert\tx\n").is_err());
     }
 }

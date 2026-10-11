@@ -1,31 +1,31 @@
-//! La configuration : un fichier TOML donné en argument au programme.
+//! The configuration: a TOML file given as argument to the program.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 
-/// Un chemin dans le fichier de configuration ; `~/` désigne le dossier personnel.
+/// A path in the configuration file; `~/` stands for the home folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Chemin(pub PathBuf);
+pub struct ConfigPath(pub PathBuf);
 
-impl<'de> Deserialize<'de> for Chemin {
+impl<'de> Deserialize<'de> for ConfigPath {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let brut = String::deserialize(d)?;
-        Ok(Self(developper(&brut, std::env::var_os("HOME"))))
+        let raw = String::deserialize(d)?;
+        Ok(Self(expand(&raw, std::env::var_os("HOME"))))
     }
 }
 
-impl AsRef<Path> for Chemin {
+impl AsRef<Path> for ConfigPath {
     fn as_ref(&self) -> &Path {
         &self.0
     }
 }
 
-fn developper(brut: &str, maison: Option<std::ffi::OsString>) -> PathBuf {
-    match (brut.strip_prefix("~/"), maison) {
-        (Some(reste), Some(maison)) => PathBuf::from(maison).join(reste),
-        _ => PathBuf::from(brut),
+fn expand(raw: &str, home: Option<std::ffi::OsString>) -> PathBuf {
+    match (raw.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(raw),
     }
 }
 
@@ -33,35 +33,35 @@ fn developper(brut: &str, maison: Option<std::ffi::OsString>) -> PathBuf {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
-    pub nats: ConfigNats,
-    pub modeles: ConfigModeles,
+    pub nats: NatsConfig,
+    pub models: ModelsConfig,
     #[serde(default)]
-    pub transcription: ConfigTranscription,
+    pub transcription: TranscriptionConfig,
     #[serde(default)]
-    pub vad: ConfigVad,
+    pub vad: VadConfig,
 }
 
-/// La connexion au bus. Le développement n'utilise ni `ca` ni `nkey` ; le serveur verrouillé
-/// utilise les deux.
+/// The connection to the bus. Development uses neither `ca` nor `nkey`; the locked-down server
+/// uses both.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigNats {
-    #[serde(default = "url_par_defaut")]
+pub struct NatsConfig {
+    #[serde(default = "default_url")]
     pub url: String,
-    /// Le certificat de l'autorité qui a signé celui du serveur NATS (TLS exigé s'il est donné).
-    pub ca: Option<Chemin>,
-    /// Le fichier de la graine de la clé nkey de ce programme.
-    pub nkey: Option<Chemin>,
+    /// The certificate of the authority that signed the NATS server's (TLS is required if given).
+    pub ca: Option<ConfigPath>,
+    /// The file with the seed of this program's nkey.
+    pub nkey: Option<ConfigPath>,
 }
 
-fn url_par_defaut() -> String {
+fn default_url() -> String {
     "nats://127.0.0.1:4222".to_owned()
 }
 
-impl Default for ConfigNats {
+impl Default for NatsConfig {
     fn default() -> Self {
         Self {
-            url: url_par_defaut(),
+            url: default_url(),
             ca: None,
             nkey: None,
         }
@@ -70,66 +70,66 @@ impl Default for ConfigNats {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigModeles {
-    /// Le fichier `silero_vad.onnx`.
-    pub vad: Chemin,
-    /// Le dossier de Parakeet (`encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`,
+pub struct ModelsConfig {
+    /// The `silero_vad.onnx` file.
+    pub vad: ConfigPath,
+    /// The Parakeet folder (`encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`,
     /// `tokens.txt`).
-    pub parakeet: Chemin,
+    pub parakeet: ConfigPath,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigTranscription {
-    /// Le nombre de fils de calcul de Parakeet.
-    #[serde(default = "fils_par_defaut")]
-    pub fils: i32,
-    /// La table de corrections (TSV), appliquée après la transcription.
-    pub corrections: Option<Chemin>,
+pub struct TranscriptionConfig {
+    /// The number of Parakeet compute threads.
+    #[serde(default = "default_threads")]
+    pub threads: i32,
+    /// The corrections table (TSV), applied after the transcription.
+    pub corrections: Option<ConfigPath>,
 }
 
-fn fils_par_defaut() -> i32 {
+fn default_threads() -> i32 {
     4
 }
 
-impl Default for ConfigTranscription {
+impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            fils: fils_par_defaut(),
+            threads: default_threads(),
             corrections: None,
         }
     }
 }
 
-/// Les réglages de Silero VAD ; les valeurs par défaut sont celles du banc d'essai.
+/// The Silero VAD settings; the default values are those of the test bench.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-pub struct ConfigVad {
-    pub seuil: f32,
-    /// Le silence qui ferme une phrase, en secondes.
-    pub silence_min: f32,
-    /// En dessous, un bruit n'est pas une phrase, en secondes.
-    pub parole_min: f32,
-    /// Au-delà, une phrase est coupée de force, en secondes.
-    pub parole_max: f32,
+pub struct VadConfig {
+    pub threshold: f32,
+    /// The silence that closes a sentence, in seconds.
+    pub min_silence: f32,
+    /// Below this, a noise is not a sentence, in seconds.
+    pub min_speech: f32,
+    /// Beyond this, a sentence is cut by force, in seconds.
+    pub max_speech: f32,
 }
 
-impl Default for ConfigVad {
+impl Default for VadConfig {
     fn default() -> Self {
         Self {
-            seuil: 0.5,
-            silence_min: 0.5,
-            parole_min: 0.25,
-            parole_max: 20.0,
+            threshold: 0.5,
+            min_silence: 0.5,
+            min_speech: 0.25,
+            max_speech: 20.0,
         }
     }
 }
 
 impl Config {
-    pub fn lire(chemin: &Path) -> Result<Self> {
-        let texte = std::fs::read_to_string(chemin)
-            .with_context(|| format!("lecture de {}", chemin.display()))?;
-        toml::from_str(&texte).with_context(|| format!("configuration {}", chemin.display()))
+    pub fn read(path: &Path) -> Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("configuration {}", path.display()))
     }
 }
 
@@ -138,10 +138,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn la_configuration_minimale_prend_les_valeurs_par_defaut() {
+    fn the_minimal_configuration_takes_the_default_values() {
         let config: Config = toml::from_str(
             r#"
-            [modeles]
+            [models]
             vad = "/m/silero_vad.onnx"
             parakeet = "/m/parakeet"
             "#,
@@ -149,33 +149,33 @@ mod tests {
         .unwrap();
         assert_eq!(config.nats.url, "nats://127.0.0.1:4222");
         assert!(config.nats.ca.is_none() && config.nats.nkey.is_none());
-        assert_eq!(config.transcription.fils, 4);
+        assert_eq!(config.transcription.threads, 4);
         assert!(config.transcription.corrections.is_none());
-        assert_eq!(config.vad.silence_min, 0.5);
+        assert_eq!(config.vad.min_silence, 0.5);
     }
 
     #[test]
-    fn une_cle_inconnue_est_refusee() {
-        let erreur = toml::from_str::<Config>(
+    fn an_unknown_key_is_refused() {
+        let result = toml::from_str::<Config>(
             r#"
-            [modeles]
+            [models]
             vad = "/m/v.onnx"
             parakeet = "/m/p"
             [transcription]
-            filz = 2
+            threadz = 2
             "#,
         );
-        assert!(erreur.is_err());
+        assert!(result.is_err());
     }
 
     #[test]
-    fn le_tilde_designe_le_dossier_personnel() {
-        let maison = Some("/home/kris".into());
+    fn the_tilde_stands_for_the_home_folder() {
+        let home = Some("/home/kris".into());
         assert_eq!(
-            developper("~/.cache/emory", maison.clone()),
+            expand("~/.cache/emory", home.clone()),
             PathBuf::from("/home/kris/.cache/emory")
         );
-        assert_eq!(developper("/abs/x", maison), PathBuf::from("/abs/x"));
-        assert_eq!(developper("~/x", None), PathBuf::from("~/x"));
+        assert_eq!(expand("/abs/x", home), PathBuf::from("/abs/x"));
+        assert_eq!(expand("~/x", None), PathBuf::from("~/x"));
     }
 }

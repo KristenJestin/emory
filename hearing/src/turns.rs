@@ -1,387 +1,350 @@
-//! La machine d'états des tours : un tour ouvert au plus par poste, du `debut` à la `fin`.
+//! The state machine of the turns: at most one open turn per device, from the `start` to the
+//! `end`.
 //!
-//! Elle ne connaît ni le bus ni les modèles : elle suit les messages (début, morceaux de son
-//! numérotés, fin, temps qui passe) et dit quel tour s'ouvre, reçoit du son ou se ferme. Chaque tour
-//! porte une `session` que l'appelant fabrique, et qu'elle lui rend à la fermeture.
+//! It knows neither the bus nor the models: it follows the messages (start, numbered audio chunks,
+//! end, time passing) and says which turn opens, receives audio or closes. Each turn carries a
+//! `session` that the caller builds, and that it hands back on closing.
 
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
 
-use contract::{Appareil, IdTour, Quand};
+use contract::{Device, Timestamp, TurnId};
 
-/// Pourquoi un tour se ferme.
+/// Why a turn closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Raison {
-    /// Le second appui.
-    Fin,
-    /// Un nouveau `debut` sur un poste dont le tour était encore ouvert.
-    Remplace,
-    /// Plus de son depuis [`contract::son::SILENCE_QUI_FERME_LE_TOUR`] : le poste est mort.
+pub enum Reason {
+    /// The second press.
+    End,
+    /// A new `start` on a device whose turn was still open.
+    Replaced,
+    /// No audio for [`contract::audio::SILENCE_CLOSES_TURN`]: the ear is dead.
     Silence,
-    /// Le programme s'arrête.
-    Arret,
+    /// The program is stopping.
+    Shutdown,
 }
 
-/// Un trou dans la numérotation du son : `attendu..recu` n'est jamais arrivé.
+/// A gap in the audio numbering: `expected..received` never arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Trou {
-    pub attendu: u32,
-    pub recu: u32,
+pub struct Gap {
+    pub expected: u32,
+    pub received: u32,
 }
 
-/// Un tour fermé, rendu avec sa session.
+/// A closed turn, handed back with its session.
 #[derive(Debug)]
-pub struct Ferme<S> {
-    pub poste: Appareil,
-    pub tour: IdTour,
-    pub debut: Quand,
-    pub raison: Raison,
+pub struct Closed<S> {
+    pub device: Device,
+    pub turn: TurnId,
+    pub start: Timestamp,
+    pub reason: Reason,
     pub session: S,
 }
 
-/// Ce qui arrive à un `debut`.
+/// What happens to a `start`.
 #[derive(Debug)]
-pub enum Debut<S> {
-    /// Le tour est ouvert ; `remplace` est celui qu'il a fermé sur ce poste, s'il y en avait un.
-    Ouvert { remplace: Option<Ferme<S>> },
-    /// Ce tour est déjà ouvert (message reçu deux fois) : rien ne change.
-    Doublon,
+pub enum Opening<S> {
+    /// The turn is open; `replaced` is the one it closed on this device, if there was one.
+    Opened { replaced: Option<Closed<S>> },
+    /// This turn is already open (message received twice): nothing changes.
+    Duplicate,
 }
 
-/// Ce qui arrive à un morceau de son.
+/// What happens to a chunk of audio.
 #[derive(Debug)]
-pub enum Son<'a, S> {
-    /// Pas de tour ouvert pour ce poste et cet identifiant : le son est jeté.
-    Inconnu,
-    /// Un morceau déjà vu, ou en retard sur ceux qui ont suivi : il est jeté.
-    Ancien,
-    /// Le morceau est pour la session ; `trou` dit ce qui a manqué avant lui.
-    Accepte {
+pub enum Chunk<'a, S> {
+    /// No open turn for this device and this identifier: the audio is thrown away.
+    Unknown,
+    /// A chunk already seen, or late compared with those that followed: it is thrown away.
+    Stale,
+    /// The chunk is for the session; `gap` says what was missing before it.
+    Accepted {
         session: &'a mut S,
-        trou: Option<Trou>,
+        gap: Option<Gap>,
     },
 }
 
-struct Ouvert<S> {
-    tour: IdTour,
-    debut: Quand,
-    prochain_seq: u32,
-    dernier_son: Instant,
+struct Open<S> {
+    turn: TurnId,
+    start: Timestamp,
+    next_seq: u32,
+    last_audio: Instant,
     session: S,
 }
 
-pub struct Postes<S> {
-    ouverts: HashMap<Appareil, Ouvert<S>>,
+pub struct Turns<S> {
+    open: HashMap<Device, Open<S>>,
     silence: Duration,
 }
 
-impl<S> Postes<S> {
+impl<S> Turns<S> {
     pub fn new(silence: Duration) -> Self {
         Self {
-            ouverts: HashMap::new(),
+            open: HashMap::new(),
             silence,
         }
     }
 
-    pub fn nombre_ouverts(&self) -> usize {
-        self.ouverts.len()
+    pub fn open_count(&self) -> usize {
+        self.open.len()
     }
 
-    /// Le poste commence un tour. Le silence se compte à partir de maintenant.
-    pub fn debut(
+    /// The device starts a turn. The silence is counted from now.
+    pub fn start(
         &mut self,
-        poste: &Appareil,
-        tour: IdTour,
-        quand: Quand,
-        maintenant: Instant,
-        creer: impl FnOnce() -> S,
-    ) -> Debut<S> {
-        if self.ouverts.get(poste).is_some_and(|o| o.tour == tour) {
-            return Debut::Doublon;
+        device: &Device,
+        turn: TurnId,
+        at: Timestamp,
+        now: Instant,
+        create: impl FnOnce() -> S,
+    ) -> Opening<S> {
+        if self.open.get(device).is_some_and(|o| o.turn == turn) {
+            return Opening::Duplicate;
         }
-        let remplace = self.fermer(poste, Raison::Remplace);
-        self.ouverts.insert(
-            poste.clone(),
-            Ouvert {
-                tour,
-                debut: quand,
-                prochain_seq: 0,
-                dernier_son: maintenant,
-                session: creer(),
+        let replaced = self.close(device, Reason::Replaced);
+        self.open.insert(
+            device.clone(),
+            Open {
+                turn,
+                start: at,
+                next_seq: 0,
+                last_audio: now,
+                session: create(),
             },
         );
-        Debut::Ouvert { remplace }
+        Opening::Opened { replaced }
     }
 
-    /// Un morceau de son numéroté `seq` pour le tour `tour` du poste.
-    pub fn son(
-        &mut self,
-        poste: &Appareil,
-        tour: IdTour,
-        seq: u32,
-        maintenant: Instant,
-    ) -> Son<'_, S> {
-        let Some(ouvert) = self.ouverts.get_mut(poste).filter(|o| o.tour == tour) else {
-            return Son::Inconnu;
+    /// A chunk of audio numbered `seq` for the turn `turn` of the device.
+    pub fn audio(&mut self, device: &Device, turn: TurnId, seq: u32, now: Instant) -> Chunk<'_, S> {
+        let Some(open) = self.open.get_mut(device).filter(|o| o.turn == turn) else {
+            return Chunk::Unknown;
         };
-        if seq < ouvert.prochain_seq {
-            return Son::Ancien;
+        if seq < open.next_seq {
+            return Chunk::Stale;
         }
-        let trou = (seq > ouvert.prochain_seq).then_some(Trou {
-            attendu: ouvert.prochain_seq,
-            recu: seq,
+        let gap = (seq > open.next_seq).then_some(Gap {
+            expected: open.next_seq,
+            received: seq,
         });
-        ouvert.prochain_seq = seq.saturating_add(1);
-        ouvert.dernier_son = maintenant;
-        Son::Accepte {
-            session: &mut ouvert.session,
-            trou,
+        open.next_seq = seq.saturating_add(1);
+        open.last_audio = now;
+        Chunk::Accepted {
+            session: &mut open.session,
+            gap,
         }
     }
 
-    /// Le second appui. `None` quand ce tour n'est pas (ou plus) ouvert : il a pu être fermé par
-    /// le silence ou remplacé.
-    pub fn fin(&mut self, poste: &Appareil, tour: IdTour) -> Option<Ferme<S>> {
-        if self.ouverts.get(poste)?.tour != tour {
+    /// The second press. `None` when this turn is not (or no longer) open: it may have been closed
+    /// by the silence or replaced.
+    pub fn end(&mut self, device: &Device, turn: TurnId) -> Option<Closed<S>> {
+        if self.open.get(device)?.turn != turn {
             return None;
         }
-        self.fermer(poste, Raison::Fin)
+        self.close(device, Reason::End)
     }
 
-    /// Ferme les tours qui ne reçoivent plus de son depuis assez longtemps.
-    pub fn expirer(&mut self, maintenant: Instant) -> Vec<Ferme<S>> {
-        let perimes: Vec<Appareil> = self
-            .ouverts
+    /// Closes the turns that have received no audio for long enough.
+    pub fn expire(&mut self, now: Instant) -> Vec<Closed<S>> {
+        let expired: Vec<Device> = self
+            .open
             .iter()
-            .filter(|(_, o)| maintenant.saturating_duration_since(o.dernier_son) >= self.silence)
-            .map(|(poste, _)| poste.clone())
+            .filter(|(_, o)| now.saturating_duration_since(o.last_audio) >= self.silence)
+            .map(|(device, _)| device.clone())
             .collect();
-        perimes
+        expired
             .iter()
-            .filter_map(|poste| self.fermer(poste, Raison::Silence))
+            .filter_map(|device| self.close(device, Reason::Silence))
             .collect()
     }
 
-    /// Ferme tout, à l'arrêt du programme.
-    pub fn tout_fermer(&mut self) -> Vec<Ferme<S>> {
-        let postes: Vec<Appareil> = self.ouverts.keys().cloned().collect();
-        postes
+    /// Closes everything, when the program stops.
+    pub fn close_all(&mut self) -> Vec<Closed<S>> {
+        let devices: Vec<Device> = self.open.keys().cloned().collect();
+        devices
             .iter()
-            .filter_map(|poste| self.fermer(poste, Raison::Arret))
+            .filter_map(|device| self.close(device, Reason::Shutdown))
             .collect()
     }
 
-    fn fermer(&mut self, poste: &Appareil, raison: Raison) -> Option<Ferme<S>> {
-        let ouvert = self.ouverts.remove(poste)?;
-        Some(Ferme {
-            poste: poste.clone(),
-            tour: ouvert.tour,
-            debut: ouvert.debut,
-            raison,
-            session: ouvert.session,
+    fn close(&mut self, device: &Device, reason: Reason) -> Option<Closed<S>> {
+        let open = self.open.remove(device)?;
+        Some(Closed {
+            device: device.clone(),
+            turn: open.turn,
+            start: open.start,
+            reason,
+            session: open.session,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use contract::son::SILENCE_QUI_FERME_LE_TOUR;
+    use contract::audio::SILENCE_CLOSES_TURN;
 
     use super::*;
 
-    fn poste(nom: &str) -> Appareil {
-        nom.parse().unwrap()
+    fn device(name: &str) -> Device {
+        name.parse().unwrap()
     }
 
-    fn machine() -> Postes<Vec<u32>> {
-        Postes::new(SILENCE_QUI_FERME_LE_TOUR)
+    fn machine() -> Turns<Vec<u32>> {
+        Turns::new(SILENCE_CLOSES_TURN)
     }
 
-    fn ouvrir(m: &mut Postes<Vec<u32>>, p: &Appareil, t: IdTour, now: Instant) -> Debut<Vec<u32>> {
-        m.debut(p, t, contract::maintenant(), now, Vec::new)
+    fn open(m: &mut Turns<Vec<u32>>, d: &Device, t: TurnId, now: Instant) -> Opening<Vec<u32>> {
+        m.start(d, t, contract::now(), now, Vec::new)
     }
 
-    fn donner(m: &mut Postes<Vec<u32>>, p: &Appareil, t: IdTour, seq: u32, now: Instant) {
-        match m.son(p, t, seq, now) {
-            Son::Accepte { session, .. } => session.push(seq),
-            autre => panic!("son refusé : {autre:?}"),
+    fn feed(m: &mut Turns<Vec<u32>>, d: &Device, t: TurnId, seq: u32, now: Instant) {
+        match m.audio(d, t, seq, now) {
+            Chunk::Accepted { session, .. } => session.push(seq),
+            other => panic!("audio refused: {other:?}"),
         }
     }
 
     #[test]
-    fn un_tour_de_son_a_fin() {
-        let (mut m, p, t, now) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
+    fn a_turn_from_audio_to_end() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
         assert!(matches!(
-            ouvrir(&mut m, &p, t, now),
-            Debut::Ouvert { remplace: None }
+            open(&mut m, &d, t, now),
+            Opening::Opened { replaced: None }
         ));
         for seq in 0..3 {
-            donner(&mut m, &p, t, seq, now);
+            feed(&mut m, &d, t, seq, now);
         }
-        let ferme = m.fin(&p, t).unwrap();
-        assert_eq!((ferme.raison, ferme.tour), (Raison::Fin, t));
-        assert_eq!(ferme.session, vec![0, 1, 2]);
-        assert_eq!(m.nombre_ouverts(), 0);
+        let closed = m.end(&d, t).unwrap();
+        assert_eq!((closed.reason, closed.turn), (Reason::End, t));
+        assert_eq!(closed.session, vec![0, 1, 2]);
+        assert_eq!(m.open_count(), 0);
     }
 
     #[test]
-    fn un_trou_est_signale_et_le_son_continue() {
-        let (mut m, p, t, now) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        ouvrir(&mut m, &p, t, now);
-        donner(&mut m, &p, t, 0, now);
-        match m.son(&p, t, 4, now) {
-            Son::Accepte { trou, .. } => {
+    fn a_gap_is_reported_and_the_audio_goes_on() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, now);
+        feed(&mut m, &d, t, 0, now);
+        match m.audio(&d, t, 4, now) {
+            Chunk::Accepted { gap, .. } => {
                 assert_eq!(
-                    trou,
-                    Some(Trou {
-                        attendu: 1,
-                        recu: 4
+                    gap,
+                    Some(Gap {
+                        expected: 1,
+                        received: 4
                     })
                 );
             }
-            autre => panic!("{autre:?}"),
+            other => panic!("{other:?}"),
         }
-        match m.son(&p, t, 5, now) {
-            Son::Accepte { trou, .. } => assert_eq!(trou, None),
-            autre => panic!("{autre:?}"),
+        match m.audio(&d, t, 5, now) {
+            Chunk::Accepted { gap, .. } => assert_eq!(gap, None),
+            other => panic!("{other:?}"),
         }
     }
 
     #[test]
-    fn un_morceau_repete_ou_en_retard_est_jete() {
-        let (mut m, p, t, now) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        ouvrir(&mut m, &p, t, now);
-        donner(&mut m, &p, t, 0, now);
-        donner(&mut m, &p, t, 3, now);
-        assert!(matches!(m.son(&p, t, 3, now), Son::Ancien));
-        assert!(matches!(m.son(&p, t, 2, now), Son::Ancien));
-        assert_eq!(m.fin(&p, t).unwrap().session, vec![0, 3]);
+    fn a_repeated_or_late_chunk_is_thrown_away() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, now);
+        feed(&mut m, &d, t, 0, now);
+        feed(&mut m, &d, t, 3, now);
+        assert!(matches!(m.audio(&d, t, 3, now), Chunk::Stale));
+        assert!(matches!(m.audio(&d, t, 2, now), Chunk::Stale));
+        assert_eq!(m.end(&d, t).unwrap().session, vec![0, 3]);
     }
 
     #[test]
-    fn le_son_d_un_autre_tour_ou_sans_tour_est_inconnu() {
-        let (mut m, p, t, now) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        assert!(matches!(m.son(&p, t, 0, now), Son::Inconnu));
-        ouvrir(&mut m, &p, t, now);
-        assert!(matches!(m.son(&p, IdTour::nouveau(), 0, now), Son::Inconnu));
-        assert!(matches!(m.son(&poste("salon"), t, 0, now), Son::Inconnu));
-    }
-
-    #[test]
-    fn un_nouveau_debut_ferme_l_ancien_tour_du_poste() {
-        let (mut m, p, now) = (machine(), poste("bureau"), Instant::now());
-        let (premier, second) = (IdTour::nouveau(), IdTour::nouveau());
-        ouvrir(&mut m, &p, premier, now);
-        donner(&mut m, &p, premier, 0, now);
-        let Debut::Ouvert { remplace } = ouvrir(&mut m, &p, second, now) else {
-            panic!("le second tour devait s'ouvrir");
-        };
-        let ferme = remplace.expect("l'ancien tour est fermé");
-        assert_eq!((ferme.raison, ferme.tour), (Raison::Remplace, premier));
-        assert_eq!(ferme.session, vec![0]);
-        // La numérotation repart à 0 pour le nouveau tour ; l'ancien n'écoute plus.
-        assert!(matches!(m.son(&p, premier, 1, now), Son::Inconnu));
-        donner(&mut m, &p, second, 0, now);
-        // La fin de l'ancien tour, arrivée en retard, ne ferme pas le nouveau.
-        assert!(m.fin(&p, premier).is_none());
-        assert_eq!(m.nombre_ouverts(), 1);
-    }
-
-    #[test]
-    fn un_debut_repete_ne_change_rien() {
-        let (mut m, p, t, now) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        ouvrir(&mut m, &p, t, now);
-        donner(&mut m, &p, t, 0, now);
-        assert!(matches!(ouvrir(&mut m, &p, t, now), Debut::Doublon));
-        assert_eq!(m.fin(&p, t).unwrap().session, vec![0]);
-    }
-
-    #[test]
-    fn deux_postes_ont_chacun_leur_tour() {
-        let (mut m, now) = (machine(), Instant::now());
-        let (bureau, salon) = (poste("bureau"), poste("salon"));
-        let (t1, t2) = (IdTour::nouveau(), IdTour::nouveau());
-        ouvrir(&mut m, &bureau, t1, now);
+    fn the_audio_of_another_turn_or_without_a_turn_is_unknown() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
+        assert!(matches!(m.audio(&d, t, 0, now), Chunk::Unknown));
+        open(&mut m, &d, t, now);
+        assert!(matches!(m.audio(&d, TurnId::new(), 0, now), Chunk::Unknown));
         assert!(matches!(
-            ouvrir(&mut m, &salon, t2, now),
-            Debut::Ouvert { remplace: None }
+            m.audio(&device("living"), t, 0, now),
+            Chunk::Unknown
         ));
-        donner(&mut m, &bureau, t1, 0, now);
-        donner(&mut m, &salon, t2, 0, now);
-        assert_eq!(m.fin(&salon, t2).unwrap().poste, salon);
-        assert_eq!(m.nombre_ouverts(), 1);
     }
 
     #[test]
-    fn un_tour_sans_son_depuis_trois_secondes_se_ferme() {
-        let (mut m, p, t, debut) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        ouvrir(&mut m, &p, t, debut);
-        donner(&mut m, &p, t, 0, debut);
-        let dernier = debut + Duration::from_secs(5);
-        donner(&mut m, &p, t, 1, dernier);
-        assert!(m.expirer(dernier + Duration::from_millis(2_999)).is_empty());
-        let fermes = m.expirer(dernier + SILENCE_QUI_FERME_LE_TOUR);
-        assert_eq!(fermes.len(), 1);
-        assert_eq!((fermes[0].raison, fermes[0].tour), (Raison::Silence, t));
-        assert_eq!(fermes[0].session, vec![0, 1]);
-        // Fermé : une fin tardive, ou le son qui reprendrait, ne rouvrent rien.
-        assert!(m.fin(&p, t).is_none());
-        assert!(matches!(m.son(&p, t, 2, dernier), Son::Inconnu));
+    fn a_new_start_closes_the_old_turn_of_the_device() {
+        let (mut m, d, now) = (machine(), device("office"), Instant::now());
+        let (first, second) = (TurnId::new(), TurnId::new());
+        open(&mut m, &d, first, now);
+        feed(&mut m, &d, first, 0, now);
+        let Opening::Opened { replaced } = open(&mut m, &d, second, now) else {
+            panic!("the second turn should open");
+        };
+        let closed = replaced.expect("the old turn is closed");
+        assert_eq!((closed.reason, closed.turn), (Reason::Replaced, first));
+        assert_eq!(closed.session, vec![0]);
+        // The numbering restarts at 0 for the new turn; the old one no longer listens.
+        assert!(matches!(m.audio(&d, first, 1, now), Chunk::Unknown));
+        feed(&mut m, &d, second, 0, now);
+        // The end of the old turn, arriving late, does not close the new one.
+        assert!(m.end(&d, first).is_none());
+        assert_eq!(m.open_count(), 1);
     }
 
     #[test]
-    fn un_tour_qui_n_a_jamais_eu_de_son_expire_aussi() {
-        let (mut m, p, t, debut) = (
-            machine(),
-            poste("bureau"),
-            IdTour::nouveau(),
-            Instant::now(),
-        );
-        ouvrir(&mut m, &p, t, debut);
-        assert!(m.expirer(debut + Duration::from_secs(1)).is_empty());
-        assert_eq!(m.expirer(debut + Duration::from_secs(3)).len(), 1);
+    fn a_repeated_start_changes_nothing() {
+        let (mut m, d, t, now) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, now);
+        feed(&mut m, &d, t, 0, now);
+        assert!(matches!(open(&mut m, &d, t, now), Opening::Duplicate));
+        assert_eq!(m.end(&d, t).unwrap().session, vec![0]);
     }
 
     #[test]
-    fn l_arret_ferme_tout() {
+    fn two_devices_each_have_their_own_turn() {
         let (mut m, now) = (machine(), Instant::now());
-        ouvrir(&mut m, &poste("bureau"), IdTour::nouveau(), now);
-        ouvrir(&mut m, &poste("salon"), IdTour::nouveau(), now);
-        let fermes = m.tout_fermer();
-        assert_eq!(fermes.len(), 2);
-        assert!(fermes.iter().all(|f| f.raison == Raison::Arret));
-        assert_eq!(m.nombre_ouverts(), 0);
+        let (office, living) = (device("office"), device("living"));
+        let (t1, t2) = (TurnId::new(), TurnId::new());
+        open(&mut m, &office, t1, now);
+        assert!(matches!(
+            open(&mut m, &living, t2, now),
+            Opening::Opened { replaced: None }
+        ));
+        feed(&mut m, &office, t1, 0, now);
+        feed(&mut m, &living, t2, 0, now);
+        assert_eq!(m.end(&living, t2).unwrap().device, living);
+        assert_eq!(m.open_count(), 1);
+    }
+
+    #[test]
+    fn a_turn_without_audio_for_three_seconds_closes() {
+        let (mut m, d, t, start) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, start);
+        feed(&mut m, &d, t, 0, start);
+        let last = start + Duration::from_secs(5);
+        feed(&mut m, &d, t, 1, last);
+        assert!(m.expire(last + Duration::from_millis(2_999)).is_empty());
+        let closed = m.expire(last + SILENCE_CLOSES_TURN);
+        assert_eq!(closed.len(), 1);
+        assert_eq!((closed[0].reason, closed[0].turn), (Reason::Silence, t));
+        assert_eq!(closed[0].session, vec![0, 1]);
+        // Closed: a late end, or audio that would resume, reopen nothing.
+        assert!(m.end(&d, t).is_none());
+        assert!(matches!(m.audio(&d, t, 2, last), Chunk::Unknown));
+    }
+
+    #[test]
+    fn a_turn_that_never_had_audio_expires_too() {
+        let (mut m, d, t, start) = (machine(), device("office"), TurnId::new(), Instant::now());
+        open(&mut m, &d, t, start);
+        assert!(m.expire(start + Duration::from_secs(1)).is_empty());
+        assert_eq!(m.expire(start + Duration::from_secs(3)).len(), 1);
+    }
+
+    #[test]
+    fn shutdown_closes_everything() {
+        let (mut m, now) = (machine(), Instant::now());
+        open(&mut m, &device("office"), TurnId::new(), now);
+        open(&mut m, &device("living"), TurnId::new(), now);
+        let closed = m.close_all();
+        assert_eq!(closed.len(), 2);
+        assert!(closed.iter().all(|c| c.reason == Reason::Shutdown));
+        assert_eq!(m.open_count(), 0);
     }
 }

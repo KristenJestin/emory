@@ -1,9 +1,9 @@
-//! Les moteurs, par sherpa-onnx : Silero VAD pour découper les phrases, Parakeet TDT 0.6B v3 int8
-//! pour les transcrire.
+//! The engines, through sherpa-onnx: Silero VAD to cut the sentences, Parakeet TDT 0.6B v3 int8
+//! to transcribe them.
 //!
-//! Le détecteur est léger (12 ms de calcul par seconde de son au banc) : il tourne là où le son
-//! arrive. La transcription est lourde : un fil à elle (voir [`Transcripteur`]), une phrase à la
-//! fois, loin de l'exécuteur asynchrone.
+//! The detector is light (12 ms of compute per second of audio on the bench): it runs where the
+//! audio arrives. The transcription is heavy: a thread of its own (see [`Transcriber`]), one
+//! sentence at a time, away from the async executor.
 
 use std::{
     path::Path,
@@ -19,67 +19,67 @@ use sherpa_onnx::{
 use tokio::sync::oneshot;
 use tracing::{debug, error};
 
-use crate::config::{ConfigModeles, ConfigTranscription, ConfigVad};
+use crate::config::{ModelsConfig, TranscriptionConfig, VadConfig};
 
-const FREQUENCE: i32 = 16_000;
+const SAMPLE_RATE: i32 = 16_000;
 
-/// Une phrase que le VAD a fermée.
+/// A sentence that the VAD has closed.
 pub struct Segment {
-    /// L'échantillon, depuis le début du tour, où la phrase commence.
-    pub debut: u64,
-    pub echantillons: Vec<f32>,
+    /// The sample, counted from the start of the turn, where the sentence begins.
+    pub start: u64,
+    pub samples: Vec<f32>,
 }
 
 impl Segment {
-    pub fn duree(&self) -> Duration {
-        Duration::from_secs_f64(self.echantillons.len() as f64 / FREQUENCE as f64)
+    pub fn duration(&self) -> Duration {
+        Duration::from_secs_f64(self.samples.len() as f64 / SAMPLE_RATE as f64)
     }
 }
 
-/// Silero VAD pour un tour : il reçoit le son au fil de l'eau et rend les phrases fermées.
-pub struct Detecteur {
+/// Silero VAD for one turn: it receives the audio as it flows and returns the closed sentences.
+pub struct Detector {
     vad: VoiceActivityDetector,
 }
 
-impl Detecteur {
-    pub fn nouveau(modele: &Path, reglages: &ConfigVad) -> Result<Self> {
+impl Detector {
+    pub fn new(model: &Path, settings: &VadConfig) -> Result<Self> {
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
-                model: Some(chemin(modele)?),
-                threshold: reglages.seuil,
-                min_silence_duration: reglages.silence_min,
-                min_speech_duration: reglages.parole_min,
+                model: Some(path_string(model)?),
+                threshold: settings.threshold,
+                min_silence_duration: settings.min_silence,
+                min_speech_duration: settings.min_speech,
                 window_size: 512,
-                max_speech_duration: reglages.parole_max,
+                max_speech_duration: settings.max_speech,
             },
-            sample_rate: FREQUENCE,
+            sample_rate: SAMPLE_RATE,
             num_threads: 1,
             provider: Some("cpu".to_owned()),
             ..VadModelConfig::default()
         };
         let vad = VoiceActivityDetector::create(&config, 30.0)
-            .ok_or_else(|| anyhow!("Silero VAD n'a pas démarré ({})", modele.display()))?;
+            .ok_or_else(|| anyhow!("Silero VAD did not start ({})", model.display()))?;
         Ok(Self { vad })
     }
 
-    /// Donne du son au détecteur ; rend les phrases qu'il vient de fermer.
-    pub fn alimenter(&mut self, echantillons: &[f32]) -> Vec<Segment> {
-        self.vad.accept_waveform(echantillons);
-        self.recolter()
+    /// Feeds audio to the detector; returns the sentences it has just closed.
+    pub fn feed(&mut self, samples: &[f32]) -> Vec<Segment> {
+        self.vad.accept_waveform(samples);
+        self.collect()
     }
 
-    /// La fin du tour : la phrase en cours, si elle dure, est fermée de force.
-    pub fn vider(&mut self) -> Vec<Segment> {
+    /// The end of the turn: the sentence in progress, if it lasts, is closed by force.
+    pub fn flush(&mut self) -> Vec<Segment> {
         self.vad.flush();
-        self.recolter()
+        self.collect()
     }
 
-    fn recolter(&mut self) -> Vec<Segment> {
+    fn collect(&mut self) -> Vec<Segment> {
         let mut segments = Vec::new();
         while let Some(segment) = self.vad.front() {
             segments.push(Segment {
-                debut: segment.start().max(0) as u64,
-                echantillons: segment.samples().to_vec(),
+                start: segment.start().max(0) as u64,
+                samples: segment.samples().to_vec(),
             });
             self.vad.pop();
         }
@@ -87,41 +87,41 @@ impl Detecteur {
     }
 }
 
-/// Ce que rend une transcription.
+/// What a transcription returns.
 #[derive(Debug)]
 pub struct Transcription {
-    pub texte: String,
-    /// Le temps de calcul.
-    pub duree: Duration,
-    /// Le temps passé à attendre son tour avant le calcul.
-    pub attente: Duration,
+    pub text: String,
+    /// The compute time.
+    pub duration: Duration,
+    /// The time spent waiting for its turn before the compute.
+    pub wait: Duration,
 }
 
-struct Travail {
-    echantillons: Vec<f32>,
-    depose: Instant,
-    reponse: oneshot::Sender<Result<Transcription, String>>,
+struct Job {
+    samples: Vec<f32>,
+    queued: Instant,
+    reply: oneshot::Sender<Result<Transcription, String>>,
 }
 
-/// Parakeet sur un fil à lui : les phrases passent une à une, dans l'ordre où elles arrivent.
+/// Parakeet on a thread of its own: the sentences pass one by one, in the order they arrive.
 #[derive(Clone)]
-pub struct Transcripteur {
-    envoi: mpsc::Sender<Travail>,
+pub struct Transcriber {
+    send: mpsc::Sender<Job>,
 }
 
-impl Transcripteur {
-    /// Charge Parakeet, le chauffe sur une seconde de silence, puis lance le fil.
-    pub fn demarrer(modeles: &ConfigModeles, reglages: &ConfigTranscription) -> Result<Self> {
-        let dossier = modeles.parakeet.as_ref();
+impl Transcriber {
+    /// Loads Parakeet, warms it up on a second of silence, then starts the thread.
+    pub fn start(models: &ModelsConfig, settings: &TranscriptionConfig) -> Result<Self> {
+        let folder = models.parakeet.as_ref();
         let config = OfflineRecognizerConfig {
             model_config: OfflineModelConfig {
                 transducer: OfflineTransducerModelConfig {
-                    encoder: Some(chemin(&dossier.join("encoder.int8.onnx"))?),
-                    decoder: Some(chemin(&dossier.join("decoder.int8.onnx"))?),
-                    joiner: Some(chemin(&dossier.join("joiner.int8.onnx"))?),
+                    encoder: Some(path_string(&folder.join("encoder.int8.onnx"))?),
+                    decoder: Some(path_string(&folder.join("decoder.int8.onnx"))?),
+                    joiner: Some(path_string(&folder.join("joiner.int8.onnx"))?),
                 },
-                tokens: Some(chemin(&dossier.join("tokens.txt"))?),
-                num_threads: reglages.fils.max(1),
+                tokens: Some(path_string(&folder.join("tokens.txt"))?),
+                num_threads: settings.threads.max(1),
                 provider: Some("cpu".to_owned()),
                 model_type: Some("nemo_transducer".to_owned()),
                 ..OfflineModelConfig::default()
@@ -129,79 +129,78 @@ impl Transcripteur {
             decoding_method: Some("greedy_search".to_owned()),
             ..OfflineRecognizerConfig::default()
         };
-        let debut = Instant::now();
-        let reconnaisseur = OfflineRecognizer::create(&config)
-            .ok_or_else(|| anyhow!("Parakeet n'a pas démarré ({})", dossier.display()))?;
-        let charge = debut.elapsed();
-        let chauffe = Instant::now();
-        transcrire(&reconnaisseur, &vec![0.0; FREQUENCE as usize])?;
+        let started = Instant::now();
+        let recognizer = OfflineRecognizer::create(&config)
+            .ok_or_else(|| anyhow!("Parakeet did not start ({})", folder.display()))?;
+        let load = started.elapsed();
+        let warm_up = Instant::now();
+        transcribe(&recognizer, &vec![0.0; SAMPLE_RATE as usize])?;
         tracing::info!(
-            fils = reglages.fils,
-            chargement_ms = charge.as_millis() as u64,
-            chauffe_ms = chauffe.elapsed().as_millis() as u64,
-            "Parakeet prêt"
+            threads = settings.threads,
+            load_ms = load.as_millis() as u64,
+            warm_up_ms = warm_up.elapsed().as_millis() as u64,
+            "Parakeet ready"
         );
 
-        let (envoi, reception) = mpsc::channel::<Travail>();
+        let (send, receive) = mpsc::channel::<Job>();
         std::thread::Builder::new()
             .name("transcription".to_owned())
             .spawn(move || {
-                for travail in reception {
-                    let attente = travail.depose.elapsed();
-                    let debut = Instant::now();
-                    let resultat = transcrire(&reconnaisseur, &travail.echantillons)
-                        .map(|texte| Transcription {
-                            texte,
-                            duree: debut.elapsed(),
-                            attente,
+                for job in receive {
+                    let wait = job.queued.elapsed();
+                    let started = Instant::now();
+                    let result = transcribe(&recognizer, &job.samples)
+                        .map(|text| Transcription {
+                            text,
+                            duration: started.elapsed(),
+                            wait,
                         })
                         .map_err(|e| format!("{e:#}"));
-                    if travail.reponse.send(resultat).is_err() {
-                        debug!("transcription terminée, mais plus personne ne l'attend");
+                    if job.reply.send(result).is_err() {
+                        debug!("transcription done, but nobody is waiting for it any more");
                     }
                 }
             })
-            .context("fil de transcription")?;
-        Ok(Self { envoi })
+            .context("transcription thread")?;
+        Ok(Self { send })
     }
 
-    /// Dépose une phrase ; la réponse arrive quand son tour est venu.
-    pub fn transcrire(
+    /// Queues a sentence; the reply arrives when its turn has come.
+    pub fn transcribe(
         &self,
-        echantillons: Vec<f32>,
+        samples: Vec<f32>,
     ) -> oneshot::Receiver<Result<Transcription, String>> {
-        let (reponse, attente) = oneshot::channel();
-        let travail = Travail {
-            echantillons,
-            depose: Instant::now(),
-            reponse,
+        let (reply, wait) = oneshot::channel();
+        let job = Job {
+            samples,
+            queued: Instant::now(),
+            reply,
         };
-        if self.envoi.send(travail).is_err() {
-            error!("le fil de transcription s'est arrêté");
+        if self.send.send(job).is_err() {
+            error!("the transcription thread has stopped");
         }
-        attente
+        wait
     }
 }
 
-fn transcrire(reconnaisseur: &OfflineRecognizer, echantillons: &[f32]) -> Result<String> {
-    let flux = reconnaisseur.create_stream();
-    flux.accept_waveform(FREQUENCE, echantillons);
-    reconnaisseur.decode(&flux);
-    let resultat = flux
+fn transcribe(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String> {
+    let stream = recognizer.create_stream();
+    stream.accept_waveform(SAMPLE_RATE, samples);
+    recognizer.decode(&stream);
+    let result = stream
         .get_result()
-        .ok_or_else(|| anyhow!("Parakeet n'a rien rendu"))?;
-    Ok(resultat.text.trim().to_owned())
+        .ok_or_else(|| anyhow!("Parakeet returned nothing"))?;
+    Ok(result.text.trim().to_owned())
 }
 
-fn chemin(chemin: &Path) -> Result<String> {
-    if !chemin.exists() {
+fn path_string(path: &Path) -> Result<String> {
+    if !path.exists() {
         anyhow::bail!(
-            "{} n'existe pas (voir scripts/telecharger-modeles.sh)",
-            chemin.display()
+            "{} does not exist (see scripts/download-models.sh)",
+            path.display()
         );
     }
-    chemin
-        .to_str()
+    path.to_str()
         .map(str::to_owned)
-        .with_context(|| format!("chemin non UTF-8 : {}", chemin.display()))
+        .with_context(|| format!("path is not UTF-8: {}", path.display()))
 }
