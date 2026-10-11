@@ -15,6 +15,8 @@ l'esprit. Sa mémoire à long terme n'y est pas : c'est Hippocampe, un projet à
 | **Les mains** | ce qu'Emory fait dans le monde (appareils, services) | [`mains.md`](mains.md) (brouillon) |
 | **L'esprit** | reçoit les événements des organes, décide, lit et écrit dans Hippocampe, répond | [`esprit.md`](esprit.md) (brouillon) |
 
+Les sujets du bus et le format des messages : [`contrat.md`](contrat.md).
+
 ## Sur chaque appareil : le poste et la main
 
 **Toute l'intelligence vit sur le serveur ; un appareil ne fait que recevoir, envoyer et
@@ -91,7 +93,7 @@ Un échange, avec l'oreille à bouton :
 ```
 
 Un appui pendant qu'Emory parle : le poste coupe le son de lui-même, `esprit` arrête le LLM et
-envoie `bouche.stop`. Les noms des sujets et le format de chaque message sont dans `contrat/`,
+envoie `bouche.stop`. Les noms des sujets et le format de chaque message sont dans `contrat/` ([`contrat.md`](contrat.md)),
 la seule chose que les programmes partagent.
 
 **Nos programmes sont en Rust** : `poste`, `main`, `oreilles`, `esprit`, `bouche`. Pas de Python dans notre code.
