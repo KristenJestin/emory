@@ -1,193 +1,197 @@
-//! Les messages en JSON. Les champs facultatifs ont une valeur par défaut, pour qu'un message
-//! d'une version plus ancienne se lise encore.
+//! The JSON messages. Optional fields have a default value, so that a message from an older
+//! version can still be read.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Appareil, IdTour, Quand};
+use crate::{Device, Timestamp, TurnId};
 
-/// Le début ou la fin de quelque chose : un appui, la parole d'Emory.
+/// The start or the end of something: a button press, Emory's speech.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Etat {
-    Debut,
-    Fin,
+pub enum State {
+    Start,
+    End,
 }
 
-/// Un appui sur le bouton d'un poste (`poste.<nom>.bouton`). Le son du tour part entre le début
-/// et la fin.
+/// A press on the button of an ear (`ear.<name>.button`). The audio of the turn goes between the
+/// start and the end.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Bouton {
-    pub tour: IdTour,
-    pub etat: Etat,
-    pub quand: Quand,
+pub struct Button {
+    pub turn: TurnId,
+    pub state: State,
+    pub at: Timestamp,
 }
 
-/// Une phrase fermée par le VAD et transcrite pendant que Kris parle (`oreilles.phrase`).
+/// A sentence closed by the VAD and transcribed while Kris is speaking (`hearing.sentence`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Phrase {
-    pub tour: IdTour,
-    pub poste: Appareil,
-    /// Le numéro de la phrase dans le tour, à partir de 0.
-    pub numero: u32,
-    pub texte: String,
-    pub debut: Quand,
-    pub fin: Quand,
+pub struct Sentence {
+    pub turn: TurnId,
+    pub device: Device,
+    /// The number of the sentence in the turn, starting at 0.
+    pub index: u32,
+    pub text: String,
+    pub start: Timestamp,
+    pub end: Timestamp,
 }
 
-/// Le tour entier, transcrit au second appui (`oreilles.tour`). `texte` est vide quand rien n'a
-/// été entendu : l'esprit sait quand même que le tour est fini.
+/// The whole turn, transcribed at the second press (`hearing.turn`). `text` is empty when nothing
+/// was heard: the mind still knows that the turn is over.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Tour {
-    pub tour: IdTour,
-    pub poste: Appareil,
-    pub debut: Quand,
-    pub fin: Quand,
-    pub texte: String,
-    pub reveil: Reveil,
-    /// `None` tant que les voix ne sont pas reconnues.
+pub struct Turn {
+    pub turn: TurnId,
+    pub device: Device,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    pub text: String,
+    pub wake: Wake,
+    /// `None` as long as the voices are not recognised.
     #[serde(default)]
-    pub locuteur: Option<Locuteur>,
+    pub speaker: Option<Speaker>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confiance_transcription: Option<f32>,
-    /// Les phrases de la mémoire tampon des oreilles, quand l'esprit les demande.
+    pub transcription_confidence: Option<f32>,
+    /// The sentences of the hearing buffer, when the mind asks for them.
     #[serde(default)]
-    pub contexte: Vec<PhraseDeContexte>,
+    pub context: Vec<ContextSentence>,
 }
 
-/// Ce qui a réveillé Emory.
+/// What woke Emory up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Reveil {
-    /// L'oreille à bouton.
-    Bouton,
-    /// Le mot de réveil.
-    Mot,
-    /// Dans la fenêtre de suite.
-    Suite,
+pub enum Wake {
+    /// The button ear.
+    Button,
+    /// The wake word.
+    Word,
+    /// Within the follow-up window.
+    FollowUp,
 }
 
-/// Qui a parlé, quand les voix sont reconnues.
+/// Who spoke, when the voices are recognised.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Locuteur {
-    /// L'étiquette stable de l'empreinte (`kris`, `voix-7`).
-    pub voix: String,
-    /// Le slug de la personne dans Hippocampe, quand la voix a un nom.
+pub struct Speaker {
+    /// The stable label of the voiceprint (`kris`, `voix-7`).
+    pub voice: String,
+    /// The slug of the person in Hippocampe, when the voice has a name.
     #[serde(default)]
-    pub personne: Option<String>,
-    pub origine: Origine,
-    pub confiance: f32,
+    pub person: Option<String>,
+    pub origin: Origin,
+    pub confidence: f32,
 }
 
-/// D'où vient le nom d'une voix.
+/// Where the name of a voice comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Origine {
-    /// Kris a donné le nom.
-    Connue,
-    /// Le système l'a déduit : ce que l'esprit en écrit est marqué `inferred`.
-    Supposee,
+pub enum Origin {
+    /// Kris gave the name.
+    Known,
+    /// The system deduced it: what the mind writes about it is marked `inferred`.
+    Inferred,
 }
 
-/// Une phrase entendue avant le tour.
+/// A sentence heard before the turn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PhraseDeContexte {
-    pub debut: Quand,
-    pub voix: String,
+pub struct ContextSentence {
+    pub start: Timestamp,
+    pub voice: String,
     #[serde(default)]
-    pub personne: Option<String>,
-    pub texte: String,
+    pub person: Option<String>,
+    pub text: String,
 }
 
-/// Une phrase de la réponse à dire sur un poste (`bouche.dire`), numérotée dans le tour ; la
-/// bouche les dit dans l'ordre.
+/// A sentence of the answer to say on a device (`voice.say`), numbered in the turn; the voice
+/// says them in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Dire {
-    pub tour: IdTour,
-    pub poste: Appareil,
-    pub numero: u32,
-    pub texte: String,
+pub struct Say {
+    pub turn: TurnId,
+    pub device: Device,
+    pub index: u32,
+    pub text: String,
+    /// `true` on the last sentence of the answer: the voice then knows that nothing more comes.
+    #[serde(default)]
+    pub last: bool,
 }
 
-/// Jette tout ce que la bouche n'a pas encore dit pour ce tour (`bouche.stop`).
+/// Throws away everything the voice has not said yet for this turn (`voice.stop`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stop {
-    pub tour: IdTour,
-    pub poste: Appareil,
+    pub turn: TurnId,
+    pub device: Device,
 }
 
-/// La bouche commence ou finit de parler sur un appareil (`bouche.<nom>.parle`) : la main de
-/// l'appareil baisse la musique, puis la remonte.
+/// The voice starts or finishes speaking on a device (`voice.<name>.speaking`): the hands of the
+/// device lower the music, then raise it again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Parle {
-    pub etat: Etat,
+pub struct Speaking {
+    pub state: State,
 }
 
-/// Ce qu'un poste ou une main sait faire (`poste.<nom>.annonce`, `main.<nom>.annonce`), publié au
-/// démarrage et en réponse à `annonces.demande`.
+/// What an ear, a mouth or some hands can do (`ear.<name>.announce`, `mouth.<name>.announce`,
+/// `hands.<name>.announce`), published at start-up and in answer to `announce.request`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Annonce {
-    pub appareil: Appareil,
-    pub programme: Programme,
+pub struct Announce {
+    pub device: Device,
+    pub program: Program,
     pub version: String,
     pub modules: Vec<String>,
-    /// Les actions d'une main ; un poste n'en a pas.
+    /// The actions of some hands; an ear or a mouth has none.
     #[serde(default)]
     pub actions: Vec<Action>,
 }
 
-/// Le programme qui s'annonce.
+/// The program that announces itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Programme {
-    Poste,
-    Main,
+pub enum Program {
+    Ear,
+    Mouth,
+    Hands,
 }
 
-/// Une action d'une main, dont l'esprit fait un outil du LLM.
+/// An action of some hands, which the mind turns into a tool of the LLM.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Action {
-    /// `mpris.pause` : le sujet est `main.<nom>.mpris.pause`.
-    pub nom: String,
+    /// `mpris.pause`: the subject is `hands.<name>.mpris.pause`.
+    pub name: String,
     pub description: String,
-    /// Le schéma JSON des arguments.
+    /// The JSON schema of the arguments.
     pub arguments: Value,
 }
 
-/// La réponse d'une main à une action : `ok` avec un résultat, ou une erreur.
+/// The answer of some hands to an action: `ok` with a result, or an error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ReponseAction {
+pub struct ActionReply {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resultat: Option<Value>,
+    pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub erreur: Option<String>,
+    pub error: Option<String>,
 }
 
-impl ReponseAction {
-    pub fn reussie(resultat: Value) -> Self {
+impl ActionReply {
+    pub fn success(result: Value) -> Self {
         Self {
             ok: true,
-            resultat: Some(resultat),
-            erreur: None,
+            result: Some(result),
+            error: None,
         }
     }
 
-    pub fn ratee(erreur: impl Into<String>) -> Self {
+    pub fn failure(error: impl Into<String>) -> Self {
         Self {
             ok: false,
-            resultat: None,
-            erreur: Some(erreur.into()),
+            result: None,
+            error: Some(error.into()),
         }
     }
 
-    pub fn en_result(self) -> Result<Value, String> {
+    pub fn into_result(self) -> Result<Value, String> {
         if self.ok {
-            Ok(self.resultat.unwrap_or(Value::Null))
+            Ok(self.result.unwrap_or(Value::Null))
         } else {
             Err(self
-                .erreur
-                .unwrap_or_else(|| "erreur sans message".to_owned()))
+                .error
+                .unwrap_or_else(|| "error without a message".to_owned()))
         }
     }
 }

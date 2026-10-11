@@ -1,152 +1,180 @@
-//! Les exemples de `specs/contract.md` se lisent et se réécrivent à l'identique.
+//! The examples of `specs/contract.md` are read and written back identically.
 
-use contract::{son, sujets, *};
+use contract::{audio, subjects, *};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-fn aller_retour<T: Serialize + DeserializeOwned>(exemple: Value) -> T {
-    let message: T = serde_json::from_value(exemple.clone()).expect("le message se lit");
+fn round_trip<T: Serialize + DeserializeOwned>(example: Value) -> T {
+    let message: T = serde_json::from_value(example.clone()).expect("the message reads");
     assert_eq!(
         serde_json::to_value(&message).unwrap(),
-        exemple,
-        "le message se réécrit à l'identique"
+        example,
+        "the message is written back identically"
     );
     message
 }
 
-const TOUR: &str = "01K7A3C2Z9W8V6T5S4R3Q2P1N0";
-const QUAND: &str = "2026-10-11T21:14:03.120+02:00";
+const TURN: &str = "01K7A3C2Z9W8V6T5S4R3Q2P1N0";
+const AT: &str = "2026-10-11T21:14:03.120+02:00";
 
 #[test]
-fn bouton() {
-    let b: Bouton = aller_retour(json!({ "tour": TOUR, "etat": "debut", "quand": QUAND }));
-    assert_eq!(b.etat, Etat::Debut);
-    assert_eq!(b.tour.to_string(), TOUR);
+fn button() {
+    let b: Button = round_trip(json!({ "turn": TURN, "state": "start", "at": AT }));
+    assert_eq!(b.state, State::Start);
+    assert_eq!(b.turn.to_string(), TURN);
 }
 
 #[test]
-fn phrase() {
-    aller_retour::<Phrase>(json!({
-        "tour": TOUR, "poste": "bureau", "numero": 0, "texte": "on en est où sur emory",
-        "debut": QUAND, "fin": QUAND
+fn sentence() {
+    round_trip::<Sentence>(json!({
+        "turn": TURN, "device": "office", "index": 0, "text": "on en est où sur emory",
+        "start": AT, "end": AT
     }));
 }
 
 #[test]
-fn tour_de_la_version_1() {
-    let t: Tour = aller_retour(json!({
-        "tour": TOUR, "poste": "bureau", "debut": QUAND, "fin": QUAND,
-        "texte": "on en est où sur emory et les oreilles", "reveil": "bouton",
-        "locuteur": null, "contexte": []
+fn turn_of_version_1() {
+    let t: Turn = round_trip(json!({
+        "turn": TURN, "device": "office", "start": AT, "end": AT,
+        "text": "on en est où sur emory et les oreilles", "wake": "button",
+        "speaker": null, "context": []
     }));
-    assert!(t.locuteur.is_none());
+    assert!(t.speaker.is_none());
 }
 
 #[test]
-fn tour_complet_de_oreilles_md() {
-    aller_retour::<Tour>(json!({
-        "tour": TOUR, "poste": "bureau", "debut": QUAND, "fin": QUAND,
-        "texte": "Emory, rappelle-moi ce qu'on avait décidé pour la musique",
-        "reveil": "mot",
-        "locuteur": { "voix": "kris", "personne": "kris", "origine": "connue", "confiance": 0.5 },
-        "confiance_transcription": 0.25,
-        "contexte": [{ "debut": QUAND, "voix": "voix-7", "personne": null, "texte": "…" }]
+fn full_turn_of_hearing_md() {
+    round_trip::<Turn>(json!({
+        "turn": TURN, "device": "office", "start": AT, "end": AT,
+        "text": "Emory, rappelle-moi ce qu'on avait décidé pour la musique",
+        "wake": "word",
+        "speaker": { "voice": "kris", "person": "kris", "origin": "known", "confidence": 0.5 },
+        "transcription_confidence": 0.25,
+        "context": [{ "start": AT, "voice": "voix-7", "person": null, "text": "…" }]
     }));
 }
 
 #[test]
-fn un_champ_inconnu_est_ignore_et_un_champ_absent_prend_sa_valeur_par_defaut() {
-    let t: Tour = serde_json::from_value(json!({
-        "tour": TOUR, "poste": "bureau", "debut": QUAND, "fin": QUAND, "texte": "",
-        "reveil": "bouton", "champ_de_demain": 3
+fn an_unknown_field_is_ignored_and_a_missing_field_takes_its_default() {
+    let t: Turn = serde_json::from_value(json!({
+        "turn": TURN, "device": "office", "start": AT, "end": AT, "text": "",
+        "wake": "button", "field_of_tomorrow": 3
     }))
     .unwrap();
-    assert!(t.locuteur.is_none() && t.contexte.is_empty());
+    assert!(t.speaker.is_none() && t.context.is_empty());
 }
 
 #[test]
-fn dire_stop_parle() {
-    aller_retour::<Dire>(
-        json!({ "tour": TOUR, "poste": "bureau", "numero": 0, "texte": "Les oreilles sont spécifiées." }),
-    );
-    aller_retour::<Stop>(json!({ "tour": TOUR, "poste": "bureau" }));
-    aller_retour::<Parle>(json!({ "etat": "fin" }));
-}
-
-#[test]
-fn annonces() {
-    aller_retour::<Annonce>(json!({
-        "appareil": "bureau", "programme": "main", "version": "0.1.0", "modules": ["mpris"],
-        "actions": [{ "nom": "mpris.pause", "description": "Met la musique en pause.", "arguments": {} }]
+fn say_stop_speaking() {
+    round_trip::<Say>(json!({
+        "turn": TURN, "device": "office", "index": 0, "text": "Les oreilles sont spécifiées.",
+        "last": false
     }));
-    let poste: Annonce = serde_json::from_value(json!({
-        "appareil": "bureau", "programme": "poste", "version": "0.1.0", "modules": ["micro", "haut-parleur"]
+    round_trip::<Say>(json!({
+        "turn": TURN, "device": "office", "index": 1, "text": "Et la bouche aussi.", "last": true
+    }));
+    round_trip::<Stop>(json!({ "turn": TURN, "device": "office" }));
+    round_trip::<Speaking>(json!({ "state": "end" }));
+}
+
+#[test]
+fn say_without_last_is_not_the_last() {
+    let say: Say = serde_json::from_value(json!({
+        "turn": TURN, "device": "office", "index": 0, "text": "Bonjour."
     }))
     .unwrap();
-    assert!(poste.actions.is_empty());
+    assert!(!say.last);
 }
 
 #[test]
-fn reponses_d_action() {
-    let ok: ReponseAction = aller_retour(
-        json!({ "ok": true, "resultat": { "titre": "One More Time", "artiste": "Daft Punk" } }),
+fn announces() {
+    round_trip::<Announce>(json!({
+        "device": "office", "program": "hands", "version": "0.1.0", "modules": ["mpris"],
+        "actions": [{ "name": "mpris.pause", "description": "Met la musique en pause.", "arguments": {} }]
+    }));
+    let ear: Announce = serde_json::from_value(json!({
+        "device": "office", "program": "ear", "version": "0.1.0", "modules": ["microphone", "shortcut"]
+    }))
+    .unwrap();
+    assert!(ear.actions.is_empty());
+    round_trip::<Announce>(json!({
+        "device": "office", "program": "mouth", "version": "0.1.0", "modules": ["speaker"],
+        "actions": []
+    }));
+}
+
+#[test]
+fn action_replies() {
+    let ok: ActionReply = round_trip(
+        json!({ "ok": true, "result": { "title": "One More Time", "artist": "Daft Punk" } }),
     );
-    assert_eq!(ok.en_result().unwrap()["artiste"], "Daft Punk");
-    let rate: ReponseAction =
-        aller_retour(json!({ "ok": false, "erreur": "aucun lecteur ouvert" }));
-    assert_eq!(rate.en_result().unwrap_err(), "aucun lecteur ouvert");
+    assert_eq!(ok.into_result().unwrap()["artist"], "Daft Punk");
+    let failed: ActionReply = round_trip(json!({ "ok": false, "error": "aucun lecteur ouvert" }));
+    assert_eq!(failed.into_result().unwrap_err(), "aucun lecteur ouvert");
 }
 
 #[test]
-fn un_nom_d_appareil_invalide_est_refuse() {
-    for nom in ["", "Bureau", "bureau.salon", "bu reau", "*", ">"] {
-        assert!(Appareil::new(nom).is_err(), "{nom:?}");
+fn an_invalid_device_name_is_refused() {
+    for name in ["", "Office", "office.living", "of fice", "*", ">"] {
+        assert!(Device::new(name).is_err(), "{name:?}");
     }
-    assert!(serde_json::from_value::<Stop>(json!({ "tour": TOUR, "poste": "a.b" })).is_err());
-    assert!(Appareil::new("salon-2").is_ok());
+    assert!(serde_json::from_value::<Stop>(json!({ "turn": TURN, "device": "a.b" })).is_err());
+    assert!(Device::new("living-2").is_ok());
 }
 
 #[test]
-fn les_sujets() {
-    let bureau = Appareil::new("bureau").unwrap();
-    assert_eq!(sujets::bouton(&bureau), "poste.bureau.bouton");
-    assert_eq!(sujets::son(&bureau), "poste.bureau.audio");
-    assert_eq!(sujets::son_retour(&bureau), "poste.bureau.audio.retour");
-    assert_eq!(sujets::annonce_poste(&bureau), "poste.bureau.annonce");
-    assert_eq!(sujets::annonce_main(&bureau), "main.bureau.annonce");
-    assert_eq!(sujets::parle(&bureau), "bouche.bureau.parle");
+fn the_subjects() {
+    let office = Device::new("office").unwrap();
+    assert_eq!(subjects::button(&office), "ear.office.button");
+    assert_eq!(subjects::ear_audio(&office), "ear.office.audio");
+    assert_eq!(subjects::ear_announce(&office), "ear.office.announce");
+    assert_eq!(subjects::mouth_audio(&office), "mouth.office.audio");
+    assert_eq!(subjects::mouth_announce(&office), "mouth.office.announce");
+    assert_eq!(subjects::hands_announce(&office), "hands.office.announce");
+    assert_eq!(subjects::speaking(&office), "voice.office.speaking");
     assert_eq!(
-        sujets::action(&bureau, "mpris.pause").as_deref(),
-        Some("main.bureau.mpris.pause")
+        subjects::action(&office, "mpris.pause").as_deref(),
+        Some("hands.office.mpris.pause")
     );
-    assert_eq!(sujets::action(&bureau, "annonce"), None);
-    assert_eq!(sujets::action(&bureau, "mpris..pause"), None);
-    assert_eq!(sujets::action(&bureau, "mpris.*"), None);
+    assert_eq!(subjects::action(&office, "announce"), None);
+    assert_eq!(subjects::action(&office, "mpris..pause"), None);
+    assert_eq!(subjects::action(&office, "mpris.*"), None);
 
     assert_eq!(
-        sujets::appareil_du_sujet("poste.bureau.audio.retour"),
-        Some(bureau.clone())
+        subjects::device_of_subject("ear.office.audio"),
+        Some(office.clone())
     );
     assert_eq!(
-        sujets::appareil_du_sujet("main.bureau.mpris.pause"),
-        Some(bureau.clone())
+        subjects::device_of_subject("mouth.office.audio"),
+        Some(office.clone())
     );
-    assert_eq!(sujets::appareil_du_sujet("oreilles.tour"), None);
     assert_eq!(
-        sujets::action_du_sujet("main.bureau.mpris.pause"),
+        subjects::device_of_subject("hands.office.mpris.pause"),
+        Some(office.clone())
+    );
+    assert_eq!(
+        subjects::device_of_subject("voice.office.speaking"),
+        Some(office.clone())
+    );
+    assert_eq!(subjects::device_of_subject("hearing.turn"), None);
+    assert_eq!(
+        subjects::action_of_subject("hands.office.mpris.pause"),
         Some("mpris.pause")
     );
-    assert_eq!(sujets::action_du_sujet("main.bureau.annonce"), None);
+    assert_eq!(subjects::action_of_subject("hands.office.announce"), None);
 }
 
 #[test]
-fn le_format_du_son() {
-    assert_eq!(son::MICRO.to_string(), "s16le;16000;1");
+fn the_audio_format() {
+    assert_eq!(audio::MIC.to_string(), "s16le;16000;1");
     assert_eq!(
-        "s16le;24000;1".parse::<son::Format>().unwrap().frequence,
+        "s16le;24000;1"
+            .parse::<audio::Format>()
+            .unwrap()
+            .sample_rate,
         24_000
     );
-    for faux in [
+    for wrong in [
         "",
         "s16le",
         "f32le;16000;1",
@@ -154,17 +182,14 @@ fn le_format_du_son() {
         "s16le;16000;1;x",
         "s16le;seize;1",
     ] {
-        assert!(faux.parse::<son::Format>().is_err(), "{faux:?}");
+        assert!(wrong.parse::<audio::Format>().is_err(), "{wrong:?}");
     }
-    assert_eq!(
-        son::MICRO.octets(son::MORCEAU_MICRO),
-        son::OCTETS_MORCEAU_MICRO
-    );
+    assert_eq!(audio::MIC.bytes(audio::MIC_CHUNK), audio::MIC_CHUNK_BYTES);
 }
 
 #[test]
-fn chaque_tour_a_son_identifiant() {
-    assert_ne!(IdTour::nouveau(), IdTour::nouveau());
-    let id = IdTour::nouveau();
-    assert_eq!(id.to_string().parse::<IdTour>().unwrap(), id);
+fn every_turn_has_its_identifier() {
+    assert_ne!(TurnId::new(), TurnId::new());
+    let id = TurnId::new();
+    assert_eq!(id.to_string().parse::<TurnId>().unwrap(), id);
 }

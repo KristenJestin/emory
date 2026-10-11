@@ -1,28 +1,28 @@
-//! Le contrat d'Emory : les sujets du bus et le format de chaque message.
+//! The Emory contract: the bus subjects and the format of every message.
 //!
-//! La seule chose que les programmes partagent (voir `specs/contract.md`). Pas de réseau ici :
-//! des types, des constantes et les fonctions qui fabriquent les sujets.
+//! The only thing the programs share (see `specs/contract.md`). No network here: types,
+//! constants and the functions that build the subjects.
 //!
-//! Le contrat grandit sans casser : un champ nouveau est facultatif, et les champs inconnus sont
-//! ignorés à la lecture. Retirer un champ ou changer son sens change la version majeure.
+//! The contract grows without breaking: a new field is optional, and unknown fields are ignored
+//! on reading. Removing a field or changing its meaning changes the major version.
 
-mod appareil;
+pub mod audio;
+mod device;
 mod messages;
-pub mod son;
-pub mod sujets;
-mod tour;
+pub mod subjects;
+mod turn;
 
-pub use appareil::{Appareil, NomInvalide};
+pub use device::{Device, InvalidName};
 pub use messages::*;
-pub use tour::IdTour;
+pub use turn::TurnId;
 
-/// Un instant, avec son décalage horaire (RFC 3339).
-pub type Quand = chrono::DateTime<chrono::FixedOffset>;
+/// A moment, with its time zone offset (RFC 3339).
+pub type Timestamp = chrono::DateTime<chrono::FixedOffset>;
 
-/// L'instant présent, à l'heure locale.
-pub fn maintenant() -> Quand {
+/// The present moment, in local time.
+pub fn now() -> Timestamp {
     chrono::Local::now().fixed_offset()
 }
 
-/// Ce que l'esprit attend au plus la réponse d'une main.
-pub const DELAI_ACTION: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the mind waits at most for the answer of a hand.
+pub const ACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
