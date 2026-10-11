@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Emory ear
+Comment=The microphone of Emory on this device
+Exec=emory-ear
+Terminal=false
+NoDisplay=true

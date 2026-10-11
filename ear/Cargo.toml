@@ -1,0 +1,31 @@
+[package]
+name = "ear"
+version = "0.1.0"
+description = "The ear of an Emory device: the microphone, a trigger, and the audio sent to the hearing"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["shortcut"]
+# The `shortcut` trigger: the GlobalShortcuts portal of xdg-desktop-portal.
+shortcut = ["dep:ashpd"]
+
+[dependencies]
+contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow = "1"
+async-nats = "0.50"
+ashpd = { version = "0.13", optional = true, default-features = false, features = ["tokio", "global_shortcuts"] }
+cpal = "0.18"
+futures-util = "0.3"
+hound = "3.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "emory-ear"
+path = "src/main.rs"

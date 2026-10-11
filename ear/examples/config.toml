@@ -1,0 +1,33 @@
+# The configuration of an Emory device: ~/.config/emory/config.toml
+# One file per device, read by the three device programs. A program whose section is missing
+# does not run on this device.
+
+# The name of the device, in the bus subjects (lowercase letters, digits and dashes).
+# Default: the hostname of the machine.
+device = "home"
+
+# The NATS bus.
+bus = "nats://127.0.0.1:4222"
+# Behind the locked-down server only (development uses neither):
+# bus_ca = "~/.config/emory/ca.pem"
+# bus_nkey_seed_file = "~/.config/emory/ear.nk"
+
+# emory-ear: the microphone and what opens a turn.
+[ear]
+# "default", or the name of an input device (`emory-ear --list-mics`).
+mic = "default"
+# "shortcut": a keyboard shortcut, by the GlobalShortcuts portal (the only one for now;
+# "button" and "continuous" come later).
+trigger = "shortcut"
+# A press held at least this long is a hold (talk until released); a shorter one is a tap
+# (the next tap ends the turn).
+hold_threshold_ms = 300
+
+# emory-mouth: the speaker. (The keys of [mouth] and [hands] belong to those programs; the ones
+# here only show that the sections live in the same file.)
+[mouth]
+speaker = "default"
+
+# emory-hands: one module per standard.
+[hands]
+modules = ["mpris"]
