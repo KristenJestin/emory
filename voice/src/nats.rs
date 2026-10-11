@@ -1,4 +1,4 @@
-//! La connexion au bus : TLS et clé (nkey) quand la configuration les donne, rien sinon.
+//! The connection to the bus: TLS and key (nkey) when the configuration gives them, nothing else.
 
 use anyhow::Context;
 
@@ -9,7 +9,7 @@ pub async fn connect(config: &Config) -> anyhow::Result<async_nats::Client> {
         &config.nats_url,
         config.nats_ca.as_deref(),
         config.nats_nkey_seed_file.as_deref(),
-        "bouche",
+        "voice",
     )
     .await
 }
@@ -28,11 +28,11 @@ pub async fn connect_to(
     }
     if let Some(file) = nkey_seed_file {
         let seed = std::fs::read_to_string(file)
-            .with_context(|| format!("lecture de la graine {}", file.display()))?;
+            .with_context(|| format!("reading the seed {}", file.display()))?;
         options = options.nkey(seed.trim().to_owned());
     }
     options
         .connect(url)
         .await
-        .with_context(|| format!("connexion à NATS {url}"))
+        .with_context(|| format!("connecting to NATS {url}"))
 }

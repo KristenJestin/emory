@@ -1,41 +1,42 @@
-//! La bouche d'Emory : reçoit les phrases à dire (`bouche.dire`), les fait synthétiser par le
-//! moteur de voix et renvoie le son au poste (`poste.<nom>.audio.retour`). Voir `specs/bouche.md`.
+//! The voice of Emory: receives the sentences to say (`voice.say`), has them synthesised by the
+//! voice engine and sends the audio back to the mouth (`mouth.<name>.audio`). See
+//! `specs/voice.md`.
 
 pub mod audio;
 pub mod config;
+pub mod device;
 pub mod engine;
 pub mod nats;
-pub mod poste;
 pub mod queue;
 pub mod text;
 
 use std::collections::HashMap;
 
-use contract::{Appareil, Dire, Stop, sujets};
+use contract::{Device, Say, Stop, subjects};
 use futures_util::StreamExt;
 use tracing::{info, warn};
 
 use config::Config;
-use poste::Input;
+use device::Input;
 
-/// Fait tourner la bouche jusqu'à l'arrêt du programme (Ctrl-C ou SIGTERM).
+/// Runs the voice until the program stops (Ctrl-C or SIGTERM).
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let nats = nats::connect(&config).await?;
     let engine = engine::Engine::new(&config.engine_url, &config.voice)?;
     match engine.warm_up().await {
-        Ok(()) => info!(engine = %config.engine_url, voice = %config.voice, "moteur prêt"),
-        Err(e) => warn!("moteur pas encore prêt, la première phrase sera lente ou perdue : {e:#}"),
+        Ok(()) => info!(engine = %config.engine_url, voice = %config.voice, "engine ready"),
+        Err(e) => warn!("engine not ready yet, the first sentence will be slow or lost: {e:#}"),
     }
-    let mut dire = nats.subscribe(sujets::DIRE).await?;
-    let mut stop = nats.subscribe(sujets::STOP).await?;
-    info!(nats = %config.nats_url, "la bouche écoute");
+    let mut say = nats.subscribe(subjects::SAY).await?;
+    let mut stop = nats.subscribe(subjects::STOP).await?;
+    info!(nats = %config.nats_url, "the voice is listening");
 
-    let mut postes: HashMap<Appareil, (poste::Inbox, tokio::task::JoinHandle<()>)> = HashMap::new();
-    let mut inbox_of = |name: &Appareil| {
-        postes
+    let mut devices: HashMap<Device, (device::Inbox, tokio::task::JoinHandle<()>)> = HashMap::new();
+    let mut inbox_of = |name: &Device| {
+        devices
             .entry(name.clone())
             .or_insert_with(|| {
-                poste::spawn(name.clone(), nats.clone(), engine.clone(), config.clone())
+                device::spawn(name.clone(), nats.clone(), engine.clone(), config.clone())
             })
             .0
             .clone()
@@ -43,20 +44,20 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown_signal());
     loop {
         tokio::select! {
-            Some(message) = dire.next() => match serde_json::from_slice::<Dire>(&message.payload) {
-                Ok(d) => { let _ = inbox_of(&d.poste).send(Input::Dire(d)); }
-                Err(e) => warn!("Dire illisible : {e}"),
+            Some(message) = say.next() => match serde_json::from_slice::<Say>(&message.payload) {
+                Ok(s) => { let _ = inbox_of(&s.device).send(Input::Say(s)); }
+                Err(e) => warn!("unreadable Say: {e}"),
             },
             Some(message) = stop.next() => match serde_json::from_slice::<Stop>(&message.payload) {
-                Ok(s) => { let _ = inbox_of(&s.poste).send(Input::Stop(s.tour)); }
-                Err(e) => warn!("Stop illisible : {e}"),
+                Ok(s) => { let _ = inbox_of(&s.device).send(Input::Stop(s.turn)); }
+                Err(e) => warn!("unreadable Stop: {e}"),
             },
             () = &mut shutdown => break,
             else => break,
         }
     }
-    info!("arrêt");
-    for (inbox, handle) in postes.into_values() {
+    info!("stopping");
+    for (inbox, handle) in devices.into_values() {
         let _ = inbox.send(Input::Shutdown);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
     }

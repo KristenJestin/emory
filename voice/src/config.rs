@@ -1,4 +1,4 @@
-//! La configuration : un fichier TOML donné en argument.
+//! The configuration: a TOML file given as argument.
 
 use std::{path::Path, path::PathBuf, time::Duration};
 
@@ -7,30 +7,31 @@ use serde::Deserialize;
 
 /// ```toml
 /// nats_url = "nats://127.0.0.1:4222"
-/// # nats_ca = "/etc/emory/ca.pem"                 # active TLS avec cette autorité
-/// # nats_nkey_seed_file = "/etc/emory/bouche.nk"  # la graine de la clé (nkey) de la bouche
+/// # nats_ca = "/etc/emory/ca.pem"                 # turns TLS on with this authority
+/// # nats_nkey_seed_file = "/etc/emory/voice.nk"   # the seed of the voice's key (nkey)
 /// engine_url = "http://127.0.0.1:8000"
 /// voice = "estelle"
 /// ```
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// L'adresse du serveur NATS.
+    /// The address of the NATS server.
     pub nats_url: String,
-    /// L'autorité de certification du bus (TLS) ; sans elle, la connexion est en clair.
+    /// The certificate authority of the bus (TLS); without it, the connection is in the clear.
     pub nats_ca: Option<PathBuf>,
-    /// Le fichier qui contient la graine de la nkey de la bouche.
+    /// The file that holds the seed of the voice's nkey.
     pub nats_nkey_seed_file: Option<PathBuf>,
-    /// L'adresse du moteur de voix (`pocket-tts serve`).
+    /// The address of the voice engine (`pocket-tts serve`).
     pub engine_url: String,
-    /// La voix, par son nom chez le moteur.
+    /// The voice, by its name at the engine.
     #[serde(default = "default_voice")]
     pub voice: String,
-    /// La taille visée d'un morceau de son envoyé au poste, en millisecondes.
+    /// The target size of a chunk of audio sent to the mouth, in milliseconds.
     #[serde(default = "default_chunk_ms")]
     pub chunk_ms: u32,
-    /// Combien de temps après la fin du son la bouche attend une phrase de plus avant de dire
-    /// qu'elle a fini de parler (`Parle` `fin`), en millisecondes.
+    /// How long after the end of the audio the voice waits for one more sentence before saying
+    /// that it has finished speaking (`Speaking` `end`), in milliseconds. Only a fallback: when
+    /// the last sentence is marked `last`, `end` is sent as soon as it has been played.
     #[serde(default = "default_end_grace_ms")]
     pub end_grace_ms: u64,
 }
@@ -49,8 +50,8 @@ fn default_end_grace_ms() -> u64 {
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("lecture de {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         text.parse()
             .with_context(|| format!("configuration {}", path.display()))
     }
@@ -66,7 +67,7 @@ impl std::str::FromStr for Config {
         let config: Config = toml::from_str(s)?;
         anyhow::ensure!(
             (10..=500).contains(&config.chunk_ms),
-            "chunk_ms doit être entre 10 et 500"
+            "chunk_ms must be between 10 and 500"
         );
         Ok(config)
     }

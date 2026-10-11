@@ -1,11 +1,12 @@
-//! Le moteur de voix : `pocket-tts serve` (voir `moteurs/pocket/`). `POST /tts` rend un WAV
-//! diffusé au fur et à mesure du calcul ; fermer la connexion arrête le calcul côté moteur.
+//! The voice engine: `pocket-tts serve` (see `engines/pocket/`). `POST /tts` returns a WAV
+//! streamed as the computation goes; closing the connection stops the computation on the engine
+//! side.
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use bytes::Bytes;
-use contract::son::Format;
+use contract::audio::Format;
 use futures_util::{Stream, StreamExt};
 
 use crate::audio::{WavHeader, parse_wav_header};
@@ -17,12 +18,12 @@ pub struct Engine {
     voice: String,
 }
 
-/// Le son d'une phrase qui arrive : le format, puis le son brut par paquets.
+/// The audio of a sentence arriving: the format, then the raw sound in packets.
 pub struct Speech<S> {
     pub format: Format,
-    /// Du début de la requête au premier octet de son.
+    /// From the start of the request to the first byte of sound.
     pub first_sound_after: Duration,
-    /// Les premiers octets de son, déjà lus avec l'en-tête.
+    /// The first bytes of sound, already read with the header.
     pub first: Bytes,
     pub rest: S,
 }
@@ -39,8 +40,8 @@ impl Engine {
         })
     }
 
-    /// Lance la synthèse d'une phrase et rend le flux dès que l'en-tête et un peu de son sont là.
-    /// Laisser tomber le flux ferme la connexion et arrête le moteur.
+    /// Starts the synthesis of a sentence and returns the stream as soon as the header and a bit of
+    /// sound are there. Dropping the stream closes the connection and stops the engine.
     pub async fn speak(
         &self,
         text: &str,
@@ -52,11 +53,11 @@ impl Engine {
             .form(&[("text", text), ("voice_url", self.voice.as_str())])
             .send()
             .await
-            .context("le moteur ne répond pas")?;
+            .context("the engine does not answer")?;
         let status = response.status();
         if !status.is_success() {
             let detail = response.text().await.unwrap_or_default();
-            bail!("le moteur a répondu {status} : {detail}");
+            bail!("the engine answered {status}: {detail}");
         }
         let mut stream = response.bytes_stream();
         let mut head = Vec::new();
@@ -64,8 +65,8 @@ impl Engine {
             let packet = stream
                 .next()
                 .await
-                .context("le moteur a fermé avant d'envoyer le son")?
-                .context("lecture du flux du moteur")?;
+                .context("the engine closed before sending the sound")?
+                .context("reading the engine stream")?;
             head.extend_from_slice(&packet);
             match parse_wav_header(&head).map_err(anyhow::Error::msg)? {
                 WavHeader::Incomplete => continue,
@@ -80,13 +81,13 @@ impl Engine {
                         rest: stream,
                     });
                 }
-                // L'en-tête est là mais pas encore de son : on continue de lire.
+                // The header is there but no sound yet: keep reading.
                 WavHeader::Ready { .. } => continue,
             }
         }
     }
 
-    /// Une phrase jetée, pour charger la voix et chauffer le moteur avant la première vraie.
+    /// A throw-away sentence, to load the voice and warm the engine up before the first real one.
     pub async fn warm_up(&self) -> anyhow::Result<()> {
         let speech = self.speak("Bonjour.").await?;
         let mut rest = speech.rest;

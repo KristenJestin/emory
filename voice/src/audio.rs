@@ -1,28 +1,28 @@
-//! Le son entre le moteur et le bus : l'en-tête WAV du flux du moteur, le découpage en morceaux
-//! et les en-têtes NATS d'un morceau.
+//! The audio between the engine and the bus: the WAV header of the engine stream, the cutting
+//! into chunks and the NATS headers of a chunk.
 
 use std::time::Duration;
 
 use async_nats::HeaderMap;
-use contract::{IdTour, son::Format, son::entetes};
+use contract::{TurnId, audio::Format, audio::headers as audio_headers};
 
-/// Ce que dit l'en-tête WAV du flux du moteur.
+/// What the WAV header of the engine stream says.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WavHeader {
-    /// Pas assez d'octets pour décider.
+    /// Not enough bytes to decide.
     Incomplete,
-    /// Le format, et le nombre d'octets de l'en-tête (le son commence juste après).
+    /// The format, and the number of bytes of the header (the sound starts right after).
     Ready { format: Format, data_offset: usize },
 }
 
-/// Lit l'en-tête d'un WAV PCM 16 bits, sans dépendre de sa longueur annoncée (le moteur diffuse :
-/// la taille est fausse ou énorme).
+/// Reads the header of a 16-bit PCM WAV, without relying on its announced length (the engine
+/// streams: the size is wrong or huge).
 pub fn parse_wav_header(bytes: &[u8]) -> Result<WavHeader, String> {
     if bytes.len() < 12 {
         return Ok(WavHeader::Incomplete);
     }
     if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err("le moteur n'a pas répondu un WAV".to_owned());
+        return Err("the engine did not answer a WAV".to_owned());
     }
     let mut format = None;
     let mut at = 12;
@@ -33,7 +33,7 @@ pub fn parse_wav_header(bytes: &[u8]) -> Result<WavHeader, String> {
         let id = &bytes[at..at + 4];
         let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
         if id == b"data" {
-            let format = format.ok_or("WAV sans bloc fmt avant le son")?;
+            let format = format.ok_or("WAV without a fmt block before the sound")?;
             return Ok(WavHeader::Ready {
                 format,
                 data_offset: at + 8,
@@ -47,26 +47,29 @@ pub fn parse_wav_header(bytes: &[u8]) -> Result<WavHeader, String> {
             }
             let field =
                 |o: usize| u16::from_le_bytes(bytes[body + o..body + o + 2].try_into().unwrap());
-            let (tag, canaux, bits) = (field(0), field(2), field(14));
-            let frequence = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().unwrap());
-            if tag != 1 || bits != 16 || canaux == 0 || frequence == 0 {
+            let (tag, channels, bits) = (field(0), field(2), field(14));
+            let sample_rate = u32::from_le_bytes(bytes[body + 4..body + 8].try_into().unwrap());
+            if tag != 1 || bits != 16 || channels == 0 || sample_rate == 0 {
                 return Err(format!(
-                    "WAV non géré (format {tag}, {bits} bits, {canaux} canaux, {frequence} Hz)"
+                    "unsupported WAV (format {tag}, {bits} bits, {channels} channels, {sample_rate} Hz)"
                 ));
             }
-            format = Some(Format { frequence, canaux });
+            format = Some(Format {
+                sample_rate,
+                channels,
+            });
         }
         at = end;
     }
 }
 
-/// Découpe le son qui arrive par paquets irréguliers en morceaux de taille fixe, en gardant le
-/// dernier : le morceau qui finit une phrase doit porter `Emory-Fin`, et on ne sait qu'il est le
-/// dernier qu'à la fin du flux.
+/// Cuts the audio arriving in irregular packets into chunks of a fixed size, keeping the last
+/// one back: the chunk that ends a sentence must carry `Emory-End`, and we only know it is the
+/// last one at the end of the stream.
 ///
-/// Un morceau plein est rendu tout de suite s'il reste du son derrière lui (il n'est donc pas le
-/// dernier) ; sinon il est retenu jusqu'au prochain paquet ou jusqu'à la fin. Le premier son part
-/// ainsi sans attendre, sauf quand le flux tombe pile sur la taille d'un morceau.
+/// A full chunk is returned at once if there is sound left behind it (so it is not the last one);
+/// otherwise it is held until the next packet or until the end. The first sound thus leaves
+/// without waiting, except when the stream falls exactly on the size of a chunk.
 pub struct Chunker {
     size: usize,
     buffer: Vec<u8>,
@@ -74,7 +77,7 @@ pub struct Chunker {
 }
 
 impl Chunker {
-    /// `size` en octets, arrondie à un nombre pair d'échantillons entiers.
+    /// `size` in bytes, rounded to a whole number of samples.
     pub fn new(size: usize, bytes_per_frame: usize) -> Self {
         let size = (size / bytes_per_frame).max(1) * bytes_per_frame;
         Self {
@@ -84,7 +87,7 @@ impl Chunker {
         }
     }
 
-    /// Les morceaux à envoyer maintenant (aucun n'est le dernier de la phrase).
+    /// The chunks to send now (none of them is the last of the sentence).
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
         self.buffer.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -100,8 +103,8 @@ impl Chunker {
         out
     }
 
-    /// La fin du flux : les morceaux restants, le dernier est celui qui porte `Emory-Fin`. Vide si
-    /// le moteur n'a rien rendu.
+    /// The end of the stream: the remaining chunks, the last one is the one that carries
+    /// `Emory-End`. Empty if the engine returned nothing.
     pub fn finish(mut self) -> Vec<Vec<u8>> {
         let mut out: Vec<Vec<u8>> = self.held.take().into_iter().collect();
         if !self.buffer.is_empty() {
@@ -111,21 +114,27 @@ impl Chunker {
     }
 }
 
-/// La durée du son de ce nombre d'octets.
+/// The duration of the sound of this number of bytes.
 pub fn duration_of(bytes: usize, format: Format) -> Duration {
-    let frames = bytes as u64 / (2 * format.canaux as u64);
-    Duration::from_micros(frames * 1_000_000 / format.frequence as u64)
+    let frames = bytes as u64 / (2 * format.channels as u64);
+    Duration::from_micros(frames * 1_000_000 / format.sample_rate as u64)
 }
 
-/// Les en-têtes d'un morceau de la voix qui revient au poste.
-pub fn chunk_headers(tour: IdTour, seq: u32, format: Format, phrase: u32, last: bool) -> HeaderMap {
+/// The headers of a chunk of the voice going back to the mouth.
+pub fn chunk_headers(
+    turn: TurnId,
+    seq: u32,
+    format: Format,
+    sentence: u32,
+    last: bool,
+) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(entetes::TOUR, tour.to_string());
-    headers.insert(entetes::SEQ, seq.to_string());
-    headers.insert(entetes::FORMAT, format.to_string());
-    headers.insert(entetes::PHRASE, phrase.to_string());
+    headers.insert(audio_headers::TURN, turn.to_string());
+    headers.insert(audio_headers::SEQ, seq.to_string());
+    headers.insert(audio_headers::FORMAT, format.to_string());
+    headers.insert(audio_headers::SENTENCE, sentence.to_string());
     if last {
-        headers.insert(entetes::FIN, "1");
+        headers.insert(audio_headers::END, "1");
     }
     headers
 }
@@ -134,15 +143,15 @@ pub fn chunk_headers(tour: IdTour, seq: u32, format: Format, phrase: u32, last: 
 mod tests {
     use super::*;
 
-    fn wav_header(frequence: u32, bits: u16) -> Vec<u8> {
+    fn wav_header(sample_rate: u32, bits: u16) -> Vec<u8> {
         let mut h = b"RIFF".to_vec();
         h.extend(0xFFFF_FFFFu32.to_le_bytes());
         h.extend(b"WAVEfmt ");
         h.extend(16u32.to_le_bytes());
         h.extend(1u16.to_le_bytes());
         h.extend(1u16.to_le_bytes());
-        h.extend(frequence.to_le_bytes());
-        h.extend((frequence * 2).to_le_bytes());
+        h.extend(sample_rate.to_le_bytes());
+        h.extend((sample_rate * 2).to_le_bytes());
         h.extend(2u16.to_le_bytes());
         h.extend(bits.to_le_bytes());
         h.extend(b"data");
@@ -158,8 +167,8 @@ mod tests {
             parse_wav_header(&h),
             Ok(WavHeader::Ready {
                 format: Format {
-                    frequence: 24_000,
-                    canaux: 1
+                    sample_rate: 24_000,
+                    channels: 1
                 },
                 data_offset: 44
             })
@@ -250,26 +259,32 @@ mod tests {
     #[test]
     fn durations() {
         let f = Format {
-            frequence: 24_000,
-            canaux: 1,
+            sample_rate: 24_000,
+            channels: 1,
         };
         assert_eq!(duration_of(2880, f), Duration::from_millis(60));
     }
 
     #[test]
     fn headers_follow_the_contract() {
-        let tour = IdTour::nouveau();
+        let turn = TurnId::new();
         let f = Format {
-            frequence: 24_000,
-            canaux: 1,
+            sample_rate: 24_000,
+            channels: 1,
         };
-        let h = chunk_headers(tour, 12, f, 3, false);
-        assert_eq!(h.get(entetes::TOUR).unwrap().as_str(), tour.to_string());
-        assert_eq!(h.get(entetes::SEQ).unwrap().as_str(), "12");
-        assert_eq!(h.get(entetes::FORMAT).unwrap().as_str(), "s16le;24000;1");
-        assert_eq!(h.get(entetes::PHRASE).unwrap().as_str(), "3");
-        assert!(h.get(entetes::FIN).is_none());
-        let h = chunk_headers(tour, 13, f, 3, true);
-        assert_eq!(h.get(entetes::FIN).unwrap().as_str(), "1");
+        let h = chunk_headers(turn, 12, f, 3, false);
+        assert_eq!(
+            h.get(audio_headers::TURN).unwrap().as_str(),
+            turn.to_string()
+        );
+        assert_eq!(h.get(audio_headers::SEQ).unwrap().as_str(), "12");
+        assert_eq!(
+            h.get(audio_headers::FORMAT).unwrap().as_str(),
+            "s16le;24000;1"
+        );
+        assert_eq!(h.get(audio_headers::SENTENCE).unwrap().as_str(), "3");
+        assert!(h.get(audio_headers::END).is_none());
+        let h = chunk_headers(turn, 13, f, 3, true);
+        assert_eq!(h.get(audio_headers::END).unwrap().as_str(), "1");
     }
 }

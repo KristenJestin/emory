@@ -1,10 +1,10 @@
-//! Le texte avant la synthèse.
+//! The text before the synthesis.
 
-/// Prépare une phrase pour le moteur. En version 1, seulement les espaces.
+/// Prepares a sentence for the engine. In version 1, only the whitespace.
 ///
-/// C'est ici que viendront la lecture des nombres, des sigles et des noms propres (le lexique de
-/// prononciation de `specs/bouche.md`, « Ce qui est lu ») : question ouverte de la spec, rien
-/// n'est fait pour l'instant.
+/// This is where the reading of numbers, acronyms and proper names will come (the pronunciation
+/// lexicon of `specs/voice.md`, « Ce qui est lu »): an open question of the spec, nothing is done
+/// for now.
 pub fn clean(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

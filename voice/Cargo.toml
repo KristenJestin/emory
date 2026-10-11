@@ -1,7 +1,7 @@
 [package]
-name = "bouche"
+name = "voice"
 version = "0.1.0"
-description = "La bouche d'Emory : les phrases à dire, synthétisées par le moteur, renvoyées au poste"
+description = "The voice of Emory: the sentences to say, synthesised by the engine, sent back to the mouth"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -21,9 +21,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[bin]]
-name = "bouche"
+name = "voice"
 path = "src/main.rs"
 
 [[bin]]
-name = "bouche-essai"
-path = "src/bin/essai.rs"
+name = "voice-try"
+path = "src/bin/try.rs"
