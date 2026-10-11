@@ -44,12 +44,18 @@ Code par l'adaptateur `claude-agent-acp`, dans un conteneur moteur à lui :
 - c'est l'abonnement Claude de Kris qui paie, pas l'API ; chaque échange prend sur son quota ;
 - **Claude Code n'a aucun de ses propres outils** (ni shell, ni fichiers, ni web) : tout ce
   qu'Emory peut faire passe par **un seul serveur MCP, celui d'Emory**, servi par `esprit`
-  (décidé le 2026-10-11) ;
+  (décidé le 2026-10-11, et maintenu : vrai pour tout LLM branché, quoi qu'il arrive) ;
+- les réglages qui le permettent, à passer dans `_meta` de `session/new` (mesuré le 2026-10-11
+  avec `claude-agent-acp` 0.89.1) : `systemPrompt` en chaîne (remplace tout le prompt de Claude
+  Code), `claudeCode.options.tools = []`, `settingSources: []` (sinon les réglages, hooks et
+  skills de Kris entrent dans le contexte), `skills: []`, `strictMcpConfig: true`. Il reste un
+  socle d'environ 700 jetons qu'on ne peut pas retirer ;
 - la session ACP reste ouverte le temps d'une conversation, pour ne pas repayer le démarrage.
 
-À mesurer avant tout : le délai jusqu'au premier mot. Claude Code charge des consignes et des
-outils plus lourds qu'un appel direct à l'API ; si le premier mot dépasse nettement une seconde,
-l'adaptateur API (payé à l'usage) ou un modèle local prendra le relais.
+Mesuré le 2026-10-11 (une centaine de requêtes, une à la fois) : premier mot en 1,25 s (Haiku)
+et 0,98 s (Sonnet) en médiane quand il répond directement, mais 3,4 à 4,3 s quand il appelle un
+outil avant de répondre, parce qu'il fait alors deux allers-retours. Haiku n'est pas plus rapide
+que Sonnet. Une session s'ouvre en 0,5 s, une fois par conversation.
 
 ## Le serveur MCP d'Emory
 
@@ -84,10 +90,14 @@ Une entrée écrite par Emory n'attend aucune validation ; Kris confirme quand i
 Le but reste le premier son moins de 2 secondes après le second appui. Le premier mot du LLM
 doit arriver en moins d'une seconde : c'est le critère principal du choix du modèle.
 
-En version 1, le relais reste simple : quand le LLM appelle un outil, la réponse attend le
-résultat. On mesure ; si l'attente se sent (une recherche dans Hippocampe avant de répondre), on
-ajoute ensuite la recherche en parallèle et la reprise au bord d'une phrase prévues par
-`bouche.md`.
+**Le relais cherche lui-même, avant le LLM** (décidé le 2026-10-11). Un LLM qui doit appeler un
+outil avant de parler fait deux allers-retours et perd 2 à 3 secondes, quel que soit le LLM. Donc
+dès que la transcription arrive, `esprit` interroge Hippocampe avec la phrase de Kris, sans IA,
+et glisse ce qu'il trouve dans la demande au LLM, qui répond en un seul aller-retour. Le LLM
+garde ses outils pour ce que ce premier contexte ne couvre pas, et pour agir (noter, minuteur).
+
+Si l'attente se sent encore, on ajoute ensuite la recherche en parallèle et la reprise au bord
+d'une phrase prévues par `bouche.md`, jamais une phrase d'attente.
 
 ## La confidentialité
 
@@ -96,6 +106,6 @@ d'Hippocampe pour répondre, partent chez le fournisseur du LLM. L'audio, lui, n
 
 ## Questions ouvertes
 
-1. Haiku ou Sonnet : le premier mot de Haiku arrive plus vite, Sonnet répond mieux ; à mesurer.
-2. Le délai de Claude Code par ACP jusqu'au premier mot (voir plus haut).
-3. La durée d'une conversation avant sa fermeture : 30 minutes pour commencer, réglée à l'usage.
+1. Haiku ou Sonnet : aussi rapides l'un que l'autre en premier mot ; à trancher sur la qualité
+   des réponses et le quota.
+2. La durée d'une conversation avant sa fermeture : 30 minutes pour commencer, réglée à l'usage.
