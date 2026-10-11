@@ -12,6 +12,11 @@
 //! - A turn id is a ULID, so turns are ordered. The newest turn seen wins: chunks of an older
 //!   turn are dropped. A press of the button (`start`) stops everything and makes its turn the
 //!   newest, so the end of an answer the server is still sending is dropped.
+//! - A chunk of a newer turn than the one playing stops the old one exactly like a press (the
+//!   press may have been lost, or the turn may come from another path than the button).
+//! - Clock safety: if a chunk of an "older" turn arrives when nothing of the newest turn has
+//!   been received for [`CLOCK_SILENCE`], the clock of the ear that makes the ids has probably
+//!   gone back: the chunk is taken as a new turn instead of dropping everything for good.
 
 use std::{
     collections::BTreeMap,
@@ -21,6 +26,9 @@ use std::{
 use bytes::Bytes;
 use contract::{TurnId, audio::Format};
 use tracing::{debug, warn};
+
+/// How long the newest turn must have been silent for an older turn to be taken as a new one.
+pub const CLOCK_SILENCE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
@@ -78,11 +86,20 @@ impl Play {
     }
 }
 
+/// Why the playback is stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// `Button` `start`.
+    Button,
+    /// A chunk of a newer turn arrived while an older one was playing.
+    NewerTurn,
+}
+
 #[derive(Clone, Debug)]
 pub enum Output {
     Play(Play),
     /// Stop playing at once and drop everything the output still holds.
-    Flush,
+    Flush(Cause),
 }
 
 pub fn duration_of(format: Format, bytes: usize) -> Duration {
@@ -105,6 +122,8 @@ struct Reassembly {
 pub struct Jitter {
     settings: Settings,
     newest: Option<TurnId>,
+    /// When something of the newest turn was last received (or the button of it pressed).
+    newest_seen: Option<Instant>,
     turn: Option<Reassembly>,
     /// In order, ready, waiting for the playback to (re)start.
     hold: Vec<Play>,
@@ -119,6 +138,7 @@ impl Jitter {
         Self {
             settings,
             newest: None,
+            newest_seen: None,
             turn: None,
             hold: Vec::new(),
             hold_end: false,
@@ -129,16 +149,33 @@ impl Jitter {
 
     /// A chunk arrives.
     pub fn chunk(&mut self, chunk: Chunk, now: Instant) -> Vec<Output> {
-        if self.newest.is_some_and(|newest| chunk.turn < newest) {
-            debug!(turn = %chunk.turn, seq = chunk.seq, "chunk of an older turn dropped");
-            return Vec::new();
+        if let Some(newest) = self.newest
+            && chunk.turn < newest
+        {
+            let quiet = self
+                .newest_seen
+                .is_none_or(|seen| now.duration_since(seen) >= CLOCK_SILENCE);
+            if !quiet {
+                debug!(turn = %chunk.turn, seq = chunk.seq, "chunk of an older turn dropped");
+                return Vec::new();
+            }
+            warn!(
+                turn = %chunk.turn,
+                newest = %newest,
+                "a turn older than the newest one comes after {CLOCK_SILENCE:?} of silence: \
+                 the clock of the ear has probably gone back, taking it as a new turn",
+            );
         }
         self.newest = Some(chunk.turn);
+        self.newest_seen = Some(now);
+        let mut outputs = Vec::new();
         if self.turn.as_ref().is_none_or(|t| t.id != chunk.turn) {
-            if let Some(old) = &self.turn
-                && !old.pending.is_empty()
-            {
-                warn!(turn = %old.id, chunks = old.pending.len(), "a newer turn starts: the chunks still missing in the older one are dropped");
+            if let Some(old) = &self.turn {
+                if !old.pending.is_empty() {
+                    warn!(turn = %old.id, chunks = old.pending.len(), "a newer turn starts: the chunks still missing in the older one are dropped");
+                }
+                // No press told us to stop: the new turn does.
+                outputs.push(self.stop(Cause::NewerTurn));
             }
             self.turn = Some(Reassembly {
                 id: chunk.turn,
@@ -166,18 +203,25 @@ impl Jitter {
             }
         }
         self.turn = Some(turn);
-        self.gate(now)
+        outputs.extend(self.gate(now));
+        outputs
     }
 
     /// The button is pressed (`Button` `start` of `turn`): stop at once, forget everything.
-    pub fn press(&mut self, turn: TurnId) -> Vec<Output> {
+    pub fn press(&mut self, turn: TurnId, now: Instant) -> Vec<Output> {
         self.newest = Some(self.newest.map_or(turn, |newest| newest.max(turn)));
+        self.newest_seen = Some(now);
         self.turn = None;
+        vec![self.stop(Cause::Button)]
+    }
+
+    /// Forgets the audio waiting to start and the playback in progress.
+    fn stop(&mut self, cause: Cause) -> Output {
         self.hold.clear();
         self.hold_end = false;
         self.hold_since = None;
         self.play_until = None;
-        vec![Output::Flush]
+        Output::Flush(cause)
     }
 
     /// Time passes: skip a chunk that did not come, start playing audio that waited too long.
@@ -206,7 +250,8 @@ impl Jitter {
     /// Moves the chunks that follow `next_seq` from `pending` to `hold`.
     fn drain(&mut self, turn: &mut Reassembly, now: Instant) {
         while let Some(chunk) = turn.pending.remove(&turn.next_seq) {
-            turn.next_seq += 1;
+            // After u32::MAX chunks (years of speech) the numbering starts again at 0.
+            turn.next_seq = turn.next_seq.checked_add(1).unwrap_or(0);
             if chunk.end {
                 self.hold_end = true;
             }
@@ -293,7 +338,7 @@ mod tests {
             format: MONO_24K,
             sentence,
             end,
-            pcm: Bytes::from(vec![seq as u8 + 1; n * 24 * 2]),
+            pcm: Bytes::from(vec![(seq as u8).wrapping_add(1); n * 24 * 2]),
         }
     }
 
@@ -306,7 +351,7 @@ mod tests {
             .iter()
             .filter_map(|o| match o {
                 Output::Play(p) => Some(p),
-                Output::Flush => None,
+                Output::Flush(_) => None,
             })
             .collect()
     }
@@ -476,8 +521,8 @@ mod tests {
         let (mut j, t) = jitter();
         assert!(j.chunk(chunk(turn_a(), 0, 0, 30, false), t).is_empty()); // held
         j.chunk(chunk(turn_a(), 2, 0, 30, false), t); // waiting for 1
-        let out = j.press(turn_b());
-        assert!(matches!(out.as_slice(), [Output::Flush]));
+        let out = j.press(turn_b(), t);
+        assert!(matches!(out.as_slice(), [Output::Flush(Cause::Button)]));
         // Nothing of what was held comes out later.
         assert!(j.poll(t + ms(500)).is_empty());
     }
@@ -486,7 +531,7 @@ mod tests {
     fn after_a_press_the_rest_of_the_old_turn_is_dropped() {
         let (mut j, t) = jitter();
         j.chunk(chunk(turn_a(), 0, 0, 100, false), t);
-        j.press(turn_b());
+        j.press(turn_b(), t);
         // The server may send up to ~100 ms more of turn A.
         for seq in 1..4 {
             assert!(
@@ -501,7 +546,7 @@ mod tests {
     fn after_a_press_the_new_turn_speaks_from_its_first_chunk() {
         let (mut j, t) = jitter();
         j.chunk(chunk(turn_a(), 0, 0, 100, false), t);
-        j.press(turn_b());
+        j.press(turn_b(), t);
         let out = j.chunk(chunk(turn_b(), 0, 0, 100, false), t + ms(2000));
         assert_eq!(order(&out), [1]);
     }
@@ -510,7 +555,7 @@ mod tests {
     fn a_press_makes_playback_start_again_with_the_buffer() {
         let (mut j, t) = jitter();
         j.chunk(chunk(turn_a(), 0, 0, 1000, false), t);
-        j.press(turn_b());
+        j.press(turn_b(), t);
         // The output was flushed: a short chunk right after must wait, not rely on `play_until`.
         assert!(
             j.chunk(chunk(turn_b(), 0, 0, 20, false), t + ms(10))
@@ -540,11 +585,98 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_of_a_newer_turn_stops_the_old_one_like_a_press() {
+        let (mut j, t) = jitter();
+        j.chunk(chunk(turn_a(), 0, 0, 100, false), t); // playing
+        // Audio of the old turn waiting for the start buffer would play after the new turn.
+        j.chunk(chunk(turn_a(), 1, 0, 20, false), t + ms(500));
+        let out = j.chunk(chunk(turn_b(), 0, 0, 100, false), t + ms(510));
+        assert!(
+            matches!(out.first(), Some(Output::Flush(Cause::NewerTurn))),
+            "{out:?}"
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(order(&out), [1], "only the new turn is played");
+        // The rest of the old turn is dropped from now on.
+        assert!(
+            j.chunk(chunk(turn_a(), 2, 0, 100, false), t + ms(520))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_first_turn_and_the_turn_after_a_press_do_not_flush() {
+        let (mut j, t) = jitter();
+        let out = j.chunk(chunk(turn_a(), 0, 0, 100, false), t);
+        assert!(matches!(out.as_slice(), [Output::Play(_)]));
+        j.press(turn_b(), t);
+        let out = j.chunk(chunk(turn_b(), 0, 0, 100, false), t + ms(5));
+        assert!(matches!(out.as_slice(), [Output::Play(_)]));
+    }
+
+    #[test]
+    fn an_older_turn_after_ten_seconds_of_silence_is_taken_as_a_new_turn() {
+        let (mut j, t) = jitter();
+        j.chunk(chunk(turn_b(), 0, 0, 100, true), t);
+        // Within the limit: still dropped.
+        assert!(
+            j.chunk(chunk(turn_a(), 0, 0, 100, false), t + ms(9_999))
+                .is_empty()
+        );
+        // Past it: the clock went back, this is the new turn.
+        let out = j.chunk(chunk(turn_a(), 0, 0, 100, false), t + ms(10_000));
+        assert!(matches!(out.first(), Some(Output::Flush(Cause::NewerTurn))));
+        assert_eq!(order(&out), [1]);
+        // It is now the newest: its next chunks follow.
+        assert_eq!(
+            order(&j.chunk(chunk(turn_a(), 1, 0, 100, false), t + ms(10_010))),
+            [2]
+        );
+    }
+
+    #[test]
+    fn dropped_chunks_do_not_count_as_activity_of_the_newest_turn() {
+        let (mut j, t) = jitter();
+        j.chunk(chunk(turn_b(), 0, 0, 100, true), t);
+        for n in 1..=3 {
+            // An old turn that keeps sending every 4 s is dropped for 8 s, then taken over.
+            let out = j.chunk(chunk(turn_a(), n, 0, 100, false), t + ms(4_000 * n as u64));
+            assert_eq!(out.is_empty(), n < 3, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn a_press_counts_as_activity_of_the_newest_turn() {
+        let (mut j, t) = jitter();
+        j.chunk(chunk(turn_a(), 0, 0, 100, true), t);
+        j.press(turn_b(), t + ms(9_000));
+        // 12 s after the first chunk, but only 3 s after the press: still the old turn.
+        assert!(
+            j.chunk(chunk(turn_a(), 1, 0, 100, false), t + ms(12_000))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_numbering_wraps_instead_of_overflowing() {
+        let (mut j, t) = jitter();
+        // Walk to the end of the numbering the quick way: a gap skip to the last numbers.
+        j.chunk(chunk(turn_a(), 0, 0, 20, false), t);
+        j.chunk(chunk(turn_a(), u32::MAX - 1, 0, 20, false), t);
+        j.poll(t + ms(150));
+        let out = j.chunk(chunk(turn_a(), u32::MAX, 0, 20, false), t + ms(160));
+        assert_eq!(played(&out).len(), 3);
+        // The numbering starts again at 0.
+        let out = j.chunk(chunk(turn_a(), 0, 0, 20, false), t + ms(170));
+        assert_eq!(played(&out).len(), 1);
+    }
+
+    #[test]
     fn a_press_older_than_the_newest_turn_still_stops_but_does_not_lower_it() {
         let (mut j, t) = jitter();
         j.chunk(chunk(turn_b(), 0, 0, 100, false), t);
-        let out = j.press(turn_a());
-        assert!(matches!(out.as_slice(), [Output::Flush]));
+        let out = j.press(turn_a(), t);
+        assert!(matches!(out.as_slice(), [Output::Flush(Cause::Button)]));
         assert!(
             j.chunk(chunk(turn_a(), 0, 0, 100, false), t + ms(1))
                 .is_empty()

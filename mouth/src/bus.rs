@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::Config,
-    jitter::{Chunk, Jitter, Output, Settings},
+    jitter::{Cause, Chunk, Jitter, Output, Settings},
     sink::{Played, Sink},
 };
 
@@ -128,7 +128,7 @@ pub async fn run(
                 let received = Instant::now();
                 match serde_json::from_slice::<Button>(&message.payload) {
                     Ok(button) if button.state == State::Start => {
-                        let outputs = jitter.press(button.turn);
+                        let outputs = jitter.press(button.turn, received);
                         apply(sink, outputs, Some(received));
                     }
                     Ok(_) => debug!("button end: nothing to do"),
@@ -163,10 +163,14 @@ fn apply(sink: &mut dyn Sink, outputs: Vec<Output>, pressed: Option<Instant>) {
     for output in outputs {
         match output {
             Output::Play(play) => sink.play(play),
-            Output::Flush => {
+            Output::Flush(cause) => {
                 let dropped = sink.flush();
+                let why = match cause {
+                    Cause::Button => "button pressed",
+                    Cause::NewerTurn => "a newer turn started without a press",
+                };
                 info!(
-                    "button pressed: playback stopped and {:.0} ms of buffered sound dropped ({:.1} ms after the message was received)",
+                    "{why}: playback stopped and {:.0} ms of buffered sound dropped ({:.1} ms after the message was received)",
                     dropped.as_secs_f64() * 1e3,
                     pressed.map_or(0.0, |at| at.elapsed().as_secs_f64() * 1e3),
                 );
