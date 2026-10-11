@@ -40,15 +40,24 @@ Recherche du 2026-10-11 (chiffres des éditeurs, rien de mesuré chez Kris) :
   mémoire vidéo), Chatterbox (pas de vrai flux), XTTS v2 (projet arrêté, licence non commerciale).
 
 Le moteur est un adaptateur (voir « Les moteurs » dans le [README](README.md)) : Pocket TTS est
-en Python, il tourne donc dans un conteneur à lui, que `bouche` (en Rust) appelle ; des portages
-en Rust existent mais sont trop jeunes (0 à 5 étoiles en octobre 2026). Le serveur de Kyutai pour
-le 1.6B est en Rust. Un mini-banc sur les phrases de Kris mesure la latence et la charge avant de
-trancher.
+en Python, il tourne donc dans un conteneur à lui, que `bouche` (en Rust) appelle
+(`pocket-tts serve` fournit déjà un serveur HTTP) ; des portages en Rust existent mais sont trop
+jeunes (0 à 5 étoiles en octobre 2026). Le serveur de Kyutai pour le 1.6B est en Rust.
+
+**Choisi au banc du 2026-10-11** (serveur, cœurs E) : **Pocket TTS, modèle `french` (6 couches)**.
+Premier son en 0,19 s (au pire 0,24 s), facteur temps réel 0,53 sur un seul fil, 1,6 cœur et
+1 Go de mémoire. Le modèle `french_24l` (24 couches) est trop lent sur les cœurs E (facteur
+1,86) : il attendra une carte graphique. Piper calcule plus vite mais ne parle qu'une fois la
+phrase entière calculée (premier son 0,7 à 1,1 s), et sa voix est plus robotique : il reste le
+secours. Le clonage de voix de Pocket n'a pas été essayé (modèle soumis à un jeton Hugging Face).
 
 ## La voix
 
-Kris ne sait pas encore laquelle : il en écoute plusieurs, d'homme et de femme, sur ses propres
-phrases, et choisit. **VoiceStudio** (application locale qui embarque plusieurs moteurs, dont
+Écoutées le 2026-10-11 : les voix précalculées de Pocket (estelle, jean, marius, fantine,
+azelma, et estelle en 24 couches) et trois voix de Piper. Pour Kris, toutes sont médiocres ; la
+seule à peu près correcte est **estelle** (Pocket, 6 couches), la seule française d'origine, les
+autres étant des voix anglaises réencodées. Estelle pour commencer ; une meilleure voix viendra
+du clonage ou d'un autre moteur. **VoiceStudio** (application locale qui embarque plusieurs moteurs, dont
 Pocket TTS) sert à cette audition ; il ne sert pas de bouche, trop lourd et fait pour produire
 des fichiers, pas pour parler en flux.
 
@@ -62,7 +71,9 @@ des fichiers, pas pour parler en flux.
 
 ## Questions ouvertes
 
-1. La voix d'Emory : choisie à l'écoute.
-2. Le moteur : Pocket TTS si le mini-banc le confirme.
+1. Une meilleure voix qu'estelle : clonage de Pocket (jeton Hugging Face) ou Kyutai 1.6B avec
+   une carte graphique.
+2. La lecture des nombres, des sigles et des noms propres par Pocket : pas encore écoutée en
+   détail, le lexique et l'écriture en toutes lettres restent prévus.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
    pas encore dites) : sujets `bouche.dire` et `bouche.stop` du bus, format à fixer dans `contrat/`.

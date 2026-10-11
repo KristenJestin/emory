@@ -90,7 +90,7 @@ oreille : appui → micro → second appui   │   centre : transcription → é
      morceaux de durée fixe (des mots doublés aux coupures), ou retranscrire en boucle les
      dernières secondes en fenêtre glissante (la qualité s'effondre, le texte est réécrit sans
      cesse).
-3. **Transcription**, au centre. Le modèle sera choisi par le banc d'essai plus bas. Les modèles
+3. **Transcription**, au centre, par Parakeet v3 (choisi au banc d'essai plus bas). Les modèles
    écorchent les noms propres, quel qu'il soit (« Hippocamp », « Chris », « au marché » pour
    Omarchy). Deux remèdes, tirés tous deux des titres et des alias d'Hippocampe (Emory,
    Hippocampe, les projets et les proches de Kris, Neo4j…) :
@@ -236,46 +236,44 @@ Ce qui rend ça tenable, à reprendre avec l'esprit :
 
 ## Le banc d'essai de la transcription
 
-Il doit être fait **avant** de choisir un modèle, sur le serveur.
+Fait le 2026-10-11 sur le serveur, sur les 4 cœurs E (`cpuset` 12-15, priorité basse), avec deux
+jeux : 2 minutes de Kris au casque (parole spontanée, beaucoup de noms propres et d'anglais) et
+FLEURS français (33 voix publiques lues, 17 hommes et 16 femmes). Rapport complet hors dépôt.
 
-**Les enregistrements**, faits au casque de Kris, comme l'oreille à bouton :
-- 2 minutes de Kris, en français, avec ses mots : Emory, Hippocampe, Grenier, les noms de ses
-  projets, des mots techniques anglais (Neo4j, MCP, Rust) ;
-- 30 secondes de silence et de bruit de fond (un appui sans parler), pour voir si le modèle
-  invente des phrases.
+**Choisi : Parakeet TDT 0.6B v3 int8, découpé en phrases par Silero VAD, avec une table de
+corrections, dans le binaire `oreilles` par sherpa-onnx.**
 
-La conversation à deux voix et le mot de réveil se mesureront avec l'oreille de pièce : combien
-de fois il rate un « Emory » de Kris, combien de fois il se déclenche seul (pendant une vidéo).
+| Moteur (cœurs E) | Erreurs sur Kris, sans aide / avec la table | FLEURS | Temps | Silence |
+|---|---|---|---|---|
+| **Parakeet v3 + VAD** | **15,3 / 7,7 %** | 6,0 % | **1,4 s par phrase** | rien inventé |
+| faster-whisper `large-v3-turbo` | 12,7 / 4,3 % | 4,5 % | 10 s pour 9 s de parole | invente sans VAD |
+| faster-whisper `small` | 18,0 / 10,3 % | 9,5 % | 2,6 s pour 9 s | invente avec mots-clés |
 
-**Les modèles :**
-- Parakeet TDT 0.6B v3 (NVIDIA, multilingue, rapide sur processeur) ;
-- faster-whisper `small` et `large-v3-turbo` en int8 ;
-- whisper.cpp ;
-- Voxtral Mini, si sa taille le permet.
+- **Le découpage en phrases est indispensable** : sur un fichier entier de 2 minutes, Parakeet
+  saute des paragraphes entiers.
+- **La table de corrections fait le travail, pas les mots-clés** : avec la table, Parakeet ne rate
+  plus que 2 noms propres sur 28 ; les mots-clés ne l'aident pas (18 ratés avec ou sans). La table
+  du banc était faite sur ce même enregistrement : celle tirée d'Hippocampe rattrapera moins. Elle
+  ne doit corriger que des formes qui ne sont pas des mots français (« trafic », « Chris » se
+  font réécrire sinon).
+- **« Emory » est le nom le plus mal entendu** (« Memory », « et Maury », « et Boris ») : à
+  retenir pour le mot de réveil.
+- Whisper turbo transcrit un peu mieux mais est 7 fois trop lent sur les cœurs E ; il redevient
+  un candidat avec une carte graphique.
+- Erreurs communes à tous : « pattes » pour « pâtes », « trafique les expos » pour « Traefik les
+  expose ».
+- Non mesurés : whisper.cpp compilé nativement et Voxtral Mini (compilation refusée pendant le
+  banc), l'iGPU UHD 730, l'effet sur un transcodage Jellyfin.
 
-Chaque modèle est un moteur, branché à `oreilles` (en Rust) dans le binaire ou hors processus (voir
-« Les moteurs » dans le [README](README.md)) : son langage n'est pas un critère. Le banc note
-quand même comment chacun se branche, puisqu'à qualité égale un moteur dans le binaire l'emporte.
+**La latence.** 1,4 s pour la dernière phrase sur les cœurs E, plus le premier mot du LLM
+(0,7 s) et le premier son (0,2 s) : environ 2,3 s, au-delà du but de 2 s. Sur tous les cœurs, la
+transcription tombe à 0,7 s. À essayer sur la vraie chaîne : laisser Parakeet déborder sur tous
+les cœurs, en priorité basse, pendant les rafales de transcription.
 
-**Sur quoi :**
-- le processeur i5-14400 ;
-- la puce graphique intégrée UHD 730, avec OpenVINO, en tenant compte du transcodage vidéo qui
-  l'utilise déjà ;
-
-**Ce qu'on mesure :**
-- la vitesse, rapportée à la durée de l'audio (il faut être nettement plus rapide que le temps
-  réel) ;
-- les erreurs sur les phrases et sur les noms propres, avec et sans vocabulaire donné ;
-- les phrases inventées sur le silence ;
-- la charge du processeur pendant la transcription, à côté des autres services du serveur ;
-- l'effet sur eux : un transcodage vidéo et une lecture multimédia lancés pendant que les
-  oreilles transcrivent ne doivent ni ralentir ni saccader.
-
-Le processeur sert à démarrer, pas à durer : la charge passe sur une carte graphique dès que
-possible, pour ne pas gêner le reste du serveur. Le banc dit ce qui est tenable en attendant et
-quelle carte suffit. Elle doit entrer dans le Jonsbo N6 et être alimentée par la Corsair CX550.
-
-Recherche du 2026-10-08 (prix et cotes à revérifier avant d'acheter) :
+**Pas de carte graphique pour la version 1** : les oreilles et la bouche tiennent sur les cœurs E
+sans gêner le reste du serveur (aucun temps de cœur P pris, aucun conteneur ralenti). Elle
+deviendra utile pour Whisper turbo, Kyutai TTS 1.6B ou un LLM local. Recherche du 2026-10-08 sur
+la carte (prix et cotes à revérifier avant d'acheter) :
 
 - **Les contraintes.**
   - Le Jonsbo N6 accepte une carte de 275 mm au plus avec ses ventilateurs avant. Son épaisseur
@@ -283,19 +281,9 @@ Recherche du 2026-10-08 (prix et cotes à revérifier avant d'acheter) :
   - La CX550 a deux connecteurs PCIe 6+2 broches, ce qui suffit pour une carte de 170 W.
   - Une carte de 2 slots peut recouvrir le slot M.2 situé au-dessus du slot x16. Il faut vérifier
     où est branché l'adaptateur SATA ASM1166.
-- **Les prix neufs ont grimpé en 2026**, à cause de la pénurie de mémoire. Presque rien de
-  récent ne passe sous 300 €.
-- **Recommandé : une RTX 3060 12 Go d'occasion**, autour de 220 à 300 €.
-  - Elle a CUDA, la référence pour faster-whisper, pyannote, Parakeet et llama.cpp.
-  - Ses 12 Go permettent de garder la transcription, la voix et un petit modèle de 7 à 8 milliards
-    de paramètres chargés ensemble.
-  - Elle fait environ 240 mm, sur 2 slots, et consomme 170 W au plus et une dizaine de watts au repos.
-- **Moins cher, neuf : une RTX 3050 6 Go**, environ 230 €. Elle suffit pour la transcription et la
-  voix, mais pas pour un modèle de langage local.
-- **À éviter.**
-  - Intel Arc : pas de CUDA, donc pas de faster-whisper accéléré, et une consommation au repos
-    élevée.
-  - La GTX 950 : il faudrait recompiler CTranslate2, et ses 2 Go sont trop justes.
+- **Recommandé : une RTX 3060 12 Go d'occasion**, autour de 220 à 300 €, CUDA, 12 Go pour la
+  transcription, la voix et un petit modèle de langage ensemble.
+- **À éviter** : Intel Arc (pas de CUDA, consommation au repos élevée), la GTX 950 (2 Go).
 
 ## Hors version 1
 
@@ -310,4 +298,5 @@ Recherche du 2026-10-08 (prix et cotes à revérifier avant d'acheter) :
 ## Questions ouvertes
 
 1. Le micro de pièce à acheter, après l'essai avec le casque.
-2. Le modèle de transcription : choisi par le banc d'essai.
+2. Le partage des cœurs E avec la bouche quand les deux tournent en même temps (Kris coupe la
+   parole à Emory) : pas mesuré.
