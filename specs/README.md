@@ -63,6 +63,19 @@ aussi les demandes avec réponse. Les organes ne se connaissent pas : ils ne con
 bus et les sujets. Le poste s'y branche en TCP (client `async-nats`) ; un site web passera par le
 WebSocket que NATS sait aussi servir. La persistance (JetStream) existe si un jour il en faut.
 
+**Tout passe par NATS en version 1, le son compris** (décidé le 2026-10-11) : le poste publie le
+micro en morceaux de 20 ms (`poste.<nom>.audio`), la bouche publie la voix d'Emory
+(`poste.<nom>.audio.retour`). Un flux de voix fait environ 256 kbit/s, rien pour NATS. Le
+transport du son est isolé dans un module du poste et des oreilles : s'il accroche à l'usage, il
+passe sur une connexion dédiée (WebSocket, WebRTC) sans toucher au reste.
+
+**Le bus est verrouillé dès le départ.** Le serveur NATS ne tourne que sur le serveur ; un
+appareil n'a qu'une bibliothèque cliente, et c'est lui qui se connecte : rien n'est ouvert sur le
+PC. Toutes les connexions sont en TLS ; chaque appareil et chaque organe a sa propre clé (nkey),
+avec des droits par sujet : le poste du bureau ne publie que sur `poste.bureau.*`, la main du
+bureau n'écoute que `main.bureau.*`, seul `esprit` publie sur `main.*`. Un appareil volé ou
+compromis ne sort pas de ses sujets.
+
 Un échange, avec l'oreille à bouton :
 
 ```

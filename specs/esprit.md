@@ -103,6 +103,20 @@ dès que la transcription arrive, `esprit` interroge Hippocampe avec la phrase d
 et glisse ce qu'il trouve dans la demande au LLM, qui répond en un seul aller-retour. Le LLM
 garde ses outils pour ce que ce premier contexte ne couvre pas, et pour agir (noter, minuteur).
 
+Mesuré le 2026-10-11 sur le vrai Hippocampe : une recherche prend environ 25 ms depuis le serveur
+(deux appels sur trente-deux à 2 s, sans doute un délai de connexion). `esprit` garde donc une
+connexion ouverte et renonce à la mémoire pour ce tour au-delà de 300 ms. Il ne colle dans la
+demande que le titre, le résumé et l'extrait de chaque fiche (une réponse brute fait environ
+1 100 jetons pour 5 fiches, surtout des identifiants et des dates).
+
+**`esprit` passe la phrase de Kris telle quelle** : trouver ce qui est pertinent dans une phrase
+entière est le travail d'Hippocampe, pas d'Emory (décidé le 2026-10-11). Aujourd'hui la recherche
+d'Hippocampe exige tous les mots et ne trouve presque rien avec une phrase parlée ; c'est une
+demande générale faite à Hippocampe (recherche en langage naturel classée par pertinence).
+
+À l'ouverture d'une conversation, `esprit` lit aussi ce qu'Hippocampe signale du moment (les
+échéances du jour, `heads_up`) et le garde pour toute la conversation.
+
 Si l'attente se sent encore, on ajoute ensuite la recherche en parallèle et la reprise au bord
 d'une phrase prévues par `bouche.md`, jamais une phrase d'attente.
 
