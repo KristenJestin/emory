@@ -1,0 +1,64 @@
+# La bouche d'Emory : version 1
+
+Statut : brouillon du 2026-10-11, à valider par Kris.
+
+La bouche fait parler Emory : elle reçoit le texte de l'esprit, le transforme en voix sur le
+serveur, et envoie le flux audio au poste qui a entendu Kris (voir le [README](README.md)).
+
+## Principes
+
+1. **La voix se fabrique sur le serveur, en local.** Le poste ne fait que jouer le flux qui
+   revient. Aucun service de synthèse dans le cloud en version 1.
+2. **En flux, phrase par phrase.** La bouche commence à parler dès que l'esprit a écrit sa
+   première phrase. Le but : le premier son moins de 0,2 s après la réception d'une phrase.
+3. **Pas de phrase d'attente.** Emory ne dit jamais « je regarde » pour faire patienter. Il répond
+   avec ce qu'il sait ; quand un travail lancé en parallèle aboutit, l'esprit jette les phrases
+   pas encore dites et la bouche enchaîne au bord de la phrase en cours (« … ah, je l'ai : »),
+   jamais au milieu d'un mot. Ce qui est dit en attendant doit être utile, pas du remplissage.
+4. **Le moteur est un adaptateur.** Changer de moteur (passer sur la carte graphique, ou au cloud
+   un jour) ne touche ni à l'esprit ni au poste.
+5. **Emory ne gêne pas le reste du serveur**, avec les mêmes limites que les oreilles.
+
+## L'interruption
+
+En version 1, un appui sur le bouton pendant qu'Emory parle le fait taire : la bouche coupe le
+flux et jette ce qui restait à dire, et le poste se met à écouter. Avec l'oreille de pièce,
+plus tard, ce sera la reprise de parole de Kris (voir [`oreilles.md`](oreilles.md)).
+
+## Le moteur
+
+Recherche du 2026-10-11 (chiffres des éditeurs, rien de mesuré chez Kris) :
+
+- **Sur processeur, pour commencer : Kyutai Pocket TTS** (100M, CC-BY-4.0). Français depuis
+  mai 2026, en flux, environ 200 ms jusqu'au premier son sur 2 cœurs, clonage à partir de 5 s
+  d'audio. Le seul trouvé qui fait les trois sur processeur.
+- **En secours : Piper.** Très léger et solide, mais la voix sonne robotique.
+- **Avec la carte graphique : Kyutai TTS 1.6B en_fr** (CC-BY-4.0). Fait pour le français et
+  l'anglais, lit le texte pendant que l'esprit l'écrit, environ 220 ms ; 4 à 6 Go de mémoire
+  vidéo, qui tiennent juste sur une RTX 3060 avec la transcription et un petit modèle de langage.
+- **Écartés** : Kokoro (une seule voix française, médiocre), Voxtral TTS (environ 16 Go de
+  mémoire vidéo), Chatterbox (pas de vrai flux), XTTS v2 (projet arrêté, licence non commerciale).
+
+Un mini-banc sur les phrases de Kris mesure la latence et la charge avant de trancher.
+
+## La voix
+
+Kris ne sait pas encore laquelle : il en écoute plusieurs, d'homme et de femme, sur ses propres
+phrases, et choisit. **VoiceStudio** (application locale qui embarque plusieurs moteurs, dont
+Pocket TTS) sert à cette audition ; il ne sert pas de bouche, trop lourd et fait pour produire
+des fichiers, pas pour parler en flux.
+
+## Ce qui est lu
+
+- **Les mots anglais et les noms propres** : un moteur français lit « Neo4j » ou « MCP » à la
+  française. Un lexique de prononciation les remplace avant la synthèse (« MCP » → « èm cé pé »),
+  tiré, comme le vocabulaire des oreilles, des titres et des alias d'Hippocampe.
+- **Les nombres, les dates et les heures** sont écrits en toutes lettres avant la synthèse ; le
+  plus simple est de le demander à l'esprit.
+
+## Questions ouvertes
+
+1. La voix d'Emory : choisie à l'écoute.
+2. Le moteur : Pocket TTS si le mini-banc le confirme.
+3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
+   pas encore dites) : à fixer avec l'esprit, dans `contract/`.

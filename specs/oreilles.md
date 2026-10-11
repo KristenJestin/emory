@@ -35,7 +35,7 @@ au format fixé plus bas, et n'importe quel esprit le lit.
 
 | Rôle | Machine | Ce qu'elle fait |
 |---|---|---|
-| **L'oreille** | d'abord le PC de Kris avec son casque ; plus tard le Raspberry Pi 4 inutilisé ou une autre machine, avec un micro de pièce | Capte le son, rien d'autre : un petit programme sans modèle lourd ni état, avec un adaptateur par type de micro. Envoie l'audio au serveur, sur le réseau local, avec le nom de l'oreille. |
+| **L'oreille** | le poste (voir le [README](README.md)) : d'abord le PC de Kris avec son casque ; plus tard le Raspberry Pi 4 inutilisé ou une autre machine, avec un micro de pièce | Capte le son, rien d'autre, avec un adaptateur par type de micro. Envoie l'audio au serveur, sur le réseau local, avec le nom du poste. |
 | **Le cerveau auditif** | le serveur (i5-14400, 32 Go, pas de carte graphique aujourd'hui) | Un seul centre pour toutes les oreilles : il reçoit leurs flux, transcrit et envoie les événements à l'esprit ; pour les oreilles de pièce, il fait en plus le mot de réveil, la fin de tour, la reconnaissance des voix, la mémoire tampon et le choix entre deux oreilles qui entendent la même phrase. |
 
 L'oreille et le serveur sont dans le même logement, et suivent Kris s'il déménage. Le serveur est
