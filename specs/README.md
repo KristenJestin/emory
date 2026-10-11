@@ -13,7 +13,7 @@ l'esprit. Sa mémoire à long terme n'y est pas : c'est Hippocampe, un projet à
 | **La bouche** | fait parler Emory, et se tait quand Kris reprend la parole | [`bouche.md`](bouche.md) (brouillon) |
 | **Les yeux** | ce qu'Emory voit | à écrire |
 | **Les mains** | ce qu'Emory fait dans le monde (appareils, services) | à écrire |
-| **L'esprit** | reçoit les événements des organes, décide, lit et écrit dans Hippocampe, répond | à écrire ; le plus coûteux et le plus ouvert |
+| **L'esprit** | reçoit les événements des organes, décide, lit et écrit dans Hippocampe, répond | [`esprit.md`](esprit.md) (brouillon) |
 
 ## Le poste
 
@@ -41,15 +41,15 @@ Décidé le 2026-10-11.
 | Conteneur | Rôle |
 |---|---|
 | `nats` | le bus de messages |
-| `ears` | le centre auditif : reçoit l'audio des postes, transcrit, publie le tour de parole |
-| `mind` | l'esprit : garde la conversation, appelle le LLM et les outils, envoie les phrases à dire |
-| `mouth` | la bouche : synthétise les phrases et renvoie l'audio au poste |
+| `oreilles` | le centre auditif : reçoit l'audio des postes, transcrit, publie le tour de parole |
+| `esprit` | l'esprit : garde la conversation, appelle le LLM et les outils, envoie les phrases à dire |
+| `bouche` | la bouche : synthétise les phrases et renvoie l'audio au poste |
 | un conteneur par moteur hors processus | voir « Les moteurs » |
 
 **Sur chaque appareil, le poste**, branché au bus.
 
 **Le bus : NATS.** Un courtier de messages, de la famille de RabbitMQ mais minimaliste : chaque
-programme publie sur des sujets nommés (`ears.tour`, `mouth.dire`…) et s'abonne à ceux qui
+programme publie sur des sujets nommés (`oreilles.tour`, `bouche.dire`…) et s'abonne à ceux qui
 l'intéressent ; NATS livre aussitôt, en moins d'une milliseconde sur le réseau local, et fait
 aussi les demandes avec réponse. Les organes ne se connaissent pas : ils ne connaissent que le
 bus et les sujets. Le poste s'y branche en TCP (client `async-nats`) ; un site web passera par le
@@ -58,20 +58,20 @@ WebSocket que NATS sait aussi servir. La persistance (JetStream) existe si un jo
 Un échange, avec l'oreille à bouton :
 
 ```
-1. appui    poste → station.<poste>.bouton (début), puis station.<poste>.audio (le flux)
-2. appui    poste → station.<poste>.bouton (fin)
-3. ears     transcrit → ears.tour {texte, locuteur, poste…}
-4. mind     ajoute à la conversation, appelle le LLM en flux avec ses outils ;
-            chaque phrase écrite → mouth.dire {poste, texte}
-5. mouth    synthétise → station.<poste>.audio.retour
+1. appui    poste → poste.<nom>.bouton (début), puis poste.<nom>.audio (le flux)
+2. appui    poste → poste.<nom>.bouton (fin)
+3. oreilles transcrit → oreilles.tour {texte, locuteur, poste…}
+4. esprit   ajoute à la conversation, appelle le LLM en flux avec ses outils ;
+            chaque phrase écrite → bouche.dire {poste, texte}
+5. bouche   synthétise → poste.<nom>.audio.retour
 6. poste    joue le son
 ```
 
-Un appui pendant qu'Emory parle : le poste coupe le son de lui-même, `mind` arrête le LLM et
-envoie `mouth.stop`. Les noms des sujets et le format de chaque message sont dans `contract/`,
+Un appui pendant qu'Emory parle : le poste coupe le son de lui-même, `esprit` arrête le LLM et
+envoie `bouche.stop`. Les noms des sujets et le format de chaque message sont dans `contrat/`,
 la seule chose que les programmes partagent.
 
-**Nos programmes sont en Rust** : le poste, `ears`, `mind`, `mouth`. Pas de Python dans notre code.
+**Nos programmes sont en Rust** : le poste, `oreilles`, `esprit`, `bouche`. Pas de Python dans notre code.
 
 **Les moteurs sont des adaptateurs, dans le langage qu'ils veulent.** Un moteur de modèle
 (transcription, synthèse, LLM) se branche derrière l'organe qui s'en sert, de deux façons :
@@ -97,13 +97,13 @@ sans toucher aux autres.
 ```
 emory/
   specs/        cette vue d'ensemble, puis une spec par organe
-  contract/     les sujets du bus et le format des messages
-  station/      le poste, un adaptateur par micro et par haut-parleur
-  ears/         le centre auditif
-  mouth/        la bouche
-  mind/         l'esprit
-  engines/      les moteurs hors processus, un dossier chacun
-  eyes/  hands/   plus tard
+  contrat/      les sujets du bus et le format des messages
+  poste/        le poste, un adaptateur par micro et par haut-parleur
+  oreilles/     le centre auditif
+  bouche/       la bouche
+  esprit/       l'esprit
+  moteurs/      les moteurs hors processus, un dossier chacun
+  yeux/  mains/   plus tard
 ```
 
 ## Hippocampe, à part

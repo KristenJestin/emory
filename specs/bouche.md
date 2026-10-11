@@ -40,7 +40,7 @@ Recherche du 2026-10-11 (chiffres des éditeurs, rien de mesuré chez Kris) :
   mémoire vidéo), Chatterbox (pas de vrai flux), XTTS v2 (projet arrêté, licence non commerciale).
 
 Le moteur est un adaptateur (voir « Les moteurs » dans le [README](README.md)) : Pocket TTS est
-en Python, il tourne donc dans un conteneur à lui, que `mouth` (en Rust) appelle ; des portages
+en Python, il tourne donc dans un conteneur à lui, que `bouche` (en Rust) appelle ; des portages
 en Rust existent mais sont trop jeunes (0 à 5 étoiles en octobre 2026). Le serveur de Kyutai pour
 le 1.6B est en Rust. Un mini-banc sur les phrases de Kris mesure la latence et la charge avant de
 trancher.
@@ -65,4 +65,4 @@ des fichiers, pas pour parler en flux.
 1. La voix d'Emory : choisie à l'écoute.
 2. Le moteur : Pocket TTS si le mini-banc le confirme.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
-   pas encore dites) : sujets `mouth.dire` et `mouth.stop` du bus, format à fixer dans `contract/`.
+   pas encore dites) : sujets `bouche.dire` et `bouche.stop` du bus, format à fixer dans `contrat/`.

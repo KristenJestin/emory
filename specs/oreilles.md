@@ -193,8 +193,8 @@ Un événement par tour de parole adressé à Emory :
 - `origine` vaut `connue` (Kris a donné le nom) ou `supposee` (le système l'a déduit) : ce que
   l'esprit écrit à partir d'une voix supposée est marqué `inferred` dans Hippocampe.
 
-L'événement est publié sur le bus NATS, sujet `ears.tour` (voir le [README](README.md)) ; son
-format exact est dans `contract/`.
+L'événement est publié sur le bus NATS, sujet `oreilles.tour` (voir le [README](README.md)) ; son
+format exact est dans `contrat/`.
 
 ## La latence
 
@@ -238,7 +238,7 @@ de fois il rate un « Emory » de Kris, combien de fois il se déclenche seul (p
 - whisper.cpp ;
 - Voxtral Mini, si sa taille le permet.
 
-Chaque modèle est un moteur, branché à `ears` (en Rust) dans le binaire ou hors processus (voir
+Chaque modèle est un moteur, branché à `oreilles` (en Rust) dans le binaire ou hors processus (voir
 « Les moteurs » dans le [README](README.md)) : son langage n'est pas un critère. Le banc note
 quand même comment chacun se branche, puisqu'à qualité égale un moteur dans le binaire l'emporte.
 
