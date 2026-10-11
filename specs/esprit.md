@@ -99,8 +99,10 @@ doit arriver en moins d'une seconde : c'est le critère principal du choix du mo
 
 **Le relais cherche lui-même, avant le LLM** (décidé le 2026-10-11). Un LLM qui doit appeler un
 outil avant de parler fait deux allers-retours et perd 2 à 3 secondes, quel que soit le LLM. Donc
-dès que la transcription arrive, `esprit` interroge Hippocampe avec la phrase de Kris, sans IA,
-et glisse ce qu'il trouve dans la demande au LLM, qui répond en un seul aller-retour. Le LLM
+pendant que Kris parle, à chaque phrase transcrite (`oreilles.phrase`), `esprit` interroge
+Hippocampe avec cette phrase, sans IA ; au second appui, le contexte est déjà prêt, et il le
+glisse dans la demande au LLM, qui répond en un seul aller-retour. Ce travail en avance ne fait
+que lire : rien d'irréversible avant la fin du tour (`oreilles.tour`). Le LLM
 garde ses outils pour ce que ce premier contexte ne couvre pas, et pour agir (noter, minuteur).
 
 Mesuré le 2026-10-11 sur le vrai Hippocampe : une recherche prend environ 25 ms depuis le serveur

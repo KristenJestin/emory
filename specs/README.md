@@ -80,8 +80,10 @@ Un échange, avec l'oreille à bouton :
 
 ```
 1. appui    poste → poste.<nom>.bouton (début), puis poste.<nom>.audio (le flux)
+   pendant  oreilles découpe en phrases, transcrit chacune → oreilles.phrase
+            esprit cherche déjà dans Hippocampe
 2. appui    poste → poste.<nom>.bouton (fin)
-3. oreilles transcrit → oreilles.tour {texte, locuteur, poste…}
+3. oreilles transcrit la dernière phrase → oreilles.tour {texte, locuteur, poste…}
 4. esprit   ajoute à la conversation, appelle le LLM en flux avec ses outils ;
             chaque phrase écrite → bouche.dire {poste, texte}
 5. bouche   synthétise → poste.<nom>.audio.retour

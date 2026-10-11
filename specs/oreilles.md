@@ -76,13 +76,28 @@ oreille : appui → micro → second appui   │   centre : transcription → é
 ```
 
 1. **Le bouton.** Un appui ouvre l'écoute, un second la ferme. L'audio entre les deux part au
-   centre. Pas de détection de voix, de mot de réveil ni de fin de tour : c'est Kris qui les fait.
-2. **Transcription**, au centre. Le modèle sera choisi par le banc d'essai plus bas. Les modèles
-   écorchent les noms propres : on leur donne une liste de mots à privilégier (prompt initial ou
-   hotwords), tirée des titres et des alias d'Hippocampe (Emory, Hippocampe, les projets et les
-   proches de Kris, Neo4j…). Les silences sont coupés avant la transcription (Silero VAD, intégré
-   à faster-whisper comme à sherpa-onnx), ce qui évite les phrases inventées.
-3. **Qui parle** : Kris, puisque c'est son casque. L'événement porte `locuteur` à `kris`, d'origine
+   centre, en flux. Pas de mot de réveil ni de fin de tour : c'est Kris qui les fait.
+2. **Découpage en phrases**, au centre, pendant que Kris parle (décidé le 2026-10-11). Le poste
+   n'envoie que l'audio brut ; c'est `oreilles`, sur le serveur, qui y fait passer Silero VAD :
+   une phrase s'ouvre quand Kris parle et se ferme après un court silence. Chaque phrase fermée
+   est transcrite aussitôt et publiée sur `oreilles.phrase`. Au second appui, il ne reste que la
+   dernière à transcrire, puis le tour entier part sur `oreilles.tour`. Le VAD coupe aussi les
+   silences, ce qui évite les phrases inventées.
+   - Sur le processeur, une phrase est transcrite une seule fois, quand elle se ferme. Le texte
+     provisoire de la phrase en cours, retranscrite toutes les 0,4 s comme le fait un clavier de
+     dictée, attendra la carte graphique : c'est trop coûteux sur le processeur.
+   - **À ne pas faire** (essayé pour la dictée du PC de Kris, le 2026-10-11) : couper l'audio en
+     morceaux de durée fixe (des mots doublés aux coupures), ou retranscrire en boucle les
+     dernières secondes en fenêtre glissante (la qualité s'effondre, le texte est réécrit sans
+     cesse).
+3. **Transcription**, au centre. Le modèle sera choisi par le banc d'essai plus bas. Les modèles
+   écorchent les noms propres, quel qu'il soit (« Hippocamp », « Chris », « au marché » pour
+   Omarchy). Deux remèdes, tirés tous deux des titres et des alias d'Hippocampe (Emory,
+   Hippocampe, les projets et les proches de Kris, Neo4j…) :
+   - une liste de mots à privilégier, donnée au modèle (prompt initial ou hotwords) ;
+   - **une table de corrections appliquée après la transcription** (« Hippocamp » →
+     « Hippocampe », « Chris » → « Kris ») : la liste seule ne suffit pas.
+4. **Qui parle** : Kris, puisque c'est son casque. L'événement porte `locuteur` à `kris`, d'origine
    `connue`, et `reveil` à `bouton`.
 
 ### L'oreille de pièce (plus tard)
