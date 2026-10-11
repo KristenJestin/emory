@@ -12,7 +12,7 @@ l'esprit. Sa mémoire à long terme n'y est pas : c'est Hippocampe, un projet à
 | **Les oreilles** | transforment ce qui est dit en événements pour l'esprit | [`oreilles.md`](oreilles.md) (brouillon) |
 | **La bouche** | fait parler Emory, et se tait quand Kris reprend la parole | [`bouche.md`](bouche.md) (brouillon) |
 | **Les yeux** | ce qu'Emory voit | à écrire |
-| **Les mains** | ce qu'Emory fait dans le monde (appareils, services) | à écrire |
+| **Les mains** | ce qu'Emory fait dans le monde (appareils, services) | [`mains.md`](mains.md) (brouillon) |
 | **L'esprit** | reçoit les événements des organes, décide, lit et écrit dans Hippocampe, répond | [`esprit.md`](esprit.md) (brouillon) |
 
 ## Le poste
@@ -103,7 +103,8 @@ emory/
   bouche/       la bouche
   esprit/       l'esprit
   moteurs/      les moteurs hors processus, un dossier chacun
-  yeux/  mains/   plus tard
+  mains/        les mains, une par chose pilotée (la musique d'abord)
+  yeux/         plus tard
 ```
 
 ## Hippocampe, à part
