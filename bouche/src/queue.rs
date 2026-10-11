@@ -2,7 +2,10 @@
 //! l'état `Parle`. Une machine à états sans réseau ni horloge : les instants viennent de
 //! l'appelant, les effets à exécuter sont rendus.
 
-use std::{collections::BTreeMap, time::Duration, time::Instant};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::{Duration, Instant},
+};
 
 use contract::{Dire, Etat, IdTour};
 
@@ -23,10 +26,16 @@ pub enum Effect {
     Parle(Etat),
 }
 
+/// Combien de tours remplacés la file se rappelle.
+const RETIRED_KEPT: usize = 16;
+
 pub struct Queue {
     grace: Duration,
     /// Le tour en cours, ou le dernier tour vu s'il est arrêté.
     tour: Option<IdTour>,
+    /// Les derniers tours remplacés : leurs phrases en retard ne rouvrent pas le tour. On ne
+    /// compare pas les identifiants entre eux, ce serait se fier à l'horloge du poste.
+    retired: VecDeque<IdTour>,
     stopped: bool,
     /// Le numéro de la prochaine phrase à dire.
     next: u32,
@@ -44,6 +53,7 @@ impl Queue {
         Self {
             grace,
             tour: None,
+            retired: VecDeque::new(),
             stopped: false,
             next: 0,
             waiting: BTreeMap::new(),
@@ -54,12 +64,14 @@ impl Queue {
         }
     }
 
-    /// Une phrase à dire. Un tour plus récent remplace l'ancien ; une phrase d'un tour plus
-    /// ancien, d'un tour arrêté, ou déjà vue, est ignorée.
+    /// Une phrase à dire. Un autre tour remplace l'ancien ; une phrase d'un tour remplacé ou
+    /// arrêté, ou déjà vue, est ignorée.
     pub fn dire(&mut self, dire: &Dire, now: Instant) -> Vec<Effect> {
         let mut effects = Vec::new();
+        if self.retired.contains(&dire.tour) {
+            return effects;
+        }
         match self.tour {
-            Some(t) if dire.tour < t => return effects,
             Some(t) if dire.tour == t => {
                 if self.stopped
                     || dire.numero < self.next
@@ -79,8 +91,10 @@ impl Queue {
     /// Le tour est arrêté : ce qui n'est pas dit est jeté, la synthèse coupée.
     pub fn stop(&mut self, tour: IdTour) -> Vec<Effect> {
         let mut effects = Vec::new();
+        if self.retired.contains(&tour) {
+            return effects;
+        }
         match self.tour {
-            Some(t) if tour < t => return effects,
             Some(t) if tour == t => {
                 if self.stopped {
                     return effects;
@@ -156,7 +170,12 @@ impl Queue {
     /// Un nouveau tour prend la place de l'ancien, qui est arrêté de la même façon.
     fn start_turn(&mut self, tour: IdTour, effects: &mut Vec<Effect>) {
         self.silence(effects);
-        self.tour = Some(tour);
+        if let Some(old) = self.tour.replace(tour) {
+            if self.retired.len() == RETIRED_KEPT {
+                self.retired.pop_front();
+            }
+            self.retired.push_back(old);
+        }
         self.stopped = false;
         self.next = 0;
         self.seq = 0;
@@ -374,5 +393,15 @@ mod tests {
         assert!(q.sound_sent(tour, Duration::ZERO, t0).is_empty());
         assert_eq!(q.finished(tour, 0, 1), []);
         assert_eq!(q.deadline(), None);
+    }
+
+    #[test]
+    fn a_new_turn_wins_even_if_its_id_sorts_before_the_old_one() {
+        // The poste's clock may step back: the queue must not trust the order of the ids.
+        let (mut q, t0) = (Queue::new(GRACE), Instant::now());
+        let (a, b) = (IdTour::nouveau(), IdTour::nouveau());
+        let (old, new) = (a.max(b), a.min(b));
+        q.dire(&dire(old, 0, "vieux"), t0);
+        assert_eq!(said(&q.dire(&dire(new, 0, "neuf"), t0)), [(0, "neuf", 0)]);
     }
 }
