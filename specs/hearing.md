@@ -267,6 +267,8 @@ corrections, dans le binaire `hearing` par sherpa-onnx.**
   du banc était faite sur ce même enregistrement : celle tirée d'Hippocampe rattrapera moins. Elle
   ne doit corriger que des formes qui ne sont pas des mots français (« trafic », « Chris » se
   font réécrire sinon).
+  (Ce constat vaut pour Whisper : avec Parakeet et sherpa-onnx, les mots-clés aident, voir
+  « Le niveau du micro et le vocabulaire » plus bas, 2026-10-12.)
 - **« Emory » est le nom le plus mal entendu** (« Memory », « et Maury », « et Boris ») : à
   retenir pour le mot de réveil.
 - Whisper turbo transcrit un peu mieux mais est 7 fois trop lent sur les cœurs E ; il redevient
@@ -295,6 +297,87 @@ la carte (prix et cotes à revérifier avant d'acheter) :
 - **Recommandé : une RTX 3060 12 Go d'occasion**, autour de 220 à 300 €, CUDA, 12 Go pour la
   transcription, la voix et un petit modèle de langage ensemble.
 - **À éviter** : Intel Arc (pas de CUDA, consommation au repos élevée), la GTX 950 (2 Go).
+
+## Le niveau du micro et le vocabulaire (2026-10-12)
+
+Essai en vrai de la chaîne par Kris avec son casque sans fil (Logitech PRO X 2) : 4 tours sur 9
+sont sortis avec `sentences=0`, Emory n'a rien dit, et rien dans les journaux ne permettait de
+dire pourquoi. Silero VAD n'avait vu aucune voix dans ces tours, alors que Parakeet seul
+transcrit le même enregistrement atténué à un pic de -44 dBFS. Le plus probable : le casque a
+envoyé du quasi-silence (bouton muet, liaison sans fil). Rien ne mesurait le niveau, donc rien ne
+pouvait le prouver.
+
+**Le niveau, en `debug`** (Kris a demandé `debug`, pas `info`) :
+- `hearing` mesure, par tour, le pic et le niveau efficace (RMS) de l'audio reçu en dBFS (0 est le
+  plus fort possible, plancher à -120), la durée de parole vue par le VAD et le nombre de phrases.
+  Ligne `turn level`, avec le tour. Elle ne contient jamais le texte.
+- Un tour de plus de 0,5 s qui finit sans phrase ajoute une ligne `no sentence in the turn` : soit
+  `no voice found` (le VAD n'a rien vu : les niveaux disent si le micro envoyait quelque chose),
+  soit `voice found, but nothing came out of it` (le VAD a vu de la parole mais Parakeet n'a rendu
+  aucun texte).
+- `emory-ear` journalise la même chose, en `debug`, pour ce que son micro a capté : si les deux
+  niveaux diffèrent, le son s'est perdu en route.
+- Mesures sur les fichiers d'essai : de la parole normale pique entre -3,7 et -6,3 dBFS pour un
+  RMS autour de -24 dBFS. Le même fichier atténué à un pic de -54 dBFS donne `no voice found` ;
+  à -44 dBFS le VAD y voit encore de la parole (2,4 s) mais Parakeet ne rend aucun texte
+  (`voice found, but nothing came out of it`). Les deux pannes se lisent donc dans le journal.
+- **Pas de repli « transcrire tout le tour quand le VAD n'a rien trouvé »** : Kris l'a refusé
+  (2026-10-12).
+
+**Le vocabulaire (hotwords) aide avec Parakeet.** Le constat de Whisper plus haut (« les
+mots-clés ne l'aident pas ») ne vaut pas ici. sherpa-onnx 1.13.8 les prend avec Parakeet TDT
+quand on règle `decoding_method = modified_beam_search`, un fichier de mots (`hotwords_file`) et
+un score (`hotwords_score`), avec `modeling_unit = bpe` et un `bpe_vocab` que le modèle ne livre
+pas : `scripts/download-models.sh` l'écrit depuis `tokens.txt` (chaque jeton avec le score -id).
+Sans lui, sherpa-onnx répond « Cannot find ID for token Em ». Un fichier vide ou absent garde la
+recherche gloutonne.
+- Configuration : `[transcription]` `decoding_method`, `hotwords`, `hotwords_score` (2.0 par
+  défaut), `bpe_vocab` (par défaut dans le dossier de Parakeet). Des mots sans
+  `decoding_method` passent en recherche en faisceau ; `greedy_search` demandé avec des mots est
+  refusé au démarrage plutôt que silencieusement sans effet.
+- Liste d'exemple (`hearing/examples/hotwords.txt`) : Emory, Hippocampe, Omarchy, Dokploy, KrisNet,
+  Navidrome. Kris et Traefik de la première liste d'essai sont retirés : « trafic » n'est jamais
+  devenu Traefik (et ne doit pas : c'est un mot français), et « Kris » est court et proche de mots
+  existants, sans effet mesuré seul.
+- Effet sur les 2 minutes de Kris (22 phrases), parole non corrigée par la table :
+
+| Score | Hippocampe | Omarchy | KrisNet | Navidrome | Dokploy | Dégâts |
+|---|---|---|---|---|---|---|
+| sans mots | « Hippocamp », « hypocamp » | « Homarchy » | « ChrisNet » | juste | « DocPuy » | aucun |
+| 1,5 | corrigé (2 sur 2) | corrigé | corrigé | « Navidrom » | « DocPuy » | aucun |
+| **2,0** | corrigé | corrigé | corrigé | corrigé | « DocPuy » | aucun |
+| 3,0 | corrigé | corrigé | corrigé | corrigé | « DokPoy » | « Emoy », « Our Emoi », mots inventés |
+
+  À 2,0, la liste corrige les noms de la liste que Parakeet écorchait, sans rien abîmer d'autre que la casse de quelques mots (« Kit », « Cx »).
+  À 3,0 Emory lui-même est détruit : le score reste à 2,0. Ce que le vocabulaire ne rattrape pas
+  reste à la table de corrections : « DocPuy » (Dokploy), « Emera » et « pour Mori » (Emory). Un
+  essai plus tôt le même jour, sur un autre enregistrement, avait corrigé « DocPly » à 2,0 : l'effet dépend
+  de ce que le modèle entend déjà de près.
+- **Le coût.** La recherche en faisceau est plus lente que la gloutonne, et les mots ajoutent un
+  peu. Mesuré en un seul processus, mêmes phrases, les cinq réglages en alternance, 4 threads,
+  meilleur tour de 4 ou 12 (le PC de Kris était chargé par d'autres programmes, la charge à 26-48 :
+  les médianes ne veulent rien dire, le meilleur tour est la seule mesure stable) :
+
+| | Kris, 22 phrases (96 s de parole) | Fin coupée, 7 phrases (21 s) |
+|---|---|---|
+| gloutonne | 8,0 s (365 ms par phrase) | 1,54 s (220 ms) |
+| faisceau, sans mots | 9,7 s (+21 %) | 2,05 s (+33 %) |
+| faisceau, mots à 1,5 | 9,5 s (+18 %) | 1,89 s (+23 %) |
+| faisceau, mots à 2,0 | 12,2 s (+53 %) | 1,89 s (+23 %) |
+
+  Soit de 20 % à 50 % de calcul en plus, **de 0,05 à 0,2 s de plus par phrase** sur ce PC en
+  4 threads. C'est ce qui s'ajoute à la dernière phrase après le second appui, dans une chaîne que
+  Kris trouve déjà lente. Il peut le retirer en vidant `hotwords`. Sur les cœurs E du serveur, plus
+  lents, le surcoût sera plus grand : à remesurer là.
+
+**Les corrections** (table `corrections.tsv`) lisent aussi « A Mira, » ou « Amira, » au début
+d'une phrase comme « Emory, », et « A Mira » ou « Amira » seul comme une phrase entière. Mira et
+Amira sont des prénoms : rien n'est touché au milieu d'une phrase (« dis à Amira de venir »),
+et la ligne est à supprimer si Kris a une Amira qu'il appelle par son prénom au début d'une phrase.
+
+**Les chemins.** Un chemin relatif du fichier de configuration est lu depuis le dossier de ce
+fichier, et non plus depuis le dossier où le programme est lancé : `hearing
+hearing/examples/hearing.toml` marche depuis la racine du dépôt.
 
 ## Hors version 1
 
