@@ -248,3 +248,30 @@ Le premier son suit le premier `voice.say` de 0,1 à 0,2 s. Les réponses sont j
 Quand le mot clé est mal transcrit (« les mains des Maury » pour « d'Emory »), le LLM cherche
 lui-même : c'est le cas le plus lent.
 
+**Réponses courtes, et le tour vide** (2026-10-12, essai en direct de Kris). Deux constats.
+
+*Trop long.* « Tu peux me refaire un topo sur ce qu'on a bossé aujourd'hui ? » a donné neuf phrases,
+puis onze pour la suite : justes et tirées de la mémoire, mais trop pour être écoutées. Décidé avec
+Kris : deux ou trois phrases courtes par défaut, quelle que soit la question, plus longues
+seulement quand il demande des détails ; Emory peut proposer d'en dire plus (« Je t'en dis
+plus ? »). Toujours aucune phrase d'attente, aucune liste lue à voix haute. La règle est dans
+`mind/prompts/system.fr.md`, écrite avec un plafond net (trois phrases, un résumé de ce qui
+reste) et les mots qui lèvent le plafond. Mesuré le jour même sur quatre vraies demandes à Haiku 5.5
+(`low`), avec des fiches inventées pour la question du topo : 3, 2, 3 puis 2 phrases (47, 43, 41 et
+15 mots), dont un « Je t'en dis plus ? » à la fin du topo. Une demande de détails (« détaille-moi
+tout… ») est restée à trois phrases, mais les fiches de l'essai ne contenaient presque rien de plus
+à dire : à revoir à l'usage.
+
+*Le silence quand rien n'est entendu.* Plusieurs tours sont arrivés à `mind` avec un texte vide (le
+casque avait envoyé du presque-silence) et Emory ne disait rien, ce que Kris a trouvé « un peu con ».
+Désormais un tour dont le texte est vide, ou ne contient que des blancs et de la ponctuation (aucune
+lettre ni chiffre), ne part pas au LLM : aucune demande, donc rien de pris sur le quota. Emory dit
+une phrase fixe, « Je n'ai rien entendu. » (réglable : `conversation.nothing_heard`), par
+`voice.say` avec `last`, vers l'appareil du tour. Le tour passe par les mêmes règles que les autres :
+un tour plus ancien que le dernier vu sur l'appareil n'est pas dit ; il arrête la réponse plus
+ancienne comme un appui ; et la phrase est une réponse comme une autre, donc un nouvel appui pendant
+qu'elle se dit envoie `voice.stop` (sans rien annuler, il n'y a pas de demande). Le tour vide
+n'ouvre aucune session : celle qui existe a été ouverte par l'appui, pendant que Kris parlait,
+comme pour tout tour (ouvrir une session ne prend rien sur le quota ; retarder l'ouverture après le
+tour aurait coûté de la latence à tous les autres tours). Un tour vide arrivé sans son appui n'en
+ouvre aucune. Une phrase transcrite vide n'ouvre plus de conversation non plus.
