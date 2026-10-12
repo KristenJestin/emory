@@ -1,6 +1,6 @@
 # L'esprit d'Emory (`mind`) : version 1
 
-Statut : brouillon du 2026-10-11, à valider par Kris. Noms passés en anglais le 2026-10-11.
+Statut : brouillon du 2026-10-11, à valider par Kris. Noms passés en anglais le 2026-10-11. Première version construite le 2026-10-12 (voir « La version 1 construite », à la fin).
 
 L'esprit reçoit ce que les organes perçoivent, décide, lit et écrit dans Hippocampe, et répond.
 C'est la partie la plus coûteuse et la plus ouverte.
@@ -133,3 +133,86 @@ d'Hippocampe pour répondre, partent chez le fournisseur du LLM. L'audio, lui, n
 1. Haiku 5.5 en `effort: "low"` par défaut (le plus rapide et le moins cher en quota), Sonnet si
    les réponses manquent de soin : à confirmer à l'usage.
 2. La durée d'une conversation avant sa fermeture : 30 minutes pour commencer, réglée à l'usage.
+3. Haiku 5.5 réfléchit toujours (voir plus bas) : la réflexion coûte environ une seconde sur les
+   tours où il lit des fiches. Garder Haiku, ou essayer Sonnet, ou l'API, à décider à l'usage.
+4. Ce que la mémoire signale du jour : Emory n'en parle aujourd'hui que si Kris le demande ou si
+   cela touche sa demande. Faut-il qu'il le dise de lui-même à l'ouverture d'une conversation ?
+
+## La version 1 construite
+
+Décidé et mesuré le 2026-10-12, en construisant `mind` (dossier `mind/`, binaire `mind`). Hors de
+cette version : les minuteurs et les rappels, le web, la musique et les mains, la tâche de fond
+qui écrit après une conversation, le conteneur moteur et le déploiement.
+
+**Le bus.** `mind` écoute `hearing.*` sur un seul abonnement (les phrases d'un tour arrivent donc
+avant le tour) et `ear.*.button`. Il publie `voice.say` et `voice.stop`, vers l'appareil qui a
+entendu Kris. Ses journaux donnent les temps de chaque tour et chaque appel d'outil, jamais ce
+qui a été dit.
+
+**La conversation.** Une par appareil, ouverte au premier appui : la session ACP s'ouvre et le
+`briefing` d'Hippocampe se lit pendant que Kris parle encore. Elle se ferme après 30 minutes
+sans échange (`conversation.idle_minutes`), et la session avec (`session/close`).
+
+**Le LLM.** `mind` est un client ACP (crate `agent-client-protocol` 3.3) qui lance
+`claude-agent-acp` (0.89.1) et lui parle par son entrée et sa sortie standard. Les réglages de
+`session/new` sont ceux mesurés le 2026-10-11 (plus haut), avec le modèle et l'effort pris dans la
+configuration (`claude-haiku-5-5`, `low`). L'adaptateur hérite de l'environnement : la connexion
+Claude Code locale sur le PC, `CLAUDE_CODE_OAUTH_TOKEN` quand il est défini. **Haiku 5.5 ne peut
+pas ne pas réfléchir** : Claude Code refuse de couper la réflexion pour ce modèle (« Thinking
+can't be turned off »), `thinking: disabled` est ignoré et il réfléchit en mode adaptatif, sans
+montrer sa réflexion. Il ne réfléchit pas pour une histoire ou un « d'accord », il réfléchit dès
+qu'il a des fiches à lire. `effort: "low"` reste le seul levier (sans lui, premier son à 2,3 s
+au lieu de 2,0 s sur la même question).
+
+**Les consignes** sont dans `mind/prompts/system.fr.md`. Chaque demande commence par le jour et
+l'heure (`[Maintenant]`) ; la première d'une conversation porte aussi ce que la mémoire signale du
+jour (le `briefing`, sans ce qui attend une confirmation de Kris) : la session le garde ensuite.
+Emory n'en parle que si Kris le demande ou si cela touche sa demande. Quand le LLM ne répond pas,
+Emory dit « Je n'arrive pas à réfléchir pour le moment. ».
+
+**Le flux.** Le texte est coupé en phrases à `.`, `!`, `?`, `…` suivis d'un espace, ou à un retour
+à la ligne ; une phrase part dès que la suivante commence, ce qui garde toujours la dernière pour
+la fin du flux : elle part alors marquée `last`. Une phrase sans fin de plus de 220 caractères est
+coupée à sa dernière virgule. Les marques de mise en forme sont retirées.
+
+**L'interruption.** Un appui sur un appareil arrête la dernière réponse de cet appareil : la
+demande en cours est annulée (`session/cancel`) et `voice.stop` part. Les phrases sont publiées
+sous un verrou que l'interruption prend aussi : aucune phrase du tour ne suit son `voice.stop`.
+Le `voice.stop` part aussi quand la réponse est déjà écrite, puisque `voice` peut encore la dire.
+
+**La recherche en avance.** À chaque phrase, `mind` cherche dans Hippocampe la phrase telle
+quelle (5 fiches, sans voisins, sans seuil), sur une connexion MCP gardée ouverte, et y renonce
+au-delà de 300 ms. À la fin du tour, les fiches de toutes les phrases, chacune une fois et dix au
+plus, entrent dans la demande : titre, type, slug, date, résumé, extrait.
+
+**Le serveur MCP d'Emory** est servi par `mind` lui-même, en HTTP sur 127.0.0.1 (port libre),
+avec une clé tirée au démarrage que seul l'adaptateur reçoit. Plus simple qu'un serveur lancé par
+l'adaptateur : les outils partagent l'état de `mind` (plus tard les minuteurs, les mains sur le
+bus) sans autre canal. C'est le seul serveur MCP du LLM. Chaque groupe d'outils est un module ;
+ses outils s'appellent `<module>_<outil>`. Le premier module relaie Hippocampe : les outils de la
+liste `hippocampe.tools` (par défaut `search`, `read`, `write`, `link`, `types`) qu'Hippocampe
+offre à la clé utilisée. Un refus d'Hippocampe revient au LLM comme une erreur d'outil, qu'il
+peut dire. Deux retouches au relais : une recherche du LLM se fait sans voisins s'il n'en demande
+pas (avec les trois voisins par défaut, une recherche de dix fiches pesait environ 17 000 jetons,
+une seconde de plus avant le premier mot) ; tout résultat porte `resultType`, que la révision MCP
+parlée par le serveur exige et que l'adaptateur refuse sans lui.
+
+**La clé d'Hippocampe** est lue dans son fichier à chaque ouverture de connexion, jamais
+journalisée. Sur le PC, c'est la clé en lecture seule : Hippocampe n'offre alors que la lecture
+(`search`, `read`, `types`), et Emory dit qu'il ne peut pas noter.
+
+**Mesuré le 2026-10-12** sur le PC (vrai Hippocampe en lecture, Pocket, `hearing-replay` avec des
+questions synthétisées par Pocket, 18 demandes au LLM) : la recherche en avance prend 67 à
+159 ms. Du second appui au premier son :
+
+| Tour | Premier mot du LLM | Premier son |
+|---|---|---|
+| Question tirée des fiches, premier tour d'une conversation (4 essais) | 1,6 à 1,9 s | 1,86 à 2,29 s |
+| Discussion libre, « d'accord » (8 essais) | 0,6 à 0,95 s | 0,77 à 1,24 s |
+| Longue phrase de Kris, 10 fiches (1 essai) | 2,0 s | 2,25 s |
+| Le LLM cherche lui-même (2 essais) | 4,5 à 5,7 s | 4,8 à 5,9 s |
+
+Le premier son suit le premier `voice.say` de 0,1 à 0,2 s. Les réponses sont justes et parlées.
+Quand le mot clé est mal transcrit (« les mains des Maury » pour « d'Emory »), le LLM cherche
+lui-même : c'est le cas le plus lent.
+
