@@ -1,0 +1,36 @@
+# Configuration of the mind: `mind mind/examples/mind.toml` (paths relative to where it runs).
+
+[nats]
+url = "nats://127.0.0.1:4222"
+# On the locked-down server: the certificate of the authority (TLS is required if it is given) and
+# the file with the seed of this program's nkey.
+# ca = "/etc/emory/ca.pem"
+# nkey = "/etc/emory/mind.nk"
+
+# The LLM, through an ACP adapter that the mind starts and drives over stdio. The adapter inherits
+# the environment: the local Claude Code login in development, `CLAUDE_CODE_OAUTH_TOKEN` when set.
+[llm]
+command = "npx"
+args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
+model = "claude-haiku-5-5"
+effort = "low"
+system_prompt = "mind/prompts/system.fr.md"
+# workdir = "/var/lib/emory/mind"   # default: a folder in the system's temporary directory
+
+[conversation]
+# Minutes without an exchange before a conversation (and its LLM session) closes.
+idle_minutes = 30
+
+# The long-term memory, by MCP. The key is read from its file when the connection opens.
+[hippocampe]
+url = "https://wiki.krisnet.work/mcp"
+token_file = "/etc/emory/hippocampe.token"
+# The search made on each sentence while Kris speaks: how many entries, and when to give up.
+search_limit = 5
+search_timeout_ms = 300
+# Hippocampe's tools offered to the LLM (as `hippocampe_<name>`), when the key allows them.
+tools = ["search", "read", "write", "link", "types"]
+
+# Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
+[tools]
+bind = "127.0.0.1:0"

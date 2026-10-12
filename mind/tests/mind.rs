@@ -339,7 +339,9 @@ async fn the_request_carries_the_heads_up_once_and_the_entries_found() {
 
     let (_, second) = b.ask("office", &["et après"]).await;
     assert_eq!(second.session, first.session);
-    assert_eq!(second.text, "[Kris dit]\net après");
+    assert!(second.text.starts_with("[Maintenant] "));
+    assert!(second.text.ends_with("\n\n[Kris dit]\net après"));
+    assert!(!second.text.contains("[Ce que la mémoire") && !second.text.contains("[Fiches"));
 }
 
 #[tokio::test(start_paused = true)]

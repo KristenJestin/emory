@@ -438,7 +438,7 @@ impl<B: Brain, O: Outbox> Job<B, O> {
             }
         };
         let heads_up = opened.heads_up.as_deref().filter(|_| self.tell);
-        let text = request::build(heads_up, &found, &self.text);
+        let text = request::build(contract::now(), heads_up, &found, &self.text);
         if *say.stopped.lock().await {
             return;
         }
