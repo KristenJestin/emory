@@ -77,6 +77,51 @@ recevra une carte graphique (12 Go au moins, pour la voix et la transcription en
 d'Emory ne prend la carte graphique du PC de Kris, déjà utilisée par sa dictée. D'ici là, Pocket
 estelle reste la voix de développement, sur processeur.
 
+## Le moteur Kyutai, tel que construit (2026-10-12)
+
+Kyutai TTS 1.6B est un moteur de `voice` à côté de Pocket, choisi dans la configuration
+(`engine = "kyutai"`, `[kyutai]` pour les réglages). Pocket reste le moteur par défaut et la voix
+de développement.
+
+- **Le moteur** (`engines/kyutai/`) est un petit serveur HTTP en Python sur le paquet `moshi`
+  de Kyutai, sur la carte graphique : `POST /tts` reçoit la phrase en JSON et renvoie un WAV
+  24 kHz en flux, trame par trame (80 ms), comme Pocket ; fermer la connexion arrête le calcul au
+  pas suivant. Une phrase à la fois.
+- **Pourquoi pas le serveur de Kyutai** (`moshi-server`, en Rust) : pour la synthèse, il fait
+  tourner ce même code Python (embarqué par pyo3), seul Mimi est en Rust. Il expose tous les
+  réglages de la voix choisie et prend le texte mot par mot, mais il faut le compiler avec CUDA
+  et lui fournir en plus l'environnement Python. Pour une phrase à la fois, notre serveur donne
+  le même flux avec une seule dépendance. On lui reprend une chose : un générateur construit une
+  fois et remis à zéro avant chaque phrase (le reconstruire coûtait environ 0,5 s par phrase).
+- **La voix et ses réglages sont dans la configuration de `voice`** (`voice`, `[kyutai]` :
+  `padding_bonus`, `max_padding`, `temp`, `cfg_coef`), envoyés avec chaque phrase ; par défaut,
+  ceux choisis par Kris. Ce qui change le modèle chargé (`n_q = 32`, la carte) est dans
+  l'environnement du moteur.
+- **Pour le serveur**, une image Docker est prête (`engines/kyutai/Dockerfile`, sur une image
+  Python, la roue CUDA de torch apporte ses bibliothèques) ; elle demande le runtime NVIDIA de
+  Docker, absent pour l'instant. Sur le PC, le moteur tourne sans Docker
+  (`engines/kyutai/run-native.sh`).
+
+**Mesuré sur le PC** (RTX 3070 Ti, sans la dictée de Kris, avec Parakeet d'un autre travail sur
+la même carte, processeur chargé par d'autres travaux), de `voice.say` au premier morceau sur
+`mouth.<nom>.audio`, première phrase d'un tour, 14 mesures par moteur, par le même chemin :
+
+| | Premier son (médiane, min à max) | Facteur temps réel | Mémoire |
+|---|---|---|---|
+| Kyutai 1.6B, carte graphique | 0,29 s (0,25 à 0,47) | 0,31 à 0,36 | 4,5 Go de mémoire vidéo |
+| Pocket estelle, processeur | 0,16 s (0,10 à 0,35) | 0,26 à 0,59 | 1 Go |
+
+Le premier son de Kyutai est fixé par le modèle : le son a 1,28 s de retard sur le texte, soit
+16 pas de calcul sans son avant le premier, puis 4 pas ; 20 pas à environ 12,5 ms. Une carte plus
+rapide le raccourcit, rien d'autre. Les phrases suivantes ne s'attendent pas : elles sont
+calculées trois fois plus vite qu'elles ne se disent. `voice.stop` arrête le calcul en cours
+en environ 30 ms (mesuré une fois).
+
+**Le texte au fil de l'eau** : le modèle sait lire le texte pendant que l'esprit l'écrit (le
+serveur de Kyutai le fait). Le premier son partirait alors environ 0,25 s après les premiers
+mots, au lieu de 0,25 s après la première phrase entière : on gagnerait le temps que met le LLM
+à écrire sa première phrase. Le contrat (`Say`, phrase par phrase) n'a pas changé.
+
 ## Ce qui est lu
 
 - **Les mots anglais et les noms propres** : un moteur français lit « Neo4j » ou « MCP » à la
@@ -87,8 +132,8 @@ estelle reste la voix de développement, sur processeur.
 
 ## Questions ouvertes
 
-1. Une meilleure voix qu'estelle : clonage de Pocket (jeton Hugging Face) ou Kyutai 1.6B avec
-   une carte graphique.
+1. Une meilleure voix qu'estelle : Kyutai 1.6B, choisi le 2026-10-12 et construit (voir « Le
+   moteur Kyutai »), attend la carte graphique du serveur.
 2. La lecture des nombres, des sigles et des noms propres par Pocket : pas encore écoutée en
    détail, le lexique et l'écriture en toutes lettres restent prévus.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases

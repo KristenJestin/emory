@@ -3,17 +3,24 @@
 use std::{path::Path, path::PathBuf, time::Duration};
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// ```toml
 /// nats_url = "nats://127.0.0.1:4222"
 /// # nats_ca = "/etc/emory/ca.pem"                 # turns TLS on with this authority
 /// # nats_nkey_seed_file = "/etc/emory/voice.nk"   # the seed of the voice's key (nkey)
+/// # engine = "pocket"                # or "kyutai"
 /// engine_url = "http://127.0.0.1:8000"
-/// voice = "estelle"
+/// voice = "estelle"                  # by default, estelle for Pocket, Kris's voice for Kyutai
 /// # engine_idle_timeout = 5          # seconds without a packet from the engine
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
+///
+/// # [kyutai]                         # the settings of a Kyutai sentence, these are the defaults
+/// # padding_bonus = -3.0
+/// # max_padding = 8
+/// # temp = 0.6
+/// # cfg_coef = 2.0
 /// ```
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,11 +31,16 @@ pub struct Config {
     pub nats_ca: Option<PathBuf>,
     /// The file that holds the seed of the voice's nkey.
     pub nats_nkey_seed_file: Option<PathBuf>,
-    /// The address of the voice engine (`pocket-tts serve`).
+    /// Which voice engine answers at `engine_url`.
+    #[serde(default)]
+    pub engine: EngineKind,
+    /// The address of the voice engine.
     pub engine_url: String,
-    /// The voice, by its name at the engine.
-    #[serde(default = "default_voice")]
-    pub voice: String,
+    /// The voice, by its name at the engine; see [`Config::voice`] for the default.
+    pub voice: Option<String>,
+    /// The settings of a Kyutai sentence; ignored by Pocket.
+    #[serde(default)]
+    pub kyutai: KyutaiSettings,
     /// The target size of a chunk of audio sent to the mouth, in milliseconds.
     #[serde(default = "default_chunk_ms")]
     pub chunk_ms: u32,
@@ -51,8 +63,48 @@ pub struct Config {
     pub engine_concurrency: usize,
 }
 
-fn default_voice() -> String {
-    "estelle".to_owned()
+/// The voice engines `voice` knows how to call.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineKind {
+    /// Kyutai Pocket TTS, on the processor (`engines/pocket/`).
+    #[default]
+    Pocket,
+    /// Kyutai TTS 1.6B, on the graphics card (`engines/kyutai/`).
+    Kyutai,
+}
+
+/// The voice of Pocket chosen on 2026-10-11.
+pub const POCKET_VOICE: &str = "estelle";
+/// The voice of Kyutai TTS 1.6B chosen by Kris on 2026-10-12, in `kyutai/tts-voices`.
+pub const KYUTAI_VOICE: &str = "cml-tts/fr/5476_3103_000072-0001.wav";
+
+/// How Kyutai TTS 1.6B says a sentence. The defaults are the ones Kris chose on 2026-10-12 (see
+/// `specs/voice.md`).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct KyutaiSettings {
+    /// Added to the odds of a pause between two words: negative speaks faster. -3 is about a
+    /// quarter faster than 0, which Kris found slow.
+    pub padding_bonus: f32,
+    /// At most this many pauses in a row.
+    pub max_padding: u32,
+    /// The temperature of the sampling.
+    pub temp: f32,
+    /// How closely the voice is followed (classifier-free guidance); the model only knows a few
+    /// values, the engine says which.
+    pub cfg_coef: f32,
+}
+
+impl Default for KyutaiSettings {
+    fn default() -> Self {
+        Self {
+            padding_bonus: -3.0,
+            max_padding: 8,
+            temp: 0.6,
+            cfg_coef: 2.0,
+        }
+    }
 }
 
 fn default_chunk_ms() -> u32 {
@@ -81,6 +133,14 @@ impl Config {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         text.parse()
             .with_context(|| format!("configuration {}", path.display()))
+    }
+
+    /// The voice given, or the one chosen for the engine.
+    pub fn voice(&self) -> &str {
+        self.voice.as_deref().unwrap_or(match self.engine {
+            EngineKind::Pocket => POCKET_VOICE,
+            EngineKind::Kyutai => KYUTAI_VOICE,
+        })
     }
 
     pub fn end_grace(&self) -> Duration {
@@ -116,6 +176,23 @@ impl std::str::FromStr for Config {
             (1..=64).contains(&config.engine_concurrency),
             "engine_concurrency must be between 1 and 64"
         );
+        let k = &config.kyutai;
+        anyhow::ensure!(
+            (-10.0..=10.0).contains(&k.padding_bonus),
+            "kyutai.padding_bonus must be between -10 and 10"
+        );
+        anyhow::ensure!(
+            (1..=64).contains(&k.max_padding),
+            "kyutai.max_padding must be between 1 and 64"
+        );
+        anyhow::ensure!(
+            k.temp > 0.0 && k.temp <= 2.0,
+            "kyutai.temp must be in ]0, 2]"
+        );
+        anyhow::ensure!(
+            (1.0..=4.0).contains(&k.cfg_coef),
+            "kyutai.cfg_coef must be between 1 and 4"
+        );
         Ok(config)
     }
 }
@@ -131,7 +208,8 @@ mod tests {
         let c: Config = "nats_url = \"nats://x:4222\"\nengine_url = \"http://e:8000\"\n"
             .parse()
             .unwrap();
-        assert_eq!(c.voice, "estelle");
+        assert_eq!(c.engine, super::EngineKind::Pocket);
+        assert_eq!(c.voice(), "estelle");
         assert_eq!(c.chunk_ms, 60);
         assert!(c.nats_ca.is_none() && c.nats_nkey_seed_file.is_none());
         assert_eq!(c.engine_idle_timeout(), Duration::from_secs(5));
@@ -158,6 +236,42 @@ mod tests {
         ] {
             assert!(format!("{base}{bad}\n").parse::<Config>().is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn kyutai_gets_kris_s_voice_and_settings() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\nengine = \"kyutai\"\n";
+        let c: Config = base.parse().unwrap();
+        assert_eq!(c.engine, super::EngineKind::Kyutai);
+        assert_eq!(c.voice(), "cml-tts/fr/5476_3103_000072-0001.wav");
+        assert_eq!(c.kyutai, super::KyutaiSettings::default());
+        assert_eq!(c.kyutai.padding_bonus, -3.0);
+        let c: Config =
+            format!("{base}voice = \"v.wav\"\n[kyutai]\npadding_bonus = 0\ntemp = 0.8\n")
+                .parse()
+                .unwrap();
+        assert_eq!(c.voice(), "v.wav");
+        assert_eq!((c.kyutai.padding_bonus, c.kyutai.temp), (0.0, 0.8));
+        assert_eq!(c.kyutai.max_padding, 8);
+        for bad in [
+            "temp = 0",
+            "max_padding = 0",
+            "padding_bonus = -11",
+            "cfg_coef = 5",
+            "nope = 1",
+        ] {
+            assert!(
+                format!("{base}[kyutai]\n{bad}\n")
+                    .parse::<Config>()
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        assert!(
+            "nats_url = \"a\"\nengine_url = \"b\"\nengine = \"piper\"\n"
+                .parse::<Config>()
+                .is_err()
+        );
     }
 
     #[test]
