@@ -379,7 +379,7 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
                 continue;
             };
             let answering = state.answer.as_ref().is_some_and(|a| !a.task.is_finished());
-            if c.last_exchange.elapsed() >= idle && !answering && state.hearing.is_none() {
+            if c.last_exchange.elapsed() >= idle && !answering {
                 if let Some(session) = c.session() {
                     self.brain.close(&session);
                 }
@@ -439,11 +439,17 @@ impl<B: Brain, O: Outbox> Job<B, O> {
         };
         let heads_up = opened.heads_up.as_deref().filter(|_| self.tell);
         let text = request::build(contract::now(), heads_up, &found, &self.text);
-        if *say.stopped.lock().await {
+        let ready = self.received.elapsed().as_millis() as u64;
+        // Under the lock: a press either comes before (no request goes) or after (its cancel
+        // follows the request to the agent, in order).
+        let stopped = say.stopped.clone();
+        let guard = stopped.lock().await;
+        if *guard {
             return;
         }
-        let ready = self.received.elapsed().as_millis() as u64;
-        let mut events = match self.brain.prompt(&opened.session, text).await {
+        let events = self.brain.prompt(&opened.session, text).await;
+        drop(guard);
+        let mut events = match events {
             Ok(events) => events,
             Err(e) => {
                 warn!(device = %self.device, "request: {e:#}");
