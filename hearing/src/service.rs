@@ -35,6 +35,7 @@ use crate::{
     bus::publish,
     corrections::Corrections,
     engine::{Detector, DetectorPool, Segment, Transcriber, Transcription},
+    level::Level,
     turns::{Chunk, Closed, Opening, Reason, Turns},
 };
 
@@ -84,6 +85,58 @@ struct Closing {
     end: Timestamp,
     instant: Instant,
     reason: Reason,
+    heard: Heard,
+}
+
+/// What the turn's audio was like, for the `debug` logs: how loud, and how much of it the VAD
+/// took for speech.
+#[derive(Clone, Copy, Debug)]
+struct Heard {
+    level: Level,
+    audio: Duration,
+    /// The total length of the sentences the VAD closed.
+    speech: Duration,
+    /// How many sentences the VAD closed.
+    segments: usize,
+}
+
+/// A turn at least this long is expected to hold a sentence.
+const EXPECTED_SPEECH_AFTER: Duration = Duration::from_millis(500);
+
+impl Heard {
+    /// Why a turn long enough to hold a sentence ended with none, if it did.
+    fn missing_sentence(&self, sentences: usize) -> Option<&'static str> {
+        if sentences > 0 || self.audio <= EXPECTED_SPEECH_AFTER {
+            None
+        } else if self.segments == 0 {
+            Some("no voice found")
+        } else {
+            Some("voice found, but nothing came out of it")
+        }
+    }
+
+    fn log(&self, device: &Device, turn: TurnId, sentences: usize) {
+        debug!(
+            %device, %turn,
+            audio_ms = self.audio.as_millis() as u64,
+            peak_dbfs = self.level.peak_dbfs(),
+            rms_dbfs = self.level.rms_dbfs(),
+            speech_ms = self.speech.as_millis() as u64,
+            segments = self.segments,
+            sentences,
+            "turn level"
+        );
+        if let Some(why) = self.missing_sentence(sentences) {
+            debug!(
+                %device, %turn,
+                audio_ms = self.audio.as_millis() as u64,
+                peak_dbfs = self.level.peak_dbfs(),
+                rms_dbfs = self.level.rms_dbfs(),
+                speech_ms = self.speech.as_millis() as u64,
+                "no sentence in the turn: {why}"
+            );
+        }
+    }
 }
 
 /// A turn in progress: its detector, and the queue to the task that publishes.
@@ -98,11 +151,16 @@ struct Session {
     closing: oneshot::Sender<Closing>,
     start: Timestamp,
     samples: u64,
+    level: Level,
+    /// The samples of the sentences the VAD has closed, and how many sentences.
+    speech: u64,
+    segments: usize,
 }
 
 impl Session {
     fn feed(&mut self, audio: &[f32]) {
         self.samples += audio.len() as u64;
+        self.level.add(audio);
         let segments = self.detector.feed(audio);
         self.send(segments);
     }
@@ -111,18 +169,27 @@ impl Session {
     fn close(mut self, end: Timestamp, instant: Instant, reason: Reason) {
         let segments = self.detector.flush();
         self.send(segments);
+        let heard = Heard {
+            level: self.level,
+            audio: samples_duration(self.samples),
+            speech: samples_duration(self.speech),
+            segments: self.segments,
+        };
         // The closing is sent before the queue is dropped (with `self`): the task reads the
         // sentences until the queue ends, then the closing.
         let _ = self.closing.send(Closing {
             end,
             instant,
             reason,
+            heard,
         });
         self.pool.give_back(self.detector);
     }
 
-    fn send(&self, segments: Vec<Segment>) {
+    fn send(&mut self, segments: Vec<Segment>) {
         for segment in segments {
+            self.speech += segment.samples.len() as u64;
+            self.segments += 1;
             // The place in the turn's queue is taken before the sentence goes to the
             // transcription, so that a dropped sentence is not transcribed for nothing.
             let Ok(permit) = self.queue.try_reserve() else {
@@ -141,6 +208,10 @@ impl Session {
             });
         }
     }
+}
+
+fn samples_duration(samples: u64) -> Duration {
+    Duration::from_micros(samples * 1_000_000 / 16_000)
 }
 
 /// One warning per device and turn, not one per audio chunk (50 per second).
@@ -274,6 +345,9 @@ impl Service {
                     closing,
                     start: button.at,
                     samples: 0,
+                    level: Level::default(),
+                    speech: 0,
+                    segments: 0,
                 };
                 match turns.start(&device, button.turn, button.at, now, || session) {
                     Opening::Duplicate => {
@@ -417,12 +491,20 @@ async fn publish_turn(
         end,
         instant,
         reason,
+        heard,
     } = closing.await.unwrap_or_else(|_| Closing {
         end: contract::now(),
         instant: Instant::now(),
         reason: Reason::Shutdown,
+        heard: Heard {
+            level: Level::default(),
+            audio: Duration::ZERO,
+            speech: Duration::ZERO,
+            segments: 0,
+        },
     });
     let sentences = texts.len();
+    heard.log(&device, turn, sentences);
     let message = Turn {
         turn,
         device: device.clone(),
@@ -464,6 +546,29 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn heard(audio_ms: u64, segments: usize) -> Heard {
+        Heard {
+            level: Level::default(),
+            audio: Duration::from_millis(audio_ms),
+            speech: Duration::ZERO,
+            segments,
+        }
+    }
+
+    #[test]
+    fn a_turn_long_enough_that_ends_without_a_sentence_says_why() {
+        assert_eq!(heard(4_000, 0).missing_sentence(0), Some("no voice found"));
+        assert_eq!(
+            heard(4_000, 2).missing_sentence(0),
+            Some("voice found, but nothing came out of it")
+        );
+        // Half a second or less is a click on the button, not a missing sentence.
+        assert_eq!(heard(500, 0).missing_sentence(0), None);
+        assert_eq!(heard(0, 0).missing_sentence(0), None);
+        // A sentence came out.
+        assert_eq!(heard(4_000, 1).missing_sentence(1), None);
+    }
 
     #[test]
     fn the_ear_subscription_is_dispatched_on_the_last_token() {
