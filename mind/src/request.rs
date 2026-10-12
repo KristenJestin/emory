@@ -24,7 +24,7 @@ pub fn build(heads_up: Option<&str>, found: &[Found], said: &str) -> String {
             if let Some(date) = &f.date {
                 let _ = write!(text, ", le {date}");
             }
-            text.push_str(")");
+            text.push(')');
             if !f.summary.is_empty() {
                 let _ = write!(text, " : {}", f.summary);
             }
