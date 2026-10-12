@@ -63,6 +63,20 @@ du clonage ou d'un autre moteur. **VoiceStudio** (application locale qui embarqu
 Pocket TTS) sert à cette audition ; il ne sert pas de bouche, trop lourd et fait pour produire
 des fichiers, pas pour parler en flux.
 
+**Écoutées le 2026-10-12**, sur de vraies réponses d'Emory de 9 à 11 phrases : sur la durée,
+estelle « bave » en fin de mots. Les nouveaux poids français de Pocket (révision 3e82814a, PR
+#344), le modèle `french_24l` et des morceaux de texte plus courts n'y changent rien d'audible :
+le défaut vient du moteur. **Kyutai TTS 1.6B est nettement meilleur.** Choisie par Kris : la voix
+`cml-tts/fr/5476_3103_000072-0001` (voix féminine plutôt grave, environ 185 Hz), avec
+`padding_bonus = -3` (`max_padding = 8`, `temp = 0.6`, `cfg_coef = 2.0`), environ un quart plus
+rapide que le réglage par défaut, que Kris trouvait lent. Sur la carte graphique du PC (RTX 3070
+Ti), facteur temps réel d'environ 0,45 par phrase ; premier son en flux pas encore mesuré.
+
+**Décision (Kris, 2026-10-12)** : Kyutai 1.6B, cette voix, est la voix visée pour le serveur, qui
+recevra une carte graphique (12 Go au moins, pour la voix et la transcription ensemble). Rien
+d'Emory ne prend la carte graphique du PC de Kris, déjà utilisée par sa dictée. D'ici là, Pocket
+estelle reste la voix de développement, sur processeur.
+
 ## Ce qui est lu
 
 - **Les mots anglais et les noms propres** : un moteur français lit « Neo4j » ou « MCP » à la
