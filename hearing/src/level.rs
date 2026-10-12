@@ -4,7 +4,7 @@
 
 /// The level reported for a perfect silence (and below this, for anything quieter): dBFS of a
 /// zero sample is minus infinity, which logs badly.
-pub const FLOOR_DBFS: f32 = -120.0;
+pub const FLOOR_DBFS: f64 = -120.0;
 
 /// What the audio of a turn has been so far: its loudest sample and its mean power.
 #[derive(Clone, Copy, Debug, Default)]
@@ -24,12 +24,12 @@ impl Level {
     }
 
     /// The loudest sample, in dBFS to a tenth.
-    pub fn peak_dbfs(&self) -> f32 {
+    pub fn peak_dbfs(&self) -> f64 {
         dbfs(f64::from(self.peak))
     }
 
     /// The root mean square of all the samples, in dBFS to a tenth.
-    pub fn rms_dbfs(&self) -> f32 {
+    pub fn rms_dbfs(&self) -> f64 {
         match self.samples {
             0 => FLOOR_DBFS,
             n => dbfs((self.sum_squares / n as f64).sqrt()),
@@ -37,13 +37,13 @@ impl Level {
     }
 }
 
-fn dbfs(amplitude: f64) -> f32 {
+fn dbfs(amplitude: f64) -> f64 {
     let db = if amplitude > 0.0 {
         20.0 * amplitude.log10()
     } else {
-        f64::from(FLOOR_DBFS)
+        FLOOR_DBFS
     };
-    ((db.max(f64::from(FLOOR_DBFS)) * 10.0).round() / 10.0) as f32
+    (db.max(FLOOR_DBFS) * 10.0).round() / 10.0
 }
 
 #[cfg(test)]

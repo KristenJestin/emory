@@ -3,7 +3,7 @@
 //! sound.
 
 /// The level reported for a perfect silence, and for anything quieter.
-const FLOOR_DBFS: f32 = -120.0;
+const FLOOR_DBFS: f64 = -120.0;
 
 /// The loudest sample and the mean power of the sound so far.
 #[derive(Default)]
@@ -24,11 +24,11 @@ impl Level {
         }
     }
 
-    pub fn peak_dbfs(&self) -> f32 {
+    pub fn peak_dbfs(&self) -> f64 {
         dbfs(f64::from(self.peak))
     }
 
-    pub fn rms_dbfs(&self) -> f32 {
+    pub fn rms_dbfs(&self) -> f64 {
         match self.samples {
             0 => FLOOR_DBFS,
             n => dbfs((self.sum_squares / n as f64).sqrt()),
@@ -37,13 +37,13 @@ impl Level {
 }
 
 /// A level in dBFS to a tenth, from an amplitude in units of the 16-bit scale.
-fn dbfs(amplitude: f64) -> f32 {
+fn dbfs(amplitude: f64) -> f64 {
     let db = if amplitude > 0.0 {
         20.0 * (amplitude / 32768.0).log10()
     } else {
-        f64::from(FLOOR_DBFS)
+        FLOOR_DBFS
     };
-    ((db.max(f64::from(FLOOR_DBFS)) * 10.0).round() / 10.0) as f32
+    (db.max(FLOOR_DBFS) * 10.0).round() / 10.0
 }
 
 #[cfg(test)]
