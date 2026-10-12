@@ -9,6 +9,7 @@
 mod bus;
 mod capture;
 mod config;
+mod level;
 mod resample;
 mod trigger;
 mod wav;
@@ -19,8 +20,9 @@ use anyhow::{Context, Result, bail};
 use bus::Bus;
 use capture::Capture;
 use config::{Config, EarConfig};
-use contract::{State, TurnId, subjects};
+use contract::{State, TurnId, audio, subjects};
 use futures_util::StreamExt;
+use level::Level;
 use tokio::{
     signal::unix::{SignalKind, signal},
     sync::mpsc,
@@ -143,6 +145,20 @@ struct Turn {
     id: TurnId,
     next_seq: u64,
     capture: Capture,
+    level: Level,
+}
+
+impl Turn {
+    /// The level of what the microphone gave in this turn, for the `debug` log.
+    fn log_level(&self) {
+        tracing::debug!(
+            turn = %self.id,
+            audio_ms = self.next_seq * audio::MIC_CHUNK.as_millis() as u64,
+            peak_dbfs = self.level.peak_dbfs(),
+            rms_dbfs = self.level.rms_dbfs(),
+            "turn level"
+        );
+    }
 }
 
 /// Waits for the next chunk of the turn in progress, forever when there is none.
@@ -191,6 +207,7 @@ async fn listen(bus: &Bus, ear: &EarConfig) -> Result<()> {
                     let open = turn.as_mut().expect("a chunk comes from a turn");
                     let seq = open.next_seq;
                     open.next_seq += 1;
+                    open.level.add(&chunk);
                     if let Err(error) = bus.audio(open.id, seq, chunk).await {
                         break Err(error);
                     }
@@ -199,6 +216,7 @@ async fn listen(bus: &Bus, ear: &EarConfig) -> Result<()> {
                 None => {
                     if let Some(open) = turn.take() {
                         tracing::error!("the microphone stopped; ending the turn");
+                        open.log_level();
                         if let Err(error) = bus.button(open.id, State::End).await {
                             break Err(error);
                         }
@@ -239,6 +257,7 @@ async fn open_turn(bus: &Bus, ear: &EarConfig) -> Result<Turn> {
         id,
         next_seq: 0,
         capture,
+        level: Level::default(),
     })
 }
 
@@ -246,10 +265,12 @@ async fn open_turn(bus: &Bus, ear: &EarConfig) -> Result<Turn> {
 async fn close_turn(bus: &Bus, mut turn: Turn) -> Result<()> {
     turn.capture.stop();
     while let Some(chunk) = turn.capture.next_chunk().await {
+        turn.level.add(&chunk);
         bus.audio(turn.id, turn.next_seq, chunk).await?;
         turn.next_seq += 1;
     }
     bus.button(turn.id, State::End).await?;
+    turn.log_level();
     tracing::info!(turn = %turn.id, chunks = turn.next_seq, "turn ended");
     Ok(())
 }
