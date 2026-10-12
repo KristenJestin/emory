@@ -1,5 +1,5 @@
-//! The engines, through sherpa-onnx: Silero VAD to cut the sentences, Parakeet TDT 0.6B v3 int8
-//! to transcribe them.
+//! The engines, through sherpa-onnx: Silero VAD to cut the sentences, Parakeet TDT 0.6B v3 (int8,
+//! or fp32 for a GPU) to transcribe them.
 //!
 //! The detector is light (12 ms of compute per second of audio on the bench): it runs where the
 //! audio arrives. The transcription is heavy: a thread of its own (see [`Transcriber`]), one
@@ -314,9 +314,9 @@ impl Transcriber {
         let config = OfflineRecognizerConfig {
             model_config: OfflineModelConfig {
                 transducer: OfflineTransducerModelConfig {
-                    encoder: Some(path_string(&folder.join("encoder.int8.onnx"))?),
-                    decoder: Some(path_string(&folder.join("decoder.int8.onnx"))?),
-                    joiner: Some(path_string(&folder.join("joiner.int8.onnx"))?),
+                    encoder: Some(path_string(&model_file(folder, "encoder"))?),
+                    decoder: Some(path_string(&model_file(folder, "decoder"))?),
+                    joiner: Some(path_string(&model_file(folder, "joiner"))?),
                 },
                 tokens: Some(path_string(&folder.join("tokens.txt"))?),
                 num_threads: settings.threads.max(1),
@@ -423,6 +423,17 @@ fn transcribe(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String>
     Ok(result.text.trim().to_owned())
 }
 
+/// A Parakeet model file: the int8 one when the folder has it, else the full-precision one (the
+/// int8 model gains nothing on a GPU, which wants the fp32 model: see `specs/hearing.md`).
+fn model_file(folder: &Path, name: &str) -> PathBuf {
+    let int8 = folder.join(format!("{name}.int8.onnx"));
+    if int8.exists() {
+        int8
+    } else {
+        folder.join(format!("{name}.onnx"))
+    }
+}
+
 fn path_string(path: &Path) -> Result<String> {
     if !path.exists() {
         anyhow::bail!(
@@ -441,6 +452,19 @@ mod tests {
 
     fn turn() -> TurnId {
         TurnId::new()
+    }
+
+    #[test]
+    fn the_int8_model_is_preferred_and_the_full_one_is_the_fallback() {
+        let folder = std::env::temp_dir().join(format!("hearing-models-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(model_file(&folder, "encoder"), folder.join("encoder.onnx"));
+        std::fs::write(folder.join("encoder.int8.onnx"), b"").unwrap();
+        assert_eq!(
+            model_file(&folder, "encoder"),
+            folder.join("encoder.int8.onnx")
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

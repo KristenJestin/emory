@@ -89,7 +89,7 @@ pub struct ModelsConfig {
     /// The `silero_vad.onnx` file.
     pub vad: ConfigPath,
     /// The Parakeet folder (`encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`,
-    /// `tokens.txt`).
+    /// `tokens.txt`; or the same without `.int8`, the full-precision model, if there is no int8 one).
     pub parakeet: ConfigPath,
 }
 
