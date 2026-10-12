@@ -52,7 +52,7 @@ impl ServerHandler for FakeHippocampe {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(
-            ["search", "read", "write", "briefing"]
+            ["search", "read", "write", "briefing", "slow"]
                 .map(|n| Tool::new(n, format!("The {n} tool."), schema()))
                 .to_vec(),
         ))
@@ -82,6 +82,10 @@ impl ServerHandler for FakeHippocampe {
             "write" => CallToolResult::error(vec![ContentBlock::text(
                 "this key cannot write (read-only)",
             )]),
+            "slow" => {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                CallToolResult::success(vec![ContentBlock::text("too late")])
+            }
             other => CallToolResult::success(vec![ContentBlock::text(format!("{other} done"))]),
         };
         Ok(CallToolResponse::Complete(result))
@@ -176,6 +180,7 @@ async fn emory_relays_the_allowed_tools_and_surfaces_a_refusal() {
     let module = HippocampeTools::new(
         hippocampe,
         vec!["search".to_owned(), "write".to_owned(), "link".to_owned()],
+        std::time::Duration::from_secs(10),
     );
     let server = tools::serve(
         Tools::new(vec![Arc::new(module)]),
@@ -229,4 +234,53 @@ async fn emory_relays_the_allowed_tools_and_surfaces_a_refusal() {
         found.structured_content.unwrap()["results"][0]["slug"],
         "musique"
     );
+}
+
+#[tokio::test]
+async fn a_slow_tool_call_is_an_error_in_time() {
+    let (hippocampe, _dir) = hippocampe().await;
+    let module = HippocampeTools::new(
+        hippocampe,
+        vec!["slow".to_owned()],
+        std::time::Duration::from_millis(200),
+    );
+    let tools = Tools::new(vec![Arc::new(module)]);
+    let started = std::time::Instant::now();
+    let result = tools.call("hippocampe_slow", None).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(result.is_error, Some(true));
+    let said = serde_json::to_string(&result.content).unwrap();
+    assert!(said.contains("à temps"), "{said}");
+}
+
+#[tokio::test]
+async fn the_tools_are_asked_again_when_hippocampe_did_not_answer() {
+    let (hippocampe, dir) = hippocampe().await;
+    // The key is not there yet: Hippocampe cannot be reached at the first session.
+    let token = dir.0.join("hippocampe.token");
+    let key = std::fs::read_to_string(&token).unwrap();
+    std::fs::remove_file(&token).unwrap();
+    let module = HippocampeTools::new(
+        hippocampe,
+        vec!["search".to_owned()],
+        std::time::Duration::from_secs(10),
+    );
+    let tools = Tools::new(vec![Arc::new(module)]);
+    assert!(tools.list().await.is_empty());
+    // At the next session, it answers.
+    std::fs::write(&token, key).unwrap();
+    let names: Vec<String> = tools
+        .list()
+        .await
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert_eq!(names, ["hippocampe_search"]);
+}
+
+#[tokio::test]
+async fn concurrent_reconnections_open_one_connection() {
+    let (hippocampe, _dir) = hippocampe().await;
+    let (a, b) = tokio::join!(hippocampe.connect(), hippocampe.connect());
+    assert!(Arc::ptr_eq(&a.unwrap(), &b.unwrap()));
 }

@@ -30,6 +30,8 @@ search_limit = 5
 search_timeout_ms = 300
 # Hippocampe's tools offered to the LLM (as `hippocampe_<name>`), when the key allows them.
 tools = ["search", "read", "write", "link", "types"]
+# How long a tool call of the LLM may wait for Hippocampe.
+tool_timeout_ms = 10000
 
 # Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
 [tools]

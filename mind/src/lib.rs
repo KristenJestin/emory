@@ -113,6 +113,7 @@ pub async fn run(config: Config) -> Result<()> {
     let tools = Tools::new(vec![Arc::new(HippocampeTools::new(
         hippocampe.clone(),
         config.hippocampe.tools.clone(),
+        config.hippocampe.tool_timeout(),
     ))]);
     let server = tools::serve(tools, config.tools.bind).await?;
 

@@ -146,6 +146,9 @@ pub struct HippocampeConfig {
     /// use are not listed by Hippocampe, and are left out).
     #[serde(default = "default_hippocampe_tools")]
     pub tools: Vec<String>,
+    /// Milliseconds a tool call of the LLM may wait for Hippocampe before it is an error.
+    #[serde(default = "default_tool_timeout_ms")]
+    pub tool_timeout_ms: u64,
 }
 
 fn default_search_limit() -> u32 {
@@ -154,6 +157,10 @@ fn default_search_limit() -> u32 {
 
 fn default_search_timeout_ms() -> u64 {
     300
+}
+
+fn default_tool_timeout_ms() -> u64 {
+    10_000
 }
 
 fn default_hippocampe_tools() -> Vec<String> {
@@ -165,6 +172,10 @@ fn default_hippocampe_tools() -> Vec<String> {
 impl HippocampeConfig {
     pub fn search_timeout(&self) -> Duration {
         Duration::from_millis(self.search_timeout_ms)
+    }
+
+    pub fn tool_timeout(&self) -> Duration {
+        Duration::from_millis(self.tool_timeout_ms)
     }
 }
 
@@ -216,6 +227,10 @@ impl std::str::FromStr for Config {
             "hippocampe.search_timeout_ms must be between 1 and 5000"
         );
         anyhow::ensure!(
+            (100..=120_000).contains(&config.hippocampe.tool_timeout_ms),
+            "hippocampe.tool_timeout_ms must be between 100 and 120000"
+        );
+        anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
         );
@@ -247,6 +262,7 @@ token_file = "~/t.token"
         assert_eq!(c.conversation.idle_timeout(), Duration::from_secs(1800));
         assert_eq!(c.hippocampe.search_limit, 5);
         assert_eq!(c.hippocampe.search_timeout(), Duration::from_millis(300));
+        assert_eq!(c.hippocampe.tool_timeout(), Duration::from_secs(10));
         assert!(c.hippocampe.tools.contains(&"search".to_owned()));
         assert!(c.tools.bind.ip().is_loopback());
     }

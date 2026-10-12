@@ -9,7 +9,12 @@
 //! any other channel. The server listens on the loopback only, and wants a key drawn at start-up,
 //! which only the adapter is given.
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use axum::{
@@ -32,6 +37,7 @@ use rmcp::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
 };
+use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::hippocampe::Hippocampe;
@@ -167,7 +173,8 @@ async fn authorize(expected: &str, request: Request, next: Next) -> Result<Respo
         .headers()
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
-    if given == Some(expected) {
+    // Compared in constant time: the time taken says nothing of the key.
+    if given.is_some_and(|g| bool::from(g.as_bytes().ct_eq(expected.as_bytes()))) {
         Ok(next.run(request).await)
     } else {
         Err(StatusCode::UNAUTHORIZED)
@@ -179,35 +186,41 @@ async fn authorize(expected: &str, request: Request, next: Next) -> Result<Respo
 pub struct HippocampeTools {
     hippocampe: Arc<Hippocampe>,
     allowed: Vec<String>,
-    cache: tokio::sync::Mutex<HashMap<String, Tool>>,
+    /// How long a tool call of the LLM may wait for Hippocampe.
+    timeout: Duration,
+    /// `None` until Hippocampe answered `tools/list`.
+    cache: tokio::sync::Mutex<Option<HashMap<String, Tool>>>,
 }
 
 impl HippocampeTools {
-    pub fn new(hippocampe: Arc<Hippocampe>, allowed: Vec<String>) -> Self {
+    pub fn new(hippocampe: Arc<Hippocampe>, allowed: Vec<String>, timeout: Duration) -> Self {
         Self {
             hippocampe,
             allowed,
+            timeout,
             cache: tokio::sync::Mutex::default(),
         }
     }
 
-    /// The tools, asked of Hippocampe the first time (and again as long as it did not answer).
+    /// The tools, asked of Hippocampe the first time, and again as long as it did not answer:
+    /// the adapter lists the tools at each session opening, which tries again.
     async fn offered(&self) -> HashMap<String, Tool> {
         let mut cache = self.cache.lock().await;
-        if cache.is_empty() {
+        if cache.is_none() {
             match self.hippocampe.tools().await {
                 Ok(tools) => {
-                    *cache = tools
+                    let tools: HashMap<String, Tool> = tools
                         .into_iter()
                         .filter(|t| self.allowed.iter().any(|a| a == t.name.as_ref()))
                         .map(|t| (t.name.to_string(), t))
                         .collect();
-                    info!(tools = cache.len(), "Hippocampe's tools relayed");
+                    info!(tools = tools.len(), "Hippocampe's tools relayed");
+                    *cache = Some(tools);
                 }
                 Err(e) => warn!("{e:#}"),
             }
         }
-        cache.clone()
+        cache.clone().unwrap_or_default()
     }
 }
 
@@ -232,9 +245,14 @@ impl Module for HippocampeTools {
                     "Hippocampe n'offre pas l'outil {tool} à Emory."
                 ))]);
             }
-            self.hippocampe
-                .call(&tool, with_defaults(&tool, arguments))
+            let call = self.hippocampe.call(&tool, with_defaults(&tool, arguments));
+            tokio::time::timeout(self.timeout, call)
                 .await
+                .unwrap_or_else(|_| {
+                    CallToolResult::error(vec![ContentBlock::text(
+                        "Hippocampe n'a pas répondu à temps.",
+                    )])
+                })
         })
     }
 }

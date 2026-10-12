@@ -36,6 +36,8 @@ pub struct Hippocampe {
     token_file: PathBuf,
     connection: RwLock<Option<Connection>>,
     connecting: AtomicBool,
+    /// One opening at a time: a caller that comes during one takes its connection.
+    opening: tokio::sync::Mutex<()>,
 }
 
 impl Hippocampe {
@@ -45,11 +47,17 @@ impl Hippocampe {
             token_file: token_file.into(),
             connection: RwLock::new(None),
             connecting: AtomicBool::new(false),
+            opening: tokio::sync::Mutex::new(()),
         })
     }
 
-    /// Opens the connection now, waiting for it.
+    /// Opens the connection now, waiting for it; if another call is opening it, waits for that
+    /// one instead.
     pub async fn connect(&self) -> anyhow::Result<Connection> {
+        let _one = self.opening.lock().await;
+        if let Some(c) = self.current() {
+            return Ok(c);
+        }
         let token = std::fs::read_to_string(&self.token_file)
             .with_context(|| format!("reading the key {}", self.token_file.display()))?;
         let transport = StreamableHttpClientTransport::from_config(
