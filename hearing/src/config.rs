@@ -19,6 +19,16 @@ impl<'de> Deserialize<'de> for ConfigPath {
     }
 }
 
+impl ConfigPath {
+    /// A relative path is read from `base`, the folder of the configuration file, not from where
+    /// the program was started.
+    fn resolve(&mut self, base: &Path) {
+        if self.0.is_relative() {
+            self.0 = base.join(&self.0);
+        }
+    }
+}
+
 impl AsRef<Path> for ConfigPath {
     fn as_ref(&self) -> &Path {
         &self.0
@@ -152,10 +162,27 @@ impl TurnsConfig {
 }
 
 impl Config {
+    /// Reads the file; the relative paths it holds are resolved from its folder.
     pub fn read(path: &Path) -> Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("configuration {}", path.display()))
+        let mut config: Self =
+            toml::from_str(&text).with_context(|| format!("configuration {}", path.display()))?;
+        config.resolve_paths(path.parent().unwrap_or(Path::new("")));
+        Ok(config)
+    }
+
+    fn resolve_paths(&mut self, base: &Path) {
+        let paths = [
+            self.nats.ca.as_mut(),
+            self.nats.nkey.as_mut(),
+            Some(&mut self.models.vad),
+            Some(&mut self.models.parakeet),
+            self.transcription.corrections.as_mut(),
+        ];
+        for path in paths.into_iter().flatten() {
+            path.resolve(base);
+        }
     }
 }
 
@@ -208,6 +235,35 @@ mod tests {
             "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn relative_paths_are_read_from_the_folder_of_the_configuration_file() {
+        let folder = std::env::temp_dir().join(format!("hearing-config-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("hearing.toml");
+        std::fs::write(
+            &file,
+            r#"
+            [nats]
+            ca = "certs/ca.pem"
+            [models]
+            vad = "/m/silero_vad.onnx"
+            parakeet = "models/parakeet"
+            [transcription]
+            corrections = "corrections.tsv"
+            "#,
+        )
+        .unwrap();
+        let config = Config::read(&file).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(config.nats.ca.unwrap().0, folder.join("certs/ca.pem"));
+        assert_eq!(config.models.vad.0, PathBuf::from("/m/silero_vad.onnx"));
+        assert_eq!(config.models.parakeet.0, folder.join("models/parakeet"));
+        assert_eq!(
+            config.transcription.corrections.unwrap().0,
+            folder.join("corrections.tsv")
+        );
     }
 
     #[test]
