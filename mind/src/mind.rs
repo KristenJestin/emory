@@ -5,17 +5,31 @@
 //!
 //! - **the conversation**, opened at the first press: an LLM session, and what the memory flags
 //!   for the moment, both fetched while Kris is still speaking. It closes after a time without an
-//!   exchange;
+//!   exchange; a session that failed to open is opened again at the next turn;
 //! - **the turn being heard**: each transcribed sentence is searched in the memory at once, as it
 //!   is, given up beyond the search timeout;
 //! - **the answer**: a task that sends the request, cuts the streamed text into sentences and
 //!   publishes each one (`voice.say`), the last one marked `last`.
 //!
+//! The presses and what the hearing says come on two subscriptions, in no order between them: a
+//! sentence or a turn older than the newest turn seen on the device is dropped (the turns are
+//! ULIDs, which sort by time), and a press never wipes the searches its own turn already started.
+//!
 //! A press while an answer is running or being said cancels the request (ACP `session/cancel`)
-//! and publishes `voice.stop`. The sentences are published under a lock that the barge-in takes
-//! too: once `voice.stop` is out, no sentence of that turn follows it.
+//! and publishes `voice.stop`. The request is sent and the sentences are queued under a lock that
+//! the barge-in takes first: a request either never goes, or goes before its cancel; once
+//! `voice.stop` is queued, no sentence of that turn follows it. The messages to the voice leave
+//! from a queue of their own, in order: nothing waits on the bus under that lock.
+//!
+//! A session takes one request at a time: a request waits for the end (`Done`) of the previous
+//! one, cancelling it. If the agent never ends it, the session is closed and another one opened.
 
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use contract::{Button, Device, Say, Sentence, State, Stop, Turn, TurnId};
 use futures_util::{
@@ -23,7 +37,7 @@ use futures_util::{
     future::{BoxFuture, Shared, join_all},
 };
 use tokio::{
-    sync::{Mutex, watch},
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::{Instant, timeout},
 };
@@ -36,13 +50,14 @@ use crate::{
     sentences::Splitter,
 };
 
-/// Said when the LLM cannot be reached: Kris pressed and waits for something.
+/// Said when the LLM cannot be reached, or gave nothing: Kris pressed and waits for something.
 pub const FAILURE: &str = "Je n'arrive pas à réfléchir pour le moment.";
 
-/// How long a new request waits for the previous one of the conversation to finish.
-const PREVIOUS_WAIT: Duration = Duration::from_secs(10);
-/// How long an answer may stay silent before it is given up.
-const STALL: Duration = Duration::from_secs(60);
+/// How long a request waits for the previous one of its session to end once cancelled, before
+/// the session is given up as broken.
+pub const CANCEL_WAIT: Duration = Duration::from_secs(10);
+/// How long an answer may stay silent before Kris is told it failed.
+pub const STALL: Duration = Duration::from_secs(60);
 /// How long the heads-up may delay the opening of a conversation.
 const HEADS_UP_WAIT: Duration = Duration::from_secs(2);
 
@@ -78,21 +93,50 @@ struct Opened {
 
 type Opening = Shared<BoxFuture<'static, Result<Opened, String>>>;
 
-struct Conversation {
+/// The session of a conversation, shared with its answers: an answer that finds the session
+/// broken opens another one.
+struct Link {
     opening: Opening,
-    last_exchange: Instant,
     /// The heads-up went with a request already: the session keeps it.
     told: bool,
-    /// The last answer: requests go one at a time.
-    previous: Option<Running>,
 }
 
-impl Conversation {
+impl Link {
+    fn new(opening: Opening) -> Self {
+        Self {
+            opening,
+            told: false,
+        }
+    }
+
     fn session(&self) -> Option<SessionId> {
         match self.opening.peek() {
             Some(Ok(opened)) => Some(opened.session.clone()),
             _ => None,
         }
+    }
+
+    fn failed(&self) -> bool {
+        matches!(self.opening.peek(), Some(Err(_)))
+    }
+}
+
+struct Conversation {
+    link: Arc<Mutex<Link>>,
+    last_exchange: Instant,
+    /// The last answer: requests go one at a time.
+    previous: Option<Previous>,
+}
+
+impl Conversation {
+    fn session(&self) -> Option<SessionId> {
+        self.link.lock().unwrap().session()
+    }
+
+    fn answering(&self) -> bool {
+        self.previous
+            .as_ref()
+            .is_some_and(|p| !p.task.is_finished())
     }
 }
 
@@ -115,6 +159,31 @@ impl Running {
     }
 }
 
+/// Decides, under one lock, between the request of an answer and its barge-in.
+#[derive(Default)]
+struct Gate(Mutex<GateState>);
+
+#[derive(Default)]
+struct GateState {
+    /// Set by the barge-in: no request goes, no sentence is queued any more.
+    stopped: bool,
+    /// The session the request went to.
+    prompted: Option<SessionId>,
+}
+
+impl Gate {
+    fn lock(&self) -> std::sync::MutexGuard<'_, GateState> {
+        self.0.lock().unwrap()
+    }
+}
+
+/// The previous answer of a conversation, for the next request to wait for.
+#[derive(Clone)]
+struct Previous {
+    gate: Arc<Gate>,
+    task: Running,
+}
+
 /// The turn being heard, and the searches of its sentences.
 struct Hearing {
     turn: TurnId,
@@ -124,8 +193,7 @@ struct Hearing {
 /// The last answer of a device, until the next press.
 struct Answer {
     turn: TurnId,
-    /// Set by the barge-in, under the lock the sentences are published with.
-    stopped: Arc<Mutex<bool>>,
+    gate: Arc<Gate>,
     task: Running,
 }
 
@@ -134,22 +202,73 @@ struct DeviceState {
     conversation: Option<Conversation>,
     hearing: Option<Hearing>,
     answer: Option<Answer>,
+    /// The newest turn seen on this device (press, sentence or turn): what is older is late.
+    latest: Option<TurnId>,
 }
 
-pub struct Mind<B, M, O> {
+impl DeviceState {
+    /// Notes a turn seen on the device; `false` if it is older than the newest one.
+    fn see(&mut self, turn: TurnId) -> bool {
+        if self.latest.is_some_and(|latest| turn < latest) {
+            return false;
+        }
+        self.latest = Some(turn);
+        true
+    }
+}
+
+/// What goes to the voice.
+enum Message {
+    Say(Say),
+    Stop(Stop),
+}
+
+/// The messages to the voice, published in the order they were queued, by a task of their own.
+#[derive(Clone)]
+struct Mailbox(mpsc::UnboundedSender<Message>);
+
+impl Mailbox {
+    fn start<O: Outbox>(out: Arc<O>) -> Self {
+        let (sender, mut messages) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(message) = messages.recv().await {
+                match message {
+                    Message::Say(say) => {
+                        if let Err(e) = out.say(say).await {
+                            warn!("publishing voice.say: {e:#}");
+                        }
+                    }
+                    Message::Stop(stop) => {
+                        if let Err(e) = out.stop(stop).await {
+                            warn!("publishing voice.stop: {e:#}");
+                        }
+                    }
+                }
+            }
+        });
+        Self(sender)
+    }
+
+    fn send(&self, message: Message) {
+        let _ = self.0.send(message);
+    }
+}
+
+pub struct Mind<B, M> {
     brain: Arc<B>,
     memory: Arc<M>,
-    out: Arc<O>,
+    mail: Mailbox,
     settings: Settings,
     devices: HashMap<Device, DeviceState>,
 }
 
-impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
-    pub fn new(brain: Arc<B>, memory: Arc<M>, out: Arc<O>, settings: Settings) -> Self {
+impl<B: Brain, M: Memory> Mind<B, M> {
+    /// A mind publishing to `out`. Starts a task: call it inside the runtime.
+    pub fn new<O: Outbox>(brain: Arc<B>, memory: Arc<M>, out: Arc<O>, settings: Settings) -> Self {
         Self {
             brain,
             memory,
-            out,
+            mail: Mailbox::start(out),
             settings,
             devices: HashMap::new(),
         }
@@ -159,12 +278,7 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
         match input {
             Input::Button(device, button) => {
                 if button.state == State::Start {
-                    self.barge_in(&device).await;
-                    self.open(&device);
-                    self.state(&device).hearing = Some(Hearing {
-                        turn: button.turn,
-                        searches: Vec::new(),
-                    });
+                    self.pressed(&device, button.turn);
                 }
             }
             Input::Sentence(sentence) => self.heard(sentence),
@@ -184,35 +298,60 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
         self.devices.entry(device.clone()).or_default()
     }
 
-    /// Stops the answer of this device, if one is running or may still be said.
-    async fn barge_in(&mut self, device: &Device) {
-        let brain = self.brain.clone();
-        let out = self.out.clone();
-        let state = self.state(device);
-        let Some(answer) = state.answer.take() else {
+    /// Kris presses: what Emory says of an older turn stops, and this turn is heard.
+    fn pressed(&mut self, device: &Device, turn: TurnId) {
+        if !self.state(device).see(turn) {
+            debug!(%device, %turn, "late press: ignored");
             return;
-        };
-        if !answer.task.is_finished()
-            && let Some(session) = state.conversation.as_ref().and_then(Conversation::session)
-        {
-            brain.cancel(&session);
         }
-        let mut stopped = answer.stopped.lock().await;
-        if !*stopped {
-            *stopped = true;
-            let stop = Stop {
-                turn: answer.turn,
-                device: device.clone(),
-            };
-            match out.stop(stop).await {
-                Ok(()) => info!(%device, turn = %answer.turn, "barge-in: answer stopped"),
-                Err(e) => warn!("publishing voice.stop: {e:#}"),
-            }
+        self.barge_in(device, turn);
+        self.open(device);
+        let state = self.state(device);
+        // Its sentences may have come first: their searches are kept.
+        if state.hearing.as_ref().is_none_or(|h| h.turn != turn) {
+            state.hearing = Some(Hearing {
+                turn,
+                searches: Vec::new(),
+            });
         }
     }
 
-    /// Opens the conversation of this device if it has none (or if it has gone idle), and notes
-    /// the exchange.
+    /// Stops the answer of this device to a turn older than `turn`, if one is running or may
+    /// still be said.
+    fn barge_in(&mut self, device: &Device, turn: TurnId) {
+        let brain = self.brain.clone();
+        let mail = self.mail.clone();
+        let state = self.state(device);
+        if state.answer.as_ref().is_none_or(|a| a.turn >= turn) {
+            return;
+        }
+        let Some(answer) = state.answer.take() else {
+            return;
+        };
+        // Stopped first, under the lock the request is sent with: either the request went
+        // before, and its cancel follows it to the agent, or it never goes.
+        let prompted = {
+            let mut gate = answer.gate.lock();
+            if gate.stopped {
+                return;
+            }
+            gate.stopped = true;
+            gate.prompted.clone()
+        };
+        if !answer.task.is_finished()
+            && let Some(session) = prompted
+        {
+            brain.cancel(&session);
+        }
+        mail.send(Message::Stop(Stop {
+            turn: answer.turn,
+            device: device.clone(),
+        }));
+        info!(%device, turn = %answer.turn, "barge-in: answer stopped");
+    }
+
+    /// Opens the conversation of this device if it has none (or if it has gone idle), opens its
+    /// session again if it failed to open, and notes the exchange.
     fn open(&mut self, device: &Device) {
         let idle = self.settings.idle_timeout;
         let brain = self.brain.clone();
@@ -220,7 +359,7 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
         let state = self.state(device);
         if let Some(c) = &state.conversation
             && c.last_exchange.elapsed() >= idle
-            && c.previous.as_ref().is_none_or(Running::is_finished)
+            && !c.answering()
         {
             if let Some(session) = c.session() {
                 brain.close(&session);
@@ -229,47 +368,23 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
             info!(%device, "conversation closed (idle)");
         }
         match &mut state.conversation {
-            Some(c) => c.last_exchange = Instant::now(),
-            None => {
-                let started = Instant::now();
-                let task = tokio::spawn({
-                    let device = device.clone();
-                    async move {
-                        let heads_up = async {
-                            match timeout(HEADS_UP_WAIT, memory.heads_up()).await {
-                                Ok(Ok(h)) => h,
-                                Ok(Err(e)) => {
-                                    warn!("heads-up: {e:#}");
-                                    None
-                                }
-                                Err(_) => {
-                                    warn!("heads-up: no answer in time");
-                                    None
-                                }
-                            }
-                        };
-                        let (session, heads_up) = tokio::join!(brain.open(), heads_up);
-                        let session = session.map_err(|e| format!("{e:#}"))?;
-                        info!(
-                            %device,
-                            %session,
-                            heads_up = heads_up.is_some(),
-                            ms = started.elapsed().as_millis() as u64,
-                            "conversation opened"
-                        );
-                        Ok(Opened { session, heads_up })
-                    }
-                });
-                let opening = async move {
-                    task.await
-                        .map_err(|e| format!("opening the conversation: {e}"))?
+            Some(c) => {
+                let mut link = c.link.lock().unwrap();
+                if link.failed() {
+                    info!(%device, "the session failed to open: opening it again");
+                    *link = Link::new(opening(brain, memory, device.clone()));
                 }
-                .boxed()
-                .shared();
+                drop(link);
+                c.last_exchange = Instant::now();
+            }
+            None => {
                 state.conversation = Some(Conversation {
-                    opening,
+                    link: Arc::new(Mutex::new(Link::new(opening(
+                        brain,
+                        memory,
+                        device.clone(),
+                    )))),
                     last_exchange: Instant::now(),
-                    told: false,
                     previous: None,
                 });
             }
@@ -279,11 +394,16 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
     /// A sentence heard while Kris speaks: searched in the memory at once.
     fn heard(&mut self, sentence: Sentence) {
         let device = sentence.device.clone();
-        // The press may have been missed (a mind that restarts): the turn starts here.
+        if !self.state(&device).see(sentence.turn) {
+            debug!(%device, turn = %sentence.turn, "sentence of an older turn: ignored");
+            return;
+        }
+        // The press may come after it, or have been missed (a mind that restarts): the turn
+        // starts here.
         if self
-            .devices
-            .get(&device)
-            .and_then(|s| s.hearing.as_ref())
+            .state(&device)
+            .hearing
+            .as_ref()
             .is_none_or(|h| h.turn != sentence.turn)
         {
             self.open(&device);
@@ -330,43 +450,53 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
     fn answer(&mut self, turn: Turn) {
         let received = Instant::now();
         let device = turn.device.clone();
-        let searches = match self.state(&device).hearing.take() {
-            Some(h) if h.turn == turn.turn => h.searches,
-            _ => Vec::new(),
+        if !self.state(&device).see(turn.turn) {
+            info!(%device, turn = %turn.turn, "turn older than the last press: not answered");
+            return;
+        }
+        let state = self.state(&device);
+        let searches = match state.hearing.take_if(|h| h.turn == turn.turn) {
+            Some(h) => h.searches,
+            None => Vec::new(),
         };
         if turn.text.trim().is_empty() {
             debug!(%device, turn = %turn.turn, "nothing heard: no answer");
             return;
         }
+        // An answer to an older turn whose press never came stops as at a press.
+        self.barge_in(&device, turn.turn);
         self.open(&device);
         let brain = self.brain.clone();
-        let out = self.out.clone();
+        let memory = self.memory.clone();
+        let mail = self.mail.clone();
         let state = self.state(&device);
         let Some(conversation) = state.conversation.as_mut() else {
             return;
         };
-        let stopped = Arc::new(Mutex::new(false));
+        let gate = Arc::new(Gate::default());
         let (done, running) = Running::new();
         let job = Job {
             brain,
-            out,
+            memory,
+            mail,
             device: device.clone(),
             turn: turn.turn,
             text: turn.text,
             searches,
-            opening: conversation.opening.clone(),
-            tell: !conversation.told,
+            link: conversation.link.clone(),
             previous: conversation.previous.take(),
-            stopped: stopped.clone(),
+            gate: gate.clone(),
             received,
             _done: done,
         };
-        conversation.told = true;
-        conversation.previous = Some(running.clone());
+        conversation.previous = Some(Previous {
+            gate: gate.clone(),
+            task: running.clone(),
+        });
         tokio::spawn(job.run());
         state.answer = Some(Answer {
             turn: turn.turn,
-            stopped,
+            gate,
             task: running,
         });
     }
@@ -379,7 +509,7 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
                 continue;
             };
             let answering = state.answer.as_ref().is_some_and(|a| !a.task.is_finished());
-            if c.last_exchange.elapsed() >= idle && !answering {
+            if c.last_exchange.elapsed() >= idle && !answering && !c.answering() {
                 if let Some(session) = c.session() {
                     self.brain.close(&session);
                 }
@@ -390,25 +520,61 @@ impl<B: Brain, M: Memory, O: Outbox> Mind<B, M, O> {
     }
 }
 
+/// Opens a session and reads the heads-up, in a task of their own: the opening goes on while
+/// Kris speaks.
+fn opening<B: Brain, M: Memory>(brain: Arc<B>, memory: Arc<M>, device: Device) -> Opening {
+    let started = Instant::now();
+    let task = tokio::spawn(async move {
+        let heads_up = async {
+            match timeout(HEADS_UP_WAIT, memory.heads_up()).await {
+                Ok(Ok(h)) => h,
+                Ok(Err(e)) => {
+                    warn!("heads-up: {e:#}");
+                    None
+                }
+                Err(_) => {
+                    warn!("heads-up: no answer in time");
+                    None
+                }
+            }
+        };
+        let (session, heads_up) = tokio::join!(brain.open(), heads_up);
+        let session = session.map_err(|e| format!("{e:#}"))?;
+        info!(
+            %device,
+            %session,
+            heads_up = heads_up.is_some(),
+            ms = started.elapsed().as_millis() as u64,
+            "conversation opened"
+        );
+        Ok(Opened { session, heads_up })
+    });
+    async move {
+        task.await
+            .map_err(|e| format!("opening the conversation: {e}"))?
+    }
+    .boxed()
+    .shared()
+}
+
 /// One answer, from the request to the last sentence.
-struct Job<B, O> {
+struct Job<B, M> {
     brain: Arc<B>,
-    out: Arc<O>,
+    memory: Arc<M>,
+    mail: Mailbox,
     device: Device,
     turn: TurnId,
     text: String,
     searches: Vec<JoinHandle<Vec<Found>>>,
-    opening: Opening,
-    /// The heads-up goes with this request.
-    tell: bool,
-    previous: Option<Running>,
-    stopped: Arc<Mutex<bool>>,
+    link: Arc<Mutex<Link>>,
+    previous: Option<Previous>,
+    gate: Arc<Gate>,
     received: Instant,
     /// Dropped when the answer ends: the next request may go.
     _done: watch::Sender<()>,
 }
 
-impl<B: Brain, O: Outbox> Job<B, O> {
+impl<B: Brain, M: Memory> Job<B, M> {
     async fn run(self) {
         let found = request::merge(
             join_all(self.searches)
@@ -416,60 +582,91 @@ impl<B: Brain, O: Outbox> Job<B, O> {
                 .into_iter()
                 .map(Result::unwrap_or_default),
         );
+        // The session takes one request at a time: the previous one is cancelled, and waited for
+        // until it ends. If it never does, the session is broken: another one is opened.
+        let mut broken = false;
         if let Some(previous) = self.previous
-            && timeout(PREVIOUS_WAIT, previous.finished()).await.is_err()
+            && !previous.task.is_finished()
         {
-            warn!(device = %self.device, "the previous request is still running");
+            // Stopped, it was cancelled by its barge-in already.
+            let unstopped = {
+                let gate = previous.gate.lock();
+                gate.prompted.clone().filter(|_| !gate.stopped)
+            };
+            if let Some(session) = unstopped {
+                self.brain.cancel(&session);
+            }
+            if timeout(CANCEL_WAIT, previous.task.finished())
+                .await
+                .is_err()
+            {
+                warn!(device = %self.device, "the previous request never ended: new session");
+                broken = true;
+            }
         }
+        let (opening, tell) = {
+            let mut link = self.link.lock().unwrap();
+            if broken {
+                if let Some(session) = link.session() {
+                    self.brain.close(&session);
+                }
+                *link = Link::new(opening(
+                    self.brain.clone(),
+                    self.memory.clone(),
+                    self.device.clone(),
+                ));
+            }
+            let tell = !link.told;
+            link.told = true;
+            (link.opening.clone(), tell)
+        };
         let mut say = Sayer {
-            out: self.out,
+            mail: self.mail,
             device: self.device.clone(),
             turn: self.turn,
-            stopped: self.stopped,
+            gate: self.gate.clone(),
             index: 0,
+            last_sent: false,
             received: self.received,
         };
-        let opened = match self.opening.await {
+        let opened = match opening.await {
             Ok(opened) => opened,
             Err(e) => {
                 warn!(device = %self.device, "no conversation: {e}");
-                say.publish(FAILURE.to_owned(), true).await;
+                say.finish();
                 return;
             }
         };
-        let heads_up = opened.heads_up.as_deref().filter(|_| self.tell);
+        let heads_up = opened.heads_up.as_deref().filter(|_| tell);
         let text = request::build(contract::now(), heads_up, &found, &self.text);
-        let ready = self.received.elapsed().as_millis() as u64;
-        // Under the lock: a press either comes before (no request goes) or after (its cancel
-        // follows the request to the agent, in order).
-        let stopped = say.stopped.clone();
-        let guard = stopped.lock().await;
-        if *guard {
-            return;
-        }
-        let events = self.brain.prompt(&opened.session, text).await;
-        drop(guard);
-        let mut events = match events {
-            Ok(events) => events,
-            Err(e) => {
-                warn!(device = %self.device, "request: {e:#}");
-                say.publish(FAILURE.to_owned(), true).await;
+        let mut events = {
+            let mut gate = self.gate.lock();
+            if gate.stopped {
                 return;
             }
+            gate.prompted = Some(opened.session.clone());
+            self.brain.prompt(&opened.session, text)
         };
         info!(
             device = %self.device,
             turn = %self.turn,
             found = found.len(),
             heads_up = heads_up.is_some(),
-            ms = ready,
+            ms = self.received.elapsed().as_millis() as u64,
             "request sent"
         );
         let mut splitter = Splitter::new();
         let mut first_text = true;
+        // Once the LLM stalled, Kris was told; what still comes is dropped until `Done`.
+        let mut given_up = false;
         loop {
-            match timeout(STALL, events.recv()).await {
-                Ok(Some(Event::Text(piece))) => {
+            let event = if given_up {
+                Ok(events.recv().await)
+            } else {
+                timeout(STALL, events.recv()).await
+            };
+            match event {
+                Ok(Some(Event::Text(piece))) if !given_up => {
                     if first_text {
                         first_text = false;
                         info!(
@@ -479,20 +676,18 @@ impl<B: Brain, O: Outbox> Job<B, O> {
                         );
                     }
                     for sentence in splitter.push(&piece) {
-                        say.publish(sentence, false).await;
+                        say.publish(sentence, false);
                     }
                 }
+                Ok(Some(Event::Text(_))) => {}
                 Ok(Some(Event::Tool(name))) => {
                     debug!(turn = %self.turn, tool = %name, "the LLM calls a tool");
                 }
                 Ok(Some(Event::Done(result))) => {
-                    match splitter.finish() {
-                        Some(last) => say.publish(last, true).await,
-                        None if say.index == 0 && result.is_err() => {
-                            say.publish(FAILURE.to_owned(), true).await
-                        }
-                        None => {}
+                    if !given_up && let Some(last) = splitter.finish() {
+                        say.publish(last, true);
                     }
+                    say.finish();
                     match result {
                         Ok(reason) => info!(
                             turn = %self.turn,
@@ -505,43 +700,50 @@ impl<B: Brain, O: Outbox> Job<B, O> {
                     }
                     return;
                 }
-                Ok(None) => return,
+                Ok(None) => {
+                    warn!(turn = %self.turn, "the answer ended without its end");
+                    say.finish();
+                    return;
+                }
                 Err(_) => {
                     warn!(turn = %self.turn, "the LLM is silent: request given up");
                     self.brain.cancel(&opened.session);
-                    return;
+                    say.finish();
+                    given_up = true;
                 }
             }
         }
     }
 }
 
-/// Publishes the sentences of an answer, numbered, unless the answer was stopped.
-struct Sayer<O> {
-    out: Arc<O>,
+/// Queues the sentences of an answer, numbered, unless the answer was stopped.
+struct Sayer {
+    mail: Mailbox,
     device: Device,
     turn: TurnId,
-    stopped: Arc<Mutex<bool>>,
+    gate: Arc<Gate>,
     index: u32,
+    last_sent: bool,
     received: Instant,
 }
 
-impl<O: Outbox> Sayer<O> {
-    async fn publish(&mut self, text: String, last: bool) {
-        let stopped = self.stopped.lock().await;
-        if *stopped {
+impl Sayer {
+    fn publish(&mut self, text: String, last: bool) {
+        if self.last_sent {
             return;
         }
-        let say = Say {
-            turn: self.turn,
-            device: self.device.clone(),
-            index: self.index,
-            text,
-            last,
-        };
-        if let Err(e) = self.out.say(say).await {
-            warn!("publishing voice.say: {e:#}");
-            return;
+        {
+            let gate = self.gate.lock();
+            if gate.stopped {
+                return;
+            }
+            self.mail.send(Message::Say(Say {
+                turn: self.turn,
+                device: self.device.clone(),
+                index: self.index,
+                text,
+                last,
+            }));
         }
         if self.index == 0 {
             info!(
@@ -551,5 +753,17 @@ impl<O: Outbox> Sayer<O> {
             );
         }
         self.index += 1;
+        self.last_sent = last;
+    }
+
+    /// The answer is over, whatever way: the voice gets its `last`. When nothing was said, Kris
+    /// is told it failed; otherwise an empty last sentence closes the turn (the voice ends it
+    /// with an empty chunk carrying the end).
+    fn finish(&mut self) {
+        if self.index == 0 {
+            self.publish(FAILURE.to_owned(), true);
+        } else {
+            self.publish(String::new(), true);
+        }
     }
 }

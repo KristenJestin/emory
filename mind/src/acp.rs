@@ -86,7 +86,6 @@ enum Command {
         session: SessionId,
         text: String,
         events: mpsc::UnboundedSender<Event>,
-        sent: oneshot::Sender<anyhow::Result<()>>,
     },
     Cancel(SessionId),
     Close(SessionId),
@@ -145,21 +144,16 @@ impl Brain for AcpBrain {
         answer.await.context("the ACP connection is closed")?
     }
 
-    async fn prompt(
-        &self,
-        session: &SessionId,
-        text: String,
-    ) -> anyhow::Result<mpsc::UnboundedReceiver<Event>> {
+    fn prompt(&self, session: &SessionId, text: String) -> mpsc::UnboundedReceiver<Event> {
         let (events, receiver) = mpsc::unbounded_channel();
-        let (sent, is_sent) = oneshot::channel();
-        self.send(Command::Prompt {
+        if let Err(e) = self.send(Command::Prompt {
             session: session.clone(),
             text,
-            events,
-            sent,
-        })?;
-        is_sent.await.context("the ACP connection is closed")??;
-        Ok(receiver)
+            events: events.clone(),
+        }) {
+            let _ = events.send(Event::Done(Err(e.to_string())));
+        }
+        receiver
     }
 
     fn cancel(&self, session: &SessionId) {
@@ -272,14 +266,20 @@ fn permission(request: &RequestPermissionRequest) -> RequestPermissionOutcome {
     let chosen = if ours {
         pick(PermissionOptionKind::AllowOnce)
     } else {
-        warn!(tool = name, "permission refused: not a tool of Emory's MCP server");
+        warn!(
+            tool = name,
+            "permission refused: not a tool of Emory's MCP server"
+        );
         pick(PermissionOptionKind::RejectOnce)
     };
     match chosen {
         Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
         None => {
             if ours {
-                warn!(tool = name, "permission refused: no option to allow it once");
+                warn!(
+                    tool = name,
+                    "permission refused: no option to allow it once"
+                );
             }
             RequestPermissionOutcome::Cancelled
         }
@@ -325,16 +325,25 @@ fn handle(
             session,
             text,
             events,
-            sent,
         } => {
-            streams
-                .lock()
-                .unwrap()
-                .insert(session.0.clone(), events.clone());
+            // One request at a time on a session: the text of a request still running would be
+            // taken for the answer of the new one.
+            {
+                let mut streams = streams.lock().unwrap();
+                if streams.contains_key(&session.0) {
+                    warn!(%session, "a request is still running on this session: refused");
+                    let _ = events.send(Event::Done(Err(
+                        "a request is still running on this session".to_owned(),
+                    )));
+                    return;
+                }
+                streams.insert(session.0.clone(), events.clone());
+            }
             let request = PromptRequest::new(
                 session.0.clone(),
                 vec![ContentBlock::Text(TextContent::new(text))],
             );
+            let failed = (streams.clone(), session.0.clone(), events.clone());
             let streams = streams.clone();
             // The answer is handled in order with the notifications: every update of the request
             // reaches the stream before its `Done`.
@@ -345,16 +354,15 @@ fn handle(
                         Ok(response) => Ok(stop_reason(&response.stop_reason)),
                         Err(e) => Err(e.to_string()),
                     };
-                    let mut streams = streams.lock().unwrap();
-                    if let Some(current) = streams.get(&session.0)
-                        && current.same_channel(&events)
-                    {
-                        streams.remove(&session.0);
-                    }
+                    forget(&streams, &session.0, &events);
                     let _ = events.send(Event::Done(done));
                     Ok(())
                 });
-            let _ = sent.send(published.map_err(|e| anyhow!("ACP session/prompt: {e}")));
+            if let Err(e) = published {
+                let (streams, session, events) = failed;
+                forget(&streams, &session, &events);
+                let _ = events.send(Event::Done(Err(format!("ACP session/prompt: {e}"))));
+            }
         }
         Command::Cancel(session) => {
             debug!(%session, "cancelling the request in progress");
@@ -363,6 +371,11 @@ fn handle(
             }
         }
         Command::Close(session) => {
+            // A request the agent never ended (it did not answer its cancel) ends here: the
+            // session is given up.
+            if let Some(events) = streams.lock().unwrap().remove(&session.0) {
+                let _ = events.send(Event::Done(Err("the session was closed".to_owned())));
+            }
             let cx = cx.clone();
             tokio::spawn(async move {
                 if let Err(e) = cx
@@ -374,6 +387,17 @@ fn handle(
                 }
             });
         }
+    }
+}
+
+/// The request of this stream is over: the session may take another one.
+fn forget(streams: &Streams, session: &str, events: &mpsc::UnboundedSender<Event>) {
+    let mut streams = streams.lock().unwrap();
+    if streams
+        .get(session)
+        .is_some_and(|current| current.same_channel(events))
+    {
+        streams.remove(session);
     }
 }
 
@@ -416,6 +440,7 @@ mod tests {
         assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
         assert_eq!(servers[0]["headers"][0]["value"], "Bearer k");
     }
+
     fn asked(tool_call: Value) -> RequestPermissionRequest {
         serde_json::from_value(json!({
             "sessionId": "s",
@@ -444,15 +469,26 @@ mod tests {
         assert_eq!(chosen(permission(&ours)).as_deref(), Some("once"));
         let by_title = asked(json!({"toolCallId": "t", "title": "mcp__emory__hippocampe_read"}));
         assert_eq!(chosen(permission(&by_title)).as_deref(), Some("once"));
-        for other in ["Bash", "mcp__emoryx__search", "mcp__other__emory", "mcp__emory"] {
+        for other in [
+            "Bash",
+            "mcp__emoryx__search",
+            "mcp__other__emory",
+            "mcp__emory",
+        ] {
             let request = asked(json!({"toolCallId": "t", "title": "x", "_meta": meta(other)}));
-            assert_eq!(chosen(permission(&request)).as_deref(), Some("no"), "{other}");
+            assert_eq!(
+                chosen(permission(&request)).as_deref(),
+                Some("no"),
+                "{other}"
+            );
         }
         let untitled = asked(json!({"toolCallId": "t"}));
         assert_eq!(chosen(permission(&untitled)).as_deref(), Some("no"));
         // Without an option to allow once, nothing is allowed.
         let mut always_only = ours.clone();
-        always_only.options.retain(|o| o.kind == PermissionOptionKind::AllowAlways);
+        always_only
+            .options
+            .retain(|o| o.kind == PermissionOptionKind::AllowAlways);
         assert_eq!(chosen(permission(&always_only)), None);
     }
 }

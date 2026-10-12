@@ -159,10 +159,7 @@ async fn a_session_streams_its_answer_then_ends() {
     );
     assert_eq!(request["mcpServers"][0]["url"], "http://127.0.0.1:1/mcp");
 
-    let mut events = brain
-        .prompt(&session, "dis trois".to_owned())
-        .await
-        .unwrap();
+    let mut events = brain.prompt(&session, "dis trois".to_owned());
     // Every piece arrives before the end of the request, in order.
     assert_eq!(
         collect(&mut events).await,
@@ -192,16 +189,56 @@ async fn a_cancelled_request_ends_cancelled_and_the_session_goes_on() {
         .await
         .unwrap();
     let session = brain.open().await.unwrap();
-    let mut events = brain.prompt(&session, "wait".to_owned()).await.unwrap();
+    let mut events = brain.prompt(&session, "wait".to_owned());
     assert_eq!(events.recv().await, Some(Event::Text("Début. ".into())));
     brain.cancel(&session);
     assert_eq!(
         collect(&mut events).await,
         [Event::Done(Ok("cancelled".into()))]
     );
-    let mut events = brain.prompt(&session, "encore".to_owned()).await.unwrap();
+    let mut events = brain.prompt(&session, "encore".to_owned());
     assert_eq!(
         collect(&mut events).await.last(),
         Some(&Event::Done(Ok("end_turn".into())))
     );
+}
+
+#[tokio::test]
+async fn a_request_on_a_busy_session_is_refused_and_takes_none_of_its_text() {
+    let seen = Arc::new(Seen::default());
+    let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
+        .await
+        .unwrap();
+    let session = brain.open().await.unwrap();
+    let mut first = brain.prompt(&session, "wait".to_owned());
+    assert_eq!(first.recv().await, Some(Event::Text("Début. ".into())));
+    let mut second = brain.prompt(&session, "encore".to_owned());
+    assert!(matches!(
+        collect(&mut second).await[..],
+        [Event::Done(Err(_))]
+    ));
+    // The refused request never reached the agent; the first one still gets its end.
+    brain.cancel(&session);
+    assert_eq!(
+        collect(&mut first).await,
+        [Event::Done(Ok("cancelled".into()))]
+    );
+    assert_eq!(*seen.prompts.lock().unwrap(), ["wait"]);
+}
+
+#[tokio::test]
+async fn closing_a_session_ends_its_request() {
+    let seen = Arc::new(Seen::default());
+    let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
+        .await
+        .unwrap();
+    let session = brain.open().await.unwrap();
+    let mut events = brain.prompt(&session, "wait".to_owned());
+    assert_eq!(events.recv().await, Some(Event::Text("Début. ".into())));
+    // The agent does not answer: the close gives the session up.
+    brain.close(&session);
+    assert!(matches!(
+        collect(&mut events).await[..],
+        [Event::Done(Err(_))]
+    ));
 }

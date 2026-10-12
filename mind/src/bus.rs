@@ -1,6 +1,8 @@
 //! The connection to the NATS bus: in the clear for development, in TLS with an nkey on the
 //! server.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use async_nats::ConnectOptions;
 use contract::{Say, Stop, subjects};
@@ -34,7 +36,11 @@ pub async fn connect(config: &NatsConfig, name: &str, wait: bool) -> Result<asyn
         .with_context(|| format!("connecting to {}", config.url))
 }
 
-/// Publishes a JSON message and waits for it to leave for the server.
+/// How long a message may wait to leave for the server: during an outage the queue of the voice
+/// goes on (the messages stay in the client's buffer and leave at the reconnection).
+const FLUSH_WAIT: Duration = Duration::from_secs(1);
+
+/// Publishes a JSON message and waits, a bounded time, for it to leave for the server.
 pub async fn publish<T: Serialize>(
     client: &async_nats::Client,
     subject: impl async_nats::subject::ToSubject,
@@ -45,7 +51,10 @@ pub async fn publish<T: Serialize>(
         .publish(subject, payload.into())
         .await
         .context("publishing")?;
-    client.flush().await.context("sending to the server")?;
+    tokio::time::timeout(FLUSH_WAIT, client.flush())
+        .await
+        .context("the bus does not answer")?
+        .context("sending to the server")?;
     Ok(())
 }
 

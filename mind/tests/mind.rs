@@ -3,7 +3,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     time::Duration,
 };
 
@@ -22,51 +25,120 @@ struct Prompt {
     events: mpsc::UnboundedSender<Event>,
 }
 
+type Streams = Arc<Mutex<HashMap<SessionId, mpsc::UnboundedSender<Event>>>>;
+
+/// Behaves like the ACP client over the agent: one request at a time per session (a request
+/// while another runs is refused, and counted), a cancel ends the request `cancelled` (unless
+/// `deaf`), a close ends it with an error.
 #[derive(Default)]
 struct FakeBrain {
     opened: Mutex<u32>,
+    /// How many of the next openings fail.
+    failing_opens: AtomicU32,
+    /// The agent does not answer the cancels.
+    deaf: AtomicBool,
+    /// What the mind asked, in order: `prompt s1`, `cancel s1`, `close s1`.
+    log: Mutex<Vec<String>>,
+    /// Requests sent while another one was running on their session.
+    refused: AtomicU32,
     cancels: Mutex<Vec<SessionId>>,
     closes: Mutex<Vec<SessionId>>,
-    streams: Mutex<HashMap<SessionId, mpsc::UnboundedSender<Event>>>,
+    /// The requests running, by session; each ends at its `Done`.
+    streams: Streams,
     prompts: Mutex<Option<mpsc::UnboundedSender<Prompt>>>,
+}
+
+impl FakeBrain {
+    fn note(&self, what: &str, session: &SessionId) {
+        self.log.lock().unwrap().push(format!("{what} {session}"));
+    }
+
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+
+    /// The connection breaks: the streams close without their `Done`.
+    fn drop_streams(&self) {
+        self.streams.lock().unwrap().clear();
+    }
 }
 
 impl Brain for FakeBrain {
     async fn open(&self) -> anyhow::Result<SessionId> {
+        if self
+            .failing_opens
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            anyhow::bail!("the adapter refused the session");
+        }
         let mut opened = self.opened.lock().unwrap();
         *opened += 1;
         Ok(SessionId(format!("s{opened}")))
     }
 
-    async fn prompt(
-        &self,
-        session: &SessionId,
-        text: String,
-    ) -> anyhow::Result<mpsc::UnboundedReceiver<Event>> {
+    fn prompt(&self, session: &SessionId, text: String) -> mpsc::UnboundedReceiver<Event> {
         let (events, receiver) = mpsc::unbounded_channel();
+        if self.streams.lock().unwrap().contains_key(session) {
+            self.note("refused", session);
+            self.refused.fetch_add(1, Ordering::SeqCst);
+            let _ = events.send(Event::Done(Err("a request is still running".to_owned())));
+            return receiver;
+        }
+        self.note("prompt", session);
+        // What the test sends goes through here: the request ends at its `Done`.
+        let (input, mut from_test) = mpsc::unbounded_channel::<Event>();
         self.streams
             .lock()
             .unwrap()
-            .insert(session.clone(), events.clone());
+            .insert(session.clone(), input.clone());
+        let streams = self.streams.clone();
+        let id = session.clone();
+        let mine = input.downgrade();
+        tokio::spawn(async move {
+            while let Some(event) = from_test.recv().await {
+                let done = matches!(event, Event::Done(_));
+                let _ = events.send(event);
+                if done {
+                    let mut streams = streams.lock().unwrap();
+                    let current = streams.get(&id);
+                    if mine
+                        .upgrade()
+                        .is_some_and(|m| current.is_some_and(|c| c.same_channel(&m)))
+                    {
+                        streams.remove(&id);
+                    }
+                    return;
+                }
+            }
+        });
         let prompts = self.prompts.lock().unwrap();
-        prompts.as_ref().unwrap().send(Prompt {
+        let _ = prompts.as_ref().unwrap().send(Prompt {
             session: session.clone(),
             text,
-            events,
-        })?;
-        Ok(receiver)
+            events: input,
+        });
+        receiver
     }
 
     /// Like the agent: the request in progress ends, `cancelled`.
     fn cancel(&self, session: &SessionId) {
+        self.note("cancel", session);
         self.cancels.lock().unwrap().push(session.clone());
+        if self.deaf.load(Ordering::SeqCst) {
+            return;
+        }
         if let Some(events) = self.streams.lock().unwrap().get(session) {
             let _ = events.send(Event::Done(Ok("cancelled".to_owned())));
         }
     }
 
     fn close(&self, session: &SessionId) {
+        self.note("close", session);
         self.closes.lock().unwrap().push(session.clone());
+        if let Some(events) = self.streams.lock().unwrap().get(session) {
+            let _ = events.send(Event::Done(Err("the session was closed".to_owned())));
+        }
     }
 }
 
@@ -145,7 +217,7 @@ impl Recorder {
 }
 
 struct Bench {
-    mind: Mind<FakeBrain, FakeMemory, Recorder>,
+    mind: Mind<FakeBrain, FakeMemory>,
     brain: Arc<FakeBrain>,
     out: Arc<Recorder>,
     prompts: mpsc::UnboundedReceiver<Prompt>,
@@ -171,6 +243,20 @@ fn bench(memory: FakeMemory) -> Bench {
         brain,
         out,
         prompts,
+    }
+}
+
+/// A turn newer than all the others, as the ear makes them (ULIDs made in the same millisecond do
+/// not sort by time).
+fn new_turn() -> TurnId {
+    static LAST: Mutex<Option<TurnId>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    loop {
+        let id = TurnId::new();
+        if last.is_none_or(|l| id > l) {
+            *last = Some(id);
+            return id;
+        }
     }
 }
 
@@ -228,7 +314,7 @@ fn found(slug: &str) -> Found {
 impl Bench {
     /// One whole turn heard on a device: the press, the sentences, the turn.
     async fn ask(&mut self, name: &str, sentences: &[&str]) -> (TurnId, Prompt) {
-        let id = TurnId::new();
+        let id = new_turn();
         self.mind.handle(press(name, id)).await;
         for (i, s) in sentences.iter().enumerate() {
             self.mind.handle(sentence(name, id, i as u32, s)).await;
@@ -373,7 +459,7 @@ async fn a_press_while_answering_cancels_the_llm_and_stops_the_voice() {
     b.out.wait_for(1).await;
 
     // Kris presses again: the request is cancelled, the voice stopped.
-    let next = TurnId::new();
+    let next = new_turn();
     b.mind.handle(press("office", next)).await;
     assert_eq!(
         *b.brain.cancels.lock().unwrap(),
@@ -422,7 +508,8 @@ async fn a_press_after_the_answer_still_stops_the_voice_without_cancelling() {
     prompt.events.send(done()).unwrap();
     b.out.wait_for(1).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    b.mind.handle(press("office", TurnId::new())).await;
+    b.mind.handle(press("office", new_turn())).await;
+    b.out.wait_for(2).await;
     assert!(b.brain.cancels.lock().unwrap().is_empty());
     assert_eq!(
         b.out.all().last(),
@@ -436,7 +523,7 @@ async fn a_press_after_the_answer_still_stops_the_voice_without_cancelling() {
 #[tokio::test]
 async fn nothing_heard_gets_no_answer() {
     let mut b = bench(FakeMemory::default());
-    let id = TurnId::new();
+    let id = new_turn();
     b.mind.handle(press("office", id)).await;
     b.mind.handle(turn("office", id, "  ")).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -476,6 +563,341 @@ async fn a_failed_request_says_so() {
         .events
         .send(Event::Done(Err("rate limited".to_owned())))
         .unwrap();
+    b.out.wait_for(1).await;
+    assert_eq!(
+        b.out.says(),
+        [("office".into(), 0, mind::mind::FAILURE.into(), true)]
+    );
+}
+
+/// Waits until the fake LLM gets a request.
+async fn next_prompt(b: &mut Bench) -> Prompt {
+    tokio::time::timeout(Duration::from_secs(30), b.prompts.recv())
+        .await
+        .expect("no request reached the LLM")
+        .unwrap()
+}
+
+/// Lets the spawned tasks run (the clock is paused in these tests, and moves only when they
+/// all wait).
+async fn settle() {
+    tokio::time::sleep(Duration::from_millis(1)).await;
+}
+
+// Finding 1: the barge-in takes the lock before cancelling.
+
+#[tokio::test(start_paused = true)]
+async fn a_press_before_the_request_leaves_means_no_request() {
+    let mut memory = FakeMemory::default();
+    memory.entries.insert(
+        "lent".into(),
+        (Duration::from_millis(200), vec![found("lent")]),
+    );
+    let mut b = bench(memory);
+    let first = new_turn();
+    b.mind.handle(press("office", first)).await;
+    b.mind.handle(sentence("office", first, 0, "lent")).await;
+    b.mind.handle(turn("office", first, "lent")).await;
+    // The answer waits for its search: Kris presses again.
+    settle().await;
+    b.mind.handle(press("office", new_turn())).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        b.prompts.try_recv().is_err(),
+        "a stopped answer sent its request"
+    );
+    assert!(!b.brain.log().iter().any(|l| l.starts_with("prompt")));
+    b.out.wait_for(1).await;
+    assert_eq!(
+        b.out.all(),
+        [Out::Stop(Stop {
+            turn: first,
+            device: device("office")
+        })]
+    );
+}
+
+#[tokio::test]
+async fn the_cancel_of_a_barge_in_follows_its_request() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    b.mind.handle(press("office", new_turn())).await;
+    let s = &prompt.session;
+    assert_eq!(
+        b.brain.log(),
+        [format!("prompt {s}"), format!("cancel {s}")]
+    );
+}
+
+// Finding 2: a session takes one request at a time.
+
+#[tokio::test(start_paused = true)]
+async fn a_request_waits_for_the_end_of_the_previous_one() {
+    let mut b = bench(FakeMemory::default());
+    b.brain.deaf.store(true, Ordering::SeqCst);
+    let (_, first) = b.ask("office", &["raconte"]).await;
+    let next = new_turn();
+    b.mind.handle(press("office", next)).await;
+    b.mind.handle(turn("office", next, "et alors")).await;
+    // The agent has not ended the first request yet: the second one waits.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(b.prompts.try_recv().is_err());
+    // Its late text is not taken for the next answer.
+    first.events.send(text("Une vieille phrase. Et")).unwrap();
+    first
+        .events
+        .send(Event::Done(Ok("cancelled".into())))
+        .unwrap();
+    let second = next_prompt(&mut b).await;
+    assert_eq!(second.session, first.session);
+    second.events.send(text("Rien.")).unwrap();
+    second.events.send(done()).unwrap();
+    b.out.wait_for(2).await;
+    assert_eq!(b.out.says(), [("office".into(), 0, "Rien.".into(), true)]);
+    assert_eq!(b.brain.refused.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_turn_without_its_press_cancels_the_previous_request_and_waits_for_it() {
+    let mut b = bench(FakeMemory::default());
+    let (_, first) = b.ask("office", &["raconte"]).await;
+    first.events.send(text("Il était une fois. Un")).unwrap();
+    b.out.wait_for(1).await;
+    // The press was lost: the turn comes alone.
+    b.mind.handle(turn("office", new_turn(), "stop")).await;
+    let second = next_prompt(&mut b).await;
+    let s = &first.session;
+    assert_eq!(
+        b.brain.log(),
+        [
+            format!("prompt {s}"),
+            format!("cancel {s}"),
+            format!("prompt {s}")
+        ]
+    );
+    assert_eq!(second.session, first.session);
+    assert_eq!(b.brain.refused.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_whose_request_never_ends_is_replaced() {
+    let mut b = bench(FakeMemory::default());
+    b.brain.deaf.store(true, Ordering::SeqCst);
+    let (first_turn, first) = b.ask("office", &["raconte"]).await;
+    let next = new_turn();
+    b.mind.handle(press("office", next)).await;
+    b.mind.handle(turn("office", next, "et alors")).await;
+    let second = next_prompt(&mut b).await;
+    // Given up after the wait, closed, and a new session opened, told the heads-up again.
+    assert_ne!(second.session, first.session);
+    assert!(second.text.contains("[Ce que la mémoire signale"));
+    let log = b.brain.log();
+    let (s1, s2) = (&first.session, &second.session);
+    assert_eq!(
+        log,
+        [
+            format!("prompt {s1}"),
+            format!("cancel {s1}"),
+            format!("close {s1}"),
+            format!("prompt {s2}")
+        ]
+    );
+    // The old request, ended by the close, says nothing more.
+    let _ = first.events.send(text("Trop tard."));
+    second.events.send(text("Voilà.")).unwrap();
+    second.events.send(done()).unwrap();
+    b.out.wait_for(2).await;
+    assert_eq!(
+        b.out.all(),
+        [
+            Out::Stop(Stop {
+                turn: first_turn,
+                device: device("office")
+            }),
+            Out::Say(Say {
+                turn: next,
+                device: device("office"),
+                index: 0,
+                text: "Voilà.".into(),
+                last: true
+            })
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_llm_is_given_up_but_its_request_is_waited_for() {
+    let mut b = bench(FakeMemory::default());
+    b.brain.deaf.store(true, Ordering::SeqCst);
+    let (_, first) = b.ask("office", &["raconte"]).await;
+    // Nothing comes for a minute: Kris is told, the request cancelled.
+    tokio::time::sleep(mind::mind::STALL + Duration::from_secs(1)).await;
+    assert_eq!(
+        b.out.says(),
+        [("office".into(), 0, mind::mind::FAILURE.into(), true)]
+    );
+    assert_eq!(
+        *b.brain.cancels.lock().unwrap(),
+        std::slice::from_ref(&first.session)
+    );
+    // What comes late is not said, and the session stays busy until the end comes.
+    first.events.send(text("Enfin une réponse. Et")).unwrap();
+    let next = new_turn();
+    b.mind.handle(press("office", next)).await;
+    b.mind.handle(turn("office", next, "allô")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(b.prompts.try_recv().is_err());
+    first.events.send(done()).unwrap();
+    let second = next_prompt(&mut b).await;
+    assert_eq!(second.session, first.session);
+    assert_eq!(b.out.says().len(), 1);
+    assert_eq!(b.brain.refused.load(Ordering::SeqCst), 0);
+}
+
+// Findings 3 and 5: the presses and the hearing come in no order between them.
+
+#[tokio::test]
+async fn a_late_turn_after_a_newer_press_is_not_answered() {
+    let mut memory = FakeMemory::default();
+    memory
+        .entries
+        .insert("vieux".into(), (Duration::ZERO, vec![found("vieux")]));
+    let mut b = bench(memory);
+    let old = new_turn();
+    let new = new_turn();
+    b.mind.handle(press("office", old)).await;
+    b.mind.handle(press("office", new)).await;
+    // What the hearing says of the old turn comes after the new press.
+    b.mind.handle(sentence("office", old, 0, "vieux")).await;
+    b.mind.handle(turn("office", old, "vieux")).await;
+    b.mind.handle(sentence("office", new, 0, "neuf")).await;
+    b.mind.handle(turn("office", new, "neuf")).await;
+    let prompt = next_prompt(&mut b).await;
+    assert!(prompt.text.ends_with("[Kris dit]\nneuf"));
+    assert!(!prompt.text.contains("Fiche vieux"));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(b.prompts.try_recv().is_err(), "the old turn was answered");
+}
+
+#[tokio::test]
+async fn a_late_press_does_not_stop_the_answer_of_its_turn() {
+    let mut b = bench(FakeMemory::default());
+    let id = new_turn();
+    // The turn comes before its press.
+    b.mind.handle(sentence("office", id, 0, "bonjour")).await;
+    b.mind.handle(turn("office", id, "bonjour")).await;
+    let prompt = next_prompt(&mut b).await;
+    b.mind.handle(press("office", id)).await;
+    prompt.events.send(text("Salut.")).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(1).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(b.brain.cancels.lock().unwrap().is_empty());
+    assert_eq!(b.out.says(), [("office".into(), 0, "Salut.".into(), true)]);
+    assert!(b.out.all().iter().all(|o| matches!(o, Out::Say(_))));
+}
+
+#[tokio::test]
+async fn a_press_keeps_the_searches_its_turn_already_started() {
+    let mut memory = FakeMemory::default();
+    memory.entries.insert(
+        "la musique".into(),
+        (Duration::ZERO, vec![found("musique")]),
+    );
+    let mut b = bench(memory);
+    let id = new_turn();
+    // The first sentence comes before the press.
+    b.mind.handle(sentence("office", id, 0, "la musique")).await;
+    b.mind.handle(press("office", id)).await;
+    b.mind.handle(sentence("office", id, 1, "du salon")).await;
+    b.mind
+        .handle(turn("office", id, "la musique du salon"))
+        .await;
+    let prompt = next_prompt(&mut b).await;
+    assert!(prompt.text.contains("Fiche musique"));
+}
+
+// Finding 4: a session that failed to open is opened again.
+
+#[tokio::test]
+async fn a_failed_opening_is_tried_again_at_the_next_turn() {
+    let mut b = bench(FakeMemory::default());
+    b.brain.failing_opens.store(1, Ordering::SeqCst);
+    let id = new_turn();
+    b.mind.handle(press("office", id)).await;
+    b.mind.handle(turn("office", id, "bonjour")).await;
+    b.out.wait_for(1).await;
+    assert_eq!(
+        b.out.says(),
+        [("office".into(), 0, mind::mind::FAILURE.into(), true)]
+    );
+    let (_, prompt) = b.ask("office", &["bonjour"]).await;
+    assert_eq!(prompt.session.0, "s1");
+    assert!(prompt.text.contains("[Ce que la mémoire signale"));
+}
+
+// Finding 6: the voice always gets its `last`.
+
+#[tokio::test]
+async fn a_failure_after_some_sentences_still_ends_the_turn() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    prompt.events.send(text("Un. Deux. Trois")).unwrap();
+    prompt
+        .events
+        .send(Event::Done(Err("overloaded".into())))
+        .unwrap();
+    b.out.wait_for(3).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Un.".into(), false),
+            ("office".into(), 1, "Deux.".into(), false),
+            ("office".into(), 2, "Trois".into(), true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_remainder_with_nothing_to_say_still_ends_the_turn() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    prompt.events.send(text("Un. Deux. **")).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(3).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Un.".into(), false),
+            ("office".into(), 1, "Deux.".into(), false),
+            ("office".into(), 2, "".into(), true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_stream_that_closes_without_its_end_still_ends_the_turn() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    prompt.events.send(text("Un. Deux")).unwrap();
+    b.out.wait_for(1).await;
+    b.brain.drop_streams();
+    drop(prompt);
+    b.out.wait_for(2).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Un.".into(), false),
+            ("office".into(), 1, "".into(), true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_empty_answer_says_it_failed() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    prompt.events.send(done()).unwrap();
     b.out.wait_for(1).await;
     assert_eq!(
         b.out.says(),
