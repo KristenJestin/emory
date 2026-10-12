@@ -44,12 +44,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let nats = nats::connect(&config).await?;
     let engine = engine::Engine::new(
         &config.engine_url,
-        &config.voice,
+        engine::Request::of(&config),
         config.engine_idle_timeout(),
         config.engine_concurrency,
     )?;
     match engine.warm_up().await {
-        Ok(()) => info!(engine = %config.engine_url, voice = %config.voice, "engine ready"),
+        Ok(()) => {
+            info!(engine = ?config.engine, url = %config.engine_url, voice = %config.voice(), "engine ready")
+        }
         Err(e) => warn!("engine not ready yet, the first sentence will be slow or lost: {e:#}"),
     }
     let mut messages = nats.subscribe(VOICE_SUBJECTS).await?;

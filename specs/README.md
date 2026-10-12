@@ -138,11 +138,11 @@ sans toucher aux autres.
 emory/
   specs/        cette vue d'ensemble, puis une spec par organe
   contract/     les sujets du bus et le format des messages
-  dev/          le bus et le moteur de voix pour développer (compose.yml, voice.toml)
+  dev/          le bus et le moteur de voix pour développer (compose.yml, voice.toml, voice-kyutai.toml)
   hearing/      le centre auditif (serveur)
   voice/        la voix (serveur)
   mind/         l'esprit (serveur)
-  engines/      les moteurs hors processus, un dossier chacun (pocket/)
+  engines/      les moteurs hors processus, un dossier chacun (pocket/, kyutai/)
   ear/          emory-ear : le micro et son déclencheur, un module par déclencheur — à venir
   mouth/        emory-mouth : le haut-parleur — à venir
   hands/        emory-hands : les actions sur l'appareil, un module par standard — à venir
