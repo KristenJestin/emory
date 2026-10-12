@@ -15,6 +15,9 @@ parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 
 [transcription]
 threads = 4
+# Where Parakeet computes: "cpu" (default) or "cuda" (an NVIDIA GPU, needs the CUDA build:
+# scripts/build-cuda.sh). See "Run on an NVIDIA GPU" in the README before using it.
+# provider = "cuda"
 corrections = "corrections.tsv"
 # The vocabulary (names Parakeet gets wrong): the beam search replaces the greedy one, for about a
 # fifth to a half more compute per sentence. Remove the line, or empty the file, for the greedy
@@ -28,3 +31,6 @@ threshold = 0.5
 min_silence = 0.5
 min_speech = 0.25
 max_speech = 20.0
+# Silero stays on the CPU: on the GPU it is about seven times slower (a model this small is
+# only waiting for the data to travel).
+# provider = "cpu"
