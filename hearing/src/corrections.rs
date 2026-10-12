@@ -229,6 +229,22 @@ mod tests {
     }
 
     #[test]
+    fn the_example_table_brings_emory_back_and_only_there() {
+        let t = Corrections::from_tsv(include_str!("../examples/corrections.tsv")).unwrap();
+        assert_eq!(
+            t.apply("Parle-moi des mains des Maury."),
+            "Parle-moi des mains d'Emory."
+        );
+        assert_eq!(t.apply("les mains d'Emory"), "les mains d'Emory");
+        assert_eq!(t.apply("et maury, raconte"), "Emory, raconte");
+        // Maury alone, or in another word, stays.
+        assert_eq!(
+            t.apply("le vin de Maury et les desmaury"),
+            "le vin de Maury et les desmaury"
+        );
+    }
+
+    #[test]
     fn an_empty_table_changes_nothing() {
         let t = Corrections::from_tsv("").unwrap();
         assert!(t.is_empty());

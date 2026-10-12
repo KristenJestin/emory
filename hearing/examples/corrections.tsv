@@ -1,6 +1,8 @@
 # pattern (regular expression, whole words, case-insensitive)<TAB>replacement
 # The rules apply in order. Only correct forms that are not French words.
 hippocamp|hypocamp|hipocampe|hypocampe	Hippocampe
+# « les mains d'Emory » heard as « les mains des Maury »: the name and its « d' » come back.
+des maury	d'Emory
 et maury|emori	Emory
 dockploy|docploy|dock ploy	Dokploy
 omarchi|omarche	Omarchy
