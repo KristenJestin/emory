@@ -1,0 +1,11 @@
+# The mind on the PC, from the root of the repository: `cargo run -p mind -- dev/mind.toml`.
+# Hippocampe is Kris's real memory: in development the mind reads it with the read-only key.
+
+[llm]
+command = "npx"
+args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
+system_prompt = "mind/prompts/system.fr.md"
+
+[hippocampe]
+url = "https://wiki.krisnet.work/mcp"
+token_file = "~/.krisnet/hippocampe-prod-readonly.token"

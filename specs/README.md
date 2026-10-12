@@ -141,7 +141,7 @@ emory/
   dev/          le bus et le moteur de voix pour développer (compose.yml, voice.toml)
   hearing/      le centre auditif (serveur)
   voice/        la voix (serveur)
-  mind/         l'esprit (serveur) — à venir
+  mind/         l'esprit (serveur)
   engines/      les moteurs hors processus, un dossier chacun (pocket/)
   ear/          emory-ear : le micro et son déclencheur, un module par déclencheur — à venir
   mouth/        emory-mouth : le haut-parleur — à venir
