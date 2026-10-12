@@ -245,6 +245,33 @@ mod tests {
     }
 
     #[test]
+    fn the_example_table_reads_a_mira_as_emory_only_when_it_is_clearly_the_name() {
+        let t = Corrections::from_tsv(include_str!("../examples/corrections.tsv")).unwrap();
+        // The name called at the start of the sentence, or said alone.
+        assert_eq!(
+            t.apply("A Mira, rappelle-moi la musique"),
+            "Emory, rappelle-moi la musique"
+        );
+        assert_eq!(t.apply("Amira, tu m'entends ?"), "Emory, tu m'entends ?");
+        assert_eq!(t.apply("a mira ,"), "Emory,");
+        assert_eq!(t.apply("A Mira."), "Emory");
+        assert_eq!(t.apply("Amira"), "Emory");
+        // Mira and Amira as people, or in the middle of a sentence: untouched.
+        for text in [
+            "Mira, viens voir",
+            "Dis à Amira de venir",
+            "Il a Mira dit hier",
+            "Hier, A Mira, ma voisine, est venue",
+            "Amira Benali est là",
+            "A Miranda, rappelle-moi",
+            "Amirault, tu m'entends ?",
+            "Je parle à Amira.",
+        ] {
+            assert_eq!(t.apply(text), text, "{text}");
+        }
+    }
+
+    #[test]
     fn an_empty_table_changes_nothing() {
         let t = Corrections::from_tsv("").unwrap();
         assert!(t.is_empty());

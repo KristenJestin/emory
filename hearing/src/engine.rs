@@ -21,7 +21,10 @@ use sherpa_onnx::{
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
-use crate::config::{ModelsConfig, TranscriptionConfig, VadConfig};
+use crate::{
+    config::{ModelsConfig, TranscriptionConfig, VadConfig},
+    hotwords::{Decoding, HotwordsFile},
+};
 
 const SAMPLE_RATE: i32 = 16_000;
 
@@ -291,6 +294,21 @@ impl Transcriber {
     /// Loads Parakeet, warms it up on a second of silence, then starts the thread.
     pub fn start(models: &ModelsConfig, settings: &TranscriptionConfig) -> Result<Self> {
         let folder = models.parakeet.as_ref();
+        let decoding = Decoding::read(
+            settings.decoding_method,
+            settings.hotwords.as_ref().map(AsRef::as_ref),
+        )?;
+        let vocabulary = !decoding.hotwords.is_empty();
+        // sherpa-onnx reads the words from a file, and needs the model's BPE vocabulary to cut
+        // them into tokens.
+        let hotwords_file = vocabulary
+            .then(|| HotwordsFile::write(&decoding.hotwords))
+            .transpose()?;
+        let bpe_vocab = match (&settings.bpe_vocab, vocabulary) {
+            (Some(path), true) => Some(path_string(path.as_ref())?),
+            (None, true) => Some(path_string(&folder.join("bpe.vocab"))?),
+            (_, false) => None,
+        };
         let config = OfflineRecognizerConfig {
             model_config: OfflineModelConfig {
                 transducer: OfflineTransducerModelConfig {
@@ -302,19 +320,30 @@ impl Transcriber {
                 num_threads: settings.threads.max(1),
                 provider: Some("cpu".to_owned()),
                 model_type: Some("nemo_transducer".to_owned()),
+                modeling_unit: vocabulary.then(|| "bpe".to_owned()),
+                bpe_vocab,
                 ..OfflineModelConfig::default()
             },
-            decoding_method: Some("greedy_search".to_owned()),
+            decoding_method: Some(decoding.method.name().to_owned()),
+            hotwords_file: hotwords_file
+                .as_ref()
+                .map(|file| path_string(file.path()))
+                .transpose()?,
+            hotwords_score: settings.hotwords_score,
             ..OfflineRecognizerConfig::default()
         };
         let started = Instant::now();
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| anyhow!("Parakeet did not start ({})", folder.display()))?;
         let load = started.elapsed();
+        // The recognizer has read the words: the copy is not needed any more.
+        drop(hotwords_file);
         let warm_up = Instant::now();
         transcribe(&recognizer, &vec![0.0; SAMPLE_RATE as usize])?;
         tracing::info!(
             threads = settings.threads,
+            decoding = decoding.method.name(),
+            hotwords = decoding.hotwords.len(),
             load_ms = load.as_millis() as u64,
             warm_up_ms = warm_up.elapsed().as_millis() as u64,
             "Parakeet ready"

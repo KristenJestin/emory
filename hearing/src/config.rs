@@ -19,6 +19,16 @@ impl<'de> Deserialize<'de> for ConfigPath {
     }
 }
 
+impl ConfigPath {
+    /// A relative path is read from `base`, the folder of the configuration file, not from where
+    /// the program was started.
+    fn resolve(&mut self, base: &Path) {
+        if self.0.is_relative() {
+            self.0 = base.join(&self.0);
+        }
+    }
+}
+
 impl AsRef<Path> for ConfigPath {
     fn as_ref(&self) -> &Path {
         &self.0
@@ -91,6 +101,39 @@ pub struct TranscriptionConfig {
     pub threads: i32,
     /// The corrections table (TSV), applied after the transcription.
     pub corrections: Option<ConfigPath>,
+    /// How Parakeet searches. Absent: `modified_beam_search` when there are hotwords,
+    /// `greedy_search` (faster) when there are none.
+    pub decoding_method: Option<DecodingMethod>,
+    /// The vocabulary: one name per line (`#` starts a comment), that Parakeet favours when it
+    /// hesitates. An empty file is no vocabulary. Needs `modified_beam_search` and the
+    /// `bpe.vocab` that `scripts/download-models.sh` writes.
+    pub hotwords: Option<ConfigPath>,
+    /// How much a hotword is favoured. Too high and words are invented (3 does).
+    #[serde(default = "default_hotwords_score")]
+    pub hotwords_score: f32,
+    /// The `bpe.vocab` of the model (default: in the Parakeet folder).
+    pub bpe_vocab: Option<ConfigPath>,
+}
+
+/// How Parakeet searches for the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecodingMethod {
+    GreedySearch,
+    ModifiedBeamSearch,
+}
+
+impl DecodingMethod {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::GreedySearch => "greedy_search",
+            Self::ModifiedBeamSearch => "modified_beam_search",
+        }
+    }
+}
+
+fn default_hotwords_score() -> f32 {
+    2.0
 }
 
 fn default_threads() -> i32 {
@@ -102,6 +145,10 @@ impl Default for TranscriptionConfig {
         Self {
             threads: default_threads(),
             corrections: None,
+            decoding_method: None,
+            hotwords: None,
+            hotwords_score: default_hotwords_score(),
+            bpe_vocab: None,
         }
     }
 }
@@ -152,10 +199,29 @@ impl TurnsConfig {
 }
 
 impl Config {
+    /// Reads the file; the relative paths it holds are resolved from its folder.
     pub fn read(path: &Path) -> Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("configuration {}", path.display()))
+        let mut config: Self =
+            toml::from_str(&text).with_context(|| format!("configuration {}", path.display()))?;
+        config.resolve_paths(path.parent().unwrap_or(Path::new("")));
+        Ok(config)
+    }
+
+    fn resolve_paths(&mut self, base: &Path) {
+        let paths = [
+            self.nats.ca.as_mut(),
+            self.nats.nkey.as_mut(),
+            Some(&mut self.models.vad),
+            Some(&mut self.models.parakeet),
+            self.transcription.corrections.as_mut(),
+            self.transcription.hotwords.as_mut(),
+            self.transcription.bpe_vocab.as_mut(),
+        ];
+        for path in paths.into_iter().flatten() {
+            path.resolve(base);
+        }
     }
 }
 
@@ -177,6 +243,9 @@ mod tests {
         assert!(config.nats.ca.is_none() && config.nats.nkey.is_none());
         assert_eq!(config.transcription.threads, 4);
         assert!(config.transcription.corrections.is_none());
+        assert!(config.transcription.decoding_method.is_none());
+        assert!(config.transcription.hotwords.is_none());
+        assert_eq!(config.transcription.hotwords_score, 2.0);
         assert_eq!(config.vad.min_silence, 0.5);
         assert_eq!(config.turns.max_turn(), Duration::from_secs(120));
     }
@@ -208,6 +277,71 @@ mod tests {
             "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn relative_paths_are_read_from_the_folder_of_the_configuration_file() {
+        let folder = std::env::temp_dir().join(format!("hearing-config-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("hearing.toml");
+        std::fs::write(
+            &file,
+            r#"
+            [nats]
+            ca = "certs/ca.pem"
+            [models]
+            vad = "/m/silero_vad.onnx"
+            parakeet = "models/parakeet"
+            [transcription]
+            corrections = "corrections.tsv"
+            hotwords = "hotwords.txt"
+            bpe_vocab = "/m/bpe.vocab"
+            "#,
+        )
+        .unwrap();
+        let config = Config::read(&file).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(config.nats.ca.unwrap().0, folder.join("certs/ca.pem"));
+        assert_eq!(config.models.vad.0, PathBuf::from("/m/silero_vad.onnx"));
+        assert_eq!(config.models.parakeet.0, folder.join("models/parakeet"));
+        assert_eq!(
+            config.transcription.corrections.unwrap().0,
+            folder.join("corrections.tsv")
+        );
+        assert_eq!(
+            config.transcription.hotwords.unwrap().0,
+            folder.join("hotwords.txt")
+        );
+        assert_eq!(
+            config.transcription.bpe_vocab.unwrap().0,
+            PathBuf::from("/m/bpe.vocab")
+        );
+    }
+
+    #[test]
+    fn the_decoding_method_is_named_as_in_sherpa_onnx() {
+        let config: Config = toml::from_str(
+            r#"
+            [models]
+            vad = "/m/v.onnx"
+            parakeet = "/m/p"
+            [transcription]
+            decoding_method = "modified_beam_search"
+            hotwords_score = 1.5
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.transcription.decoding_method,
+            Some(DecodingMethod::ModifiedBeamSearch)
+        );
+        assert_eq!(config.transcription.hotwords_score, 1.5);
+        assert!(
+            toml::from_str::<Config>(
+                "[models]\nvad = \"v\"\nparakeet = \"p\"\n[transcription]\ndecoding_method = \"beam\"\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]

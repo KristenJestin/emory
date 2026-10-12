@@ -1,4 +1,5 @@
-# Configuration of the hearing: `hearing examples/hearing.toml`
+# Configuration of the hearing: `hearing hearing/examples/hearing.toml` (from the repository root).
+# A relative path in this file is read from the folder of this file.
 # The models: `scripts/download-models.sh` (into ~/.cache/emory/models/).
 
 [nats]
@@ -14,7 +15,12 @@ parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 
 [transcription]
 threads = 4
-corrections = "examples/corrections.tsv"
+corrections = "corrections.tsv"
+# The vocabulary (names Parakeet gets wrong): the beam search replaces the greedy one, for about a
+# fifth to a half more compute per sentence. Remove the line, or empty the file, for the greedy
+# search. Needs the bpe.vocab that scripts/download-models.sh writes.
+hotwords = "hotwords.txt"
+hotwords_score = 2.0
 
 # Silero VAD settings; the values given are those of the test bench.
 [vad]
