@@ -25,6 +25,8 @@ struct Prompt {
     events: mpsc::UnboundedSender<Event>,
 }
 
+const NOTHING_HEARD: &str = "Je n'ai rien entendu.";
+
 type Streams = Arc<Mutex<HashMap<SessionId, mpsc::UnboundedSender<Event>>>>;
 
 /// Behaves like the ACP client over the agent: one request at a time per session (a request
@@ -236,6 +238,7 @@ fn bench(memory: FakeMemory) -> Bench {
             idle_timeout: Duration::from_secs(30 * 60),
             search_timeout: Duration::from_millis(300),
             search_limit: 5,
+            nothing_heard: NOTHING_HEARD.to_owned(),
         },
     );
     Bench {
@@ -521,13 +524,120 @@ async fn a_press_after_the_answer_still_stops_the_voice_without_cancelling() {
 }
 
 #[tokio::test]
-async fn nothing_heard_gets_no_answer() {
+async fn nothing_heard_is_said_without_asking_the_llm() {
+    for empty in ["", "  ", " ... ", "?! , ;"] {
+        let mut b = bench(FakeMemory::default());
+        let id = new_turn();
+        b.mind.handle(press("office", id)).await;
+        b.mind.handle(turn("office", id, empty)).await;
+        b.out.wait_for(1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(b.prompts.try_recv().is_err(), "{empty:?}");
+        assert_eq!(
+            b.out.all(),
+            [Out::Say(Say {
+                turn: id,
+                device: device("office"),
+                index: 0,
+                text: NOTHING_HEARD.into(),
+                last: true
+            })],
+            "{empty:?}"
+        );
+        assert!(!b.brain.log().iter().any(|l| l.starts_with("prompt")));
+    }
+}
+
+#[tokio::test]
+async fn nothing_heard_opens_no_session_of_its_own() {
+    // The press opens the conversation (while Kris speaks): the empty turn opens nothing more,
+    // and a turn that came without its press opens nothing at all.
+    let mut b = bench(FakeMemory::default());
+    let id = new_turn();
+    b.mind.handle(turn("office", id, " ")).await;
+    b.out.wait_for(1).await;
+    assert!(!b.mind.has_conversation(&device("office")));
+    assert_eq!(*b.brain.opened.lock().unwrap(), 0);
+    assert_eq!(b.out.says().len(), 1);
+}
+
+#[tokio::test]
+async fn a_press_while_nothing_heard_is_said_stops_it() {
     let mut b = bench(FakeMemory::default());
     let id = new_turn();
     b.mind.handle(press("office", id)).await;
-    b.mind.handle(turn("office", id, "  ")).await;
+    b.mind.handle(turn("office", id, "")).await;
+    b.out.wait_for(1).await;
+    b.mind.handle(press("office", new_turn())).await;
+    b.out.wait_for(2).await;
+    assert!(b.brain.cancels.lock().unwrap().is_empty());
+    assert_eq!(
+        b.out.all().last(),
+        Some(&Out::Stop(Stop {
+            turn: id,
+            device: device("office")
+        }))
+    );
+}
+
+#[tokio::test]
+async fn a_turn_heard_after_nothing_heard_is_answered_in_the_same_conversation() {
+    let mut b = bench(FakeMemory::default());
+    let empty = new_turn();
+    b.mind.handle(press("office", empty)).await;
+    b.mind.handle(turn("office", empty, "")).await;
+    let (id, prompt) = b.ask("office", &["bonjour"]).await;
+    prompt.events.send(text("Salut.")).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(3).await;
+    assert_eq!(*b.brain.opened.lock().unwrap(), 1);
+    let all = b.out.all();
+    assert!(matches!(&all[0], Out::Say(s) if s.turn == empty && s.last));
+    assert_eq!(
+        all[1],
+        Out::Stop(Stop {
+            turn: empty,
+            device: device("office")
+        })
+    );
+    assert!(matches!(&all[2], Out::Say(s) if s.turn == id && s.text == "Salut."));
+}
+
+#[tokio::test]
+async fn nothing_heard_without_its_press_stops_the_older_answer() {
+    let mut b = bench(FakeMemory::default());
+    let (first, prompt) = b.ask("office", &["raconte"]).await;
+    prompt
+        .events
+        .send(text("Première phrase. Deuxième"))
+        .unwrap();
+    b.out.wait_for(1).await;
+    let next = new_turn();
+    b.mind.handle(turn("office", next, "...")).await;
+    b.out.wait_for(3).await;
+    assert_eq!(
+        *b.brain.cancels.lock().unwrap(),
+        std::slice::from_ref(&prompt.session)
+    );
+    let all = b.out.all();
+    assert_eq!(
+        all[1],
+        Out::Stop(Stop {
+            turn: first,
+            device: device("office")
+        })
+    );
+    assert!(matches!(&all[2], Out::Say(s) if s.turn == next && s.text == NOTHING_HEARD && s.last));
+}
+
+#[tokio::test]
+async fn a_late_empty_turn_is_not_said() {
+    let mut b = bench(FakeMemory::default());
+    let old = new_turn();
+    let newer = new_turn();
+    b.mind.handle(press("office", newer)).await;
+    b.mind.handle(turn("office", old, "")).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(b.prompts.try_recv().is_err());
     assert!(b.out.all().is_empty());
 }
 
