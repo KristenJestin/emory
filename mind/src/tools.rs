@@ -24,8 +24,8 @@ use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-        InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-        Tool,
+        InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams, ResultType,
+        ServerCapabilities, Tool,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -77,12 +77,16 @@ impl Tools {
                 .and_then(|rest| rest.strip_prefix('_'))
                 .map(|tool| (m, tool))
         });
-        let result = match routed {
+        let mut result = match routed {
             Some((module, tool)) => module.call(tool, arguments).await,
             None => {
                 CallToolResult::error(vec![ContentBlock::text(format!("Outil inconnu : {name}"))])
             }
         };
+        // A result relayed from a server that speaks an older revision of MCP has no
+        // `resultType`, which the revision this server speaks requires: the adapter would refuse
+        // it as malformed.
+        result.result_type.get_or_insert(ResultType::COMPLETE);
         // The arguments and the result stay out of the logs: they hold what Kris said.
         info!(
             tool = name,
@@ -228,7 +232,85 @@ impl Module for HippocampeTools {
                     "Hippocampe n'offre pas l'outil {tool} à Emory."
                 ))]);
             }
-            self.hippocampe.call(&tool, arguments).await
+            self.hippocampe
+                .call(&tool, with_defaults(&tool, arguments))
+                .await
         })
+    }
+}
+
+/// A search asked by the LLM comes without the neighbours of each entry unless it asks for them:
+/// with them (3 by default at Hippocampe), a search of 10 entries was measured at about 17 000
+/// tokens on 2026-10-12, a second more before the first word. `read` gives them for one entry.
+fn with_defaults(tool: &str, arguments: Option<JsonObject>) -> Option<JsonObject> {
+    if tool != "search" {
+        return arguments;
+    }
+    let mut arguments = arguments.unwrap_or_default();
+    arguments
+        .entry("neighbors")
+        .or_insert(serde_json::Value::from(0));
+    Some(arguments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A module whose results come from an older server, without `resultType`.
+    struct Old;
+
+    impl Module for Old {
+        fn name(&self) -> &'static str {
+            "old"
+        }
+
+        fn tools(&self) -> BoxFuture<'_, Vec<Tool>> {
+            Box::pin(async { Vec::new() })
+        }
+
+        fn call(
+            &self,
+            _tool: &str,
+            _arguments: Option<JsonObject>,
+        ) -> BoxFuture<'_, CallToolResult> {
+            Box::pin(async {
+                serde_json::from_value(serde_json::json!({
+                    "content": [{"type": "text", "text": "ok"}],
+                    "isError": false
+                }))
+                .unwrap()
+            })
+        }
+    }
+
+    #[test]
+    fn a_search_of_the_llm_comes_without_neighbours_unless_asked() {
+        let args = |v: serde_json::Value| v.as_object().cloned();
+        assert_eq!(
+            with_defaults("search", args(serde_json::json!({"query": "q"}))),
+            args(serde_json::json!({"query": "q", "neighbors": 0}))
+        );
+        assert_eq!(
+            with_defaults(
+                "search",
+                args(serde_json::json!({"query": "q", "neighbors": 2}))
+            ),
+            args(serde_json::json!({"query": "q", "neighbors": 2}))
+        );
+        assert_eq!(
+            with_defaults("read", args(serde_json::json!({"entry": "e"}))),
+            args(serde_json::json!({"entry": "e"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn every_result_says_its_type() {
+        let tools = Tools::new(vec![Arc::new(Old)]);
+        let relayed = tools.call("old_thing", None).await;
+        assert_eq!(relayed.result_type, Some(ResultType::COMPLETE));
+        let unknown = tools.call("nope", None).await;
+        assert_eq!(unknown.result_type, Some(ResultType::COMPLETE));
+        assert_eq!(unknown.is_error, Some(true));
     }
 }
