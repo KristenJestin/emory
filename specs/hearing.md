@@ -379,6 +379,68 @@ et la ligne est à supprimer si Kris a une Amira qu'il appelle par son prénom a
 fichier, et non plus depuis le dossier où le programme est lancé : `hearing
 hearing/examples/hearing.toml` marche depuis la racine du dépôt.
 
+## Parakeet sur la carte graphique (2026-10-12)
+
+Kris a décidé que le serveur reçoit une carte NVIDIA de 12 Go, pour la voix (Kyutai TTS 1.6B,
+environ 4,5 Go) et la transcription : sur les cœurs E, Parakeet met environ 1,4 s par phrase,
+trop pour la latence visée. `hearing` sait donc calculer sur CUDA, au choix de la configuration, et
+rien d'autre n'a changé : le CPU reste le défaut.
+
+**Comment c'est fait.**
+
+- Une clé `provider` (`"cpu"` par défaut, `"cuda"`) dans `[transcription]` (Parakeet) et dans
+  `[vad]` (Silero), chacun à part.
+- La crate `sherpa-onnx` 1.13.8 ne télécharge que des bibliothèques CPU. Pour CUDA, il faut
+  l'archive `...-cuda-13.x-cudnn-9.x-onnxruntime1.28.2-linux-x64-gpu` de la même version de
+  sherpa-onnx (254 Mo; une variante CUDA 12.x existe) et le mode `shared` de la crate. C'est la
+  feature cargo `cuda` de `hearing`; `hearing/scripts/build-cuda.sh` télécharge l'archive et
+  compile, `hearing/build.rs` pose un `rpath` `$ORIGIN` pour que le binaire trouve les
+  bibliothèques copiées à côté de lui.
+- La compilation CPU ne change pas et ne demande rien à CUDA. `provider = "cuda"` avec une
+  compilation CPU est une erreur au démarrage (pas un repli silencieux sur le CPU).
+- Sur la machine, rien à compiler : le pilote NVIDIA, le runtime CUDA de la même version majeure
+  que l'archive (`libcudart`, `libcublas`, `libcurand`) et cuDNN 9, que l'éditeur de liens
+  dynamique doit trouver. Vérifié ici avec CUDA 13.3, cuDNN 9.25, pilote 610.57, RTX 3070 Ti
+  8 Go. Sur le serveur, ce sont ces paquets (CUDA et cuDNN du système) qu'il faudra installer.
+
+**Mesures** (mêmes enregistrements qu'à la première ronde : 22 phrases de Kris, 96 s de parole, et
+`fin-coupee`, 7 phrases; un processus par essai, l'un après l'autre; 4 threads CPU). Le PC était
+chargé par d'autres programmes (charge moyenne de 15 à 76, hors de ces essais) et la carte
+partagée avec le moteur Kyutai (4,5 Go) : seul le meilleur tour est fiable, pas la médiane.
+
+| Meilleur tour, modèle int8 | Kris, 22 phrases | `fin-coupee`, 7 phrases | VRAM du processus |
+|---|---|---|---|
+| CPU, greedy | 4,5 s (205 ms par phrase) | 1,24 s | 0 |
+| CUDA, greedy | 5,3 s (242 ms) | 1,11 s | 750 Mo |
+| CPU, beam + mots-clés | 5,3 s | 1,38 s | 0 |
+| CUDA, beam + mots-clés | 8,0 s | 1,53 s | 750 Mo |
+
+- **Le modèle int8 ne gagne rien sur la carte** : même temps que le CPU, parfois plus lent. Il
+  garde les opérations quantifiées sur le CPU (le temps CPU consommé reste de 93 % de celui de
+  l'exécution CPU), et cache de la mémoire pour rien. C'est le cas connu d'onnxruntime.
+- **Silero sur la carte : à ne pas faire.** 25 ms de calcul par seconde d'audio contre 3,6 sur le
+  CPU (7 fois plus lent): le modèle est trop petit, il attend ses données. Il reste sur `cpu`.
+- Chargement du modèle int8 : 2 à 3 s sur la carte comme sur le CPU (jusqu'à 27 s observés quand
+  la machine était saturée), avec 0,2 à 0,5 s de réchauffage.
+- Les textes ne sont pas identiques à ceux du CPU : sur les phrases de Kris, 4 sur 21 diffèrent
+  de quelques mots une fois la ponctuation et les majuscules mises de côté (« Harmony 16 » et
+  « Harmony size », « un kit » et « Akit »), sans meilleur ni pire. Ce sont des écarts de calcul
+  des opérations quantifiées, pas un défaut.
+- Modèle fp32 sur le CPU, pour mémoire : 523 ms par phrase, 2,3 fois plus lent que l'int8.
+
+**Ce qui n'a pas pu être mesuré : le modèle fp32 sur la carte.** C'est lui qui devrait profiter
+du GPU (l'int8 ne le peut pas). Le fichier fait 2,4 Go de poids (modèle
+`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3`, téléchargé dans
+`~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3`), et la carte de 8 Go du PC n'avait
+que 1,6 Go de libre, le moteur Kyutai en tenant 4,5 : le chargement échoue faute de mémoire
+(`BFCArena ... Failed to allocate memory`). Estimation à vérifier : 3 Go environ pour Parakeet
+fp32, donc 7,5 Go avec Kyutai, qui tient dans 12 Go avec 4 Go de reste. Le banc
+`scratch/hearing2/fp32.sh` refait la mesure dès que 4,2 Go sont libres.
+
+**Décision pour le serveur** : ne pas compter sur l'int8 pour le GPU. Pour la carte de 12 Go,
+configurer le modèle fp32 (`encoder.onnx`, `decoder.onnx`, `joiner.onnx` au lieu des `.int8.onnx`)
+une fois sa mesure faite; en attendant, l'int8 sur CPU reste le défaut.
+
 ## Hors version 1
 
 - L'oreille de pièce : détection de voix, mot de réveil, fin de tour, mémoire tampon, voix
