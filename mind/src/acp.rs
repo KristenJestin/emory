@@ -46,7 +46,7 @@ pub struct SessionSettings {
 impl SessionSettings {
     /// The `session/new` request, with the settings measured on 2026-10-11 in `_meta`.
     pub fn request(&self) -> NewSessionRequest {
-        let server = McpServerHttp::new("emory", &self.mcp_url).headers(vec![HttpHeader::new(
+        let server = McpServerHttp::new(MCP_SERVER, &self.mcp_url).headers(vec![HttpHeader::new(
             "Authorization",
             format!("Bearer {}", self.mcp_key),
         )]);
@@ -196,20 +196,7 @@ async fn run(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _cx| {
-                // Claude Code has no tool of its own: whatever asks is a tool of Emory's server,
-                // which `mind` controls itself.
-                let allow = request
-                    .options
-                    .iter()
-                    .find(|o| o.kind == PermissionOptionKind::AllowOnce)
-                    .or(request.options.first())
-                    .map(|o| o.option_id.clone());
-                responder.respond(RequestPermissionResponse::new(match allow {
-                    Some(id) => {
-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
-                    }
-                    None => RequestPermissionOutcome::Cancelled,
-                }))
+                responder.respond(RequestPermissionResponse::new(permission(&request)))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -251,6 +238,51 @@ async fn run(
     // The requests in progress end with the connection.
     for (_, events) in streams.lock().unwrap().drain() {
         let _ = events.send(Event::Done(Err("the ACP connection ended".to_owned())));
+    }
+}
+
+/// The name of Emory's MCP server in `session/new`: Claude Code calls its tools
+/// `mcp__emory__<tool>`.
+const MCP_SERVER: &str = "emory";
+
+/// The answer to a permission request: once, for a tool of Emory's MCP server, which `mind`
+/// controls itself; refused for anything else (Claude Code should have no tool of its own).
+fn permission(request: &RequestPermissionRequest) -> RequestPermissionOutcome {
+    let call = &request.tool_call;
+    let name = call
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|c| c.get("toolName"))
+        .and_then(Value::as_str)
+        .or(call.fields.name.as_deref())
+        .or(call.fields.title.as_deref())
+        .unwrap_or_default();
+    let ours = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.strip_prefix(MCP_SERVER))
+        .is_some_and(|rest| rest.starts_with("__"));
+    let pick = |kind: PermissionOptionKind| {
+        request
+            .options
+            .iter()
+            .find(|o| o.kind == kind)
+            .map(|o| o.option_id.clone())
+    };
+    let chosen = if ours {
+        pick(PermissionOptionKind::AllowOnce)
+    } else {
+        warn!(tool = name, "permission refused: not a tool of Emory's MCP server");
+        pick(PermissionOptionKind::RejectOnce)
+    };
+    match chosen {
+        Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+        None => {
+            if ours {
+                warn!(tool = name, "permission refused: no option to allow it once");
+            }
+            RequestPermissionOutcome::Cancelled
+        }
     }
 }
 
@@ -383,5 +415,44 @@ mod tests {
         assert_eq!(servers[0]["name"], "emory");
         assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
         assert_eq!(servers[0]["headers"][0]["value"], "Bearer k");
+    }
+    fn asked(tool_call: Value) -> RequestPermissionRequest {
+        serde_json::from_value(json!({
+            "sessionId": "s",
+            "toolCall": tool_call,
+            "options": [
+                {"optionId": "always", "name": "Always", "kind": "allow_always"},
+                {"optionId": "once", "name": "Once", "kind": "allow_once"},
+                {"optionId": "no", "name": "No", "kind": "reject_once"}
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn chosen(outcome: RequestPermissionOutcome) -> Option<String> {
+        match outcome {
+            RequestPermissionOutcome::Selected(s) => Some(s.option_id.0.to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn only_the_tools_of_emory_are_allowed_and_only_once() {
+        let meta = |name: &str| json!({"claudeCode": {"toolName": name}});
+        let ours = asked(json!({"toolCallId": "t", "title": "x",
+                                "_meta": meta("mcp__emory__hippocampe_search")}));
+        assert_eq!(chosen(permission(&ours)).as_deref(), Some("once"));
+        let by_title = asked(json!({"toolCallId": "t", "title": "mcp__emory__hippocampe_read"}));
+        assert_eq!(chosen(permission(&by_title)).as_deref(), Some("once"));
+        for other in ["Bash", "mcp__emoryx__search", "mcp__other__emory", "mcp__emory"] {
+            let request = asked(json!({"toolCallId": "t", "title": "x", "_meta": meta(other)}));
+            assert_eq!(chosen(permission(&request)).as_deref(), Some("no"), "{other}");
+        }
+        let untitled = asked(json!({"toolCallId": "t"}));
+        assert_eq!(chosen(permission(&untitled)).as_deref(), Some("no"));
+        // Without an option to allow once, nothing is allowed.
+        let mut always_only = ours.clone();
+        always_only.options.retain(|o| o.kind == PermissionOptionKind::AllowAlways);
+        assert_eq!(chosen(permission(&always_only)), None);
     }
 }
