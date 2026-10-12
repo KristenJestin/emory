@@ -35,6 +35,51 @@ const HEARING_SUBJECTS: &str = "hearing.*";
 /// How often the idle conversations are looked for.
 const TICK: Duration = Duration::from_secs(10);
 
+/// The dependencies whose logs, below these levels, carry the messages themselves: the requests
+/// to the LLM (what Kris said, the key of Emory's MCP server in `session/new`), the MCP calls and
+/// their headers, the bus payloads. Pinned whatever `RUST_LOG` says.
+const PINNED_LOGS: [(&str, &str); 7] = [
+    ("agent_client_protocol", "warn"),
+    ("rmcp", "warn"),
+    ("reqwest", "warn"),
+    ("hyper", "warn"),
+    ("hyper_util", "warn"),
+    ("h2", "warn"),
+    ("async_nats", "info"),
+];
+
+/// The log filter: `RUST_LOG` (`mind=info` without it), less what it says of the pinned
+/// dependencies, plus their pinned levels.
+pub fn log_filter(env: Option<&str>) -> String {
+    let pinned = |directive: &str| {
+        let target = directive
+            .split(['=', '['])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        PINNED_LOGS.iter().any(|(name, _)| {
+            target == *name
+                || target
+                    .strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with("::"))
+        })
+    };
+    let mut directives: Vec<String> = env
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or("mind=info")
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty() && !pinned(d))
+        .map(str::to_owned)
+        .collect();
+    directives.extend(
+        PINNED_LOGS
+            .iter()
+            .map(|(name, level)| format!("{name}={level}")),
+    );
+    directives.join(",")
+}
+
 /// What a message of [`HEARING_SUBJECTS`] is, from its subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HearingMessage {
@@ -163,6 +208,24 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_payload_logs_stay_pinned_whatever_rust_log_says() {
+        let filter = log_filter(Some(
+            "debug,agent_client_protocol=trace,rmcp::service=debug,mind=debug,rmcpx=debug",
+        ));
+        let directives: Vec<&str> = filter.split(',').collect();
+        assert!(directives.contains(&"debug") && directives.contains(&"mind=debug"));
+        assert!(directives.contains(&"rmcpx=debug"));
+        assert!(!filter.contains("agent_client_protocol=trace"));
+        assert!(!filter.contains("rmcp::service"));
+        assert!(directives.contains(&"agent_client_protocol=warn"));
+        assert!(directives.contains(&"rmcp=warn"));
+        assert!(log_filter(None).starts_with("mind=info,"));
+        // The filter parses, and the pinned level wins over a broad one.
+        let parsed: tracing_subscriber::EnvFilter = filter.parse().unwrap();
+        assert!(parsed.to_string().contains("agent_client_protocol=warn"));
+    }
 
     #[test]
     fn the_hearing_subscription_is_dispatched_on_the_subject() {
