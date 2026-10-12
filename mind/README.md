@@ -27,7 +27,9 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   first request of a conversation.
 
 The logs (`RUST_LOG=mind=info`) give the times of each turn (request sent, first word of the LLM,
-first sentence sent to the voice, end) and each tool call. They never contain what was said.
+first sentence sent to the voice, end) and each tool call. They never contain what was said. The
+dependencies that would log the messages themselves (the ACP client, MCP, the HTTP stack) stay at
+`warn` whatever `RUST_LOG` says.
 
 Tests: `cargo test -p mind`, with a fake LLM, a fake ACP agent and a fake Hippocampe; none of them
 reaches the real Hippocampe or spends a request.

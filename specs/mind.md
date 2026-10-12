@@ -147,7 +147,15 @@ qui écrit après une conversation, le conteneur moteur et le déploiement.
 **Le bus.** `mind` écoute `hearing.*` sur un seul abonnement (les phrases d'un tour arrivent donc
 avant le tour) et `ear.*.button`. Il publie `voice.say` et `voice.stop`, vers l'appareil qui a
 entendu Kris. Ses journaux donnent les temps de chaque tour et chaque appel d'outil, jamais ce
-qui a été dit.
+qui a été dit ; les journaux des dépendances qui portent les messages (le client ACP, MCP, la
+pile HTTP) restent bloqués à `warn` quoi que dise `RUST_LOG` (2026-10-12, revue).
+
+**L'ordre entre les deux abonnements** (2026-10-12, revue). Rien ne garantit l'ordre entre un
+appui et ce que dit `hearing`. Les tours sont des ULID, qui se rangent dans le temps : une phrase
+ou un tour plus ancien que le dernier tour vu sur l'appareil est ignoré (un `hearing.turn` en
+retard n'est pas répondu après un nouvel appui) ; un appui garde les recherches déjà lancées par
+les phrases de son propre tour et n'arrête jamais la réponse à son propre tour ; un tour dont
+l'appui s'est perdu arrête la réponse plus ancienne comme un appui.
 
 **La conversation.** Une par appareil, ouverte au premier appui : la session ACP s'ouvre et le
 `briefing` d'Hippocampe se lit pendant que Kris parle encore. Elle se ferme après 30 minutes
@@ -168,17 +176,39 @@ au lieu de 2,0 s sur la même question).
 l'heure (`[Maintenant]`) ; la première d'une conversation porte aussi ce que la mémoire signale du
 jour (le `briefing`, sans ce qui attend une confirmation de Kris) : la session le garde ensuite.
 Emory n'en parle que si Kris le demande ou si cela touche sa demande. Quand le LLM ne répond pas,
-Emory dit « Je n'arrive pas à réfléchir pour le moment. ».
+Emory dit « Je n'arrive pas à réfléchir pour le moment. ». Une session qui n'a pas pu s'ouvrir
+est rouverte au tour suivant.
+
+**Une demande à la fois par session** (2026-10-12, revue). Le texte d'une demande encore en
+cours serait pris pour la réponse de la suivante : le client ACP refuse une demande sur une
+session dont la précédente n'a pas reçu sa fin. Une demande annule la précédente et attend sa
+fin ; si elle ne vient pas en 10 s, la session est tenue pour cassée : elle est fermée (ce qui
+termine l'ancienne demande) et une autre s'ouvre, qui reçoit à nouveau ce que la mémoire signale.
+Un LLM muet pendant 60 s : Emory dit l'échec et la demande est annulée, mais la session attend
+quand même sa fin.
+
+**Les permissions.** L'adaptateur demande la permission avant chaque outil : `mind` ne l'accorde
+qu'aux outils du serveur MCP d'Emory (`mcp__emory__*`), une seule fois (`allow_once`, choisi
+nommément) ; tout autre outil est refusé et journalisé.
 
 **Le flux.** Le texte est coupé en phrases à `.`, `!`, `?`, `…` suivis d'un espace, ou à un retour
 à la ligne ; une phrase part dès que la suivante commence, ce qui garde toujours la dernière pour
 la fin du flux : elle part alors marquée `last`. Une phrase sans fin de plus de 220 caractères est
-coupée à sa dernière virgule. Les marques de mise en forme sont retirées.
+coupée à sa dernière virgule. Les marques de mise en forme sont retirées. `voice` reçoit toujours
+un `last`, quelle que soit la fin (erreur après quelques phrases, flux coupé, LLM muet, reste
+vide après nettoyage) : la phrase d'échec si rien n'a été dit, sinon une dernière phrase vide,
+que `voice` termine par un morceau vide qui porte la fin (2026-10-12, revue).
 
 **L'interruption.** Un appui sur un appareil arrête la dernière réponse de cet appareil : la
-demande en cours est annulée (`session/cancel`) et `voice.stop` part. Les phrases sont publiées
-sous un verrou que l'interruption prend aussi : aucune phrase du tour ne suit son `voice.stop`.
-Le `voice.stop` part aussi quand la réponse est déjà écrite, puisque `voice` peut encore la dire.
+demande en cours est annulée (`session/cancel`) et `voice.stop` part. L'interruption prend
+d'abord un verrou et marque la réponse arrêtée, puis annule, puis arrête la voix. La demande part
+sous ce même verrou, sans rien attendre : soit elle ne part jamais, soit elle part avant son
+annulation, qui la suit vers l'agent dans l'ordre (2026-10-12, revue : avant, l'annulation pouvait
+précéder la demande, qui était alors générée en silence). Les phrases sont mises en file sous ce
+verrou : aucune phrase du tour ne suit son `voice.stop`. La file part vers le bus par une tâche à
+elle, dans l'ordre : aucun aller-retour réseau sous le verrou, et l'envoi de chaque message
+attend le serveur au plus 1 s. Le `voice.stop` part aussi quand la réponse est déjà écrite,
+puisque `voice` peut encore la dire.
 
 **La recherche en avance.** À chaque phrase, `mind` cherche dans Hippocampe la phrase telle
 quelle (5 fiches, sans voisins, sans seuil), sur une connexion MCP gardée ouverte, et y renonce
@@ -192,7 +222,9 @@ bus) sans autre canal. C'est le seul serveur MCP du LLM. Chaque groupe d'outils 
 ses outils s'appellent `<module>_<outil>`. Le premier module relaie Hippocampe : les outils de la
 liste `hippocampe.tools` (par défaut `search`, `read`, `write`, `link`, `types`) qu'Hippocampe
 offre à la clé utilisée. Un refus d'Hippocampe revient au LLM comme une erreur d'outil, qu'il
-peut dire. Deux retouches au relais : une recherche du LLM se fait sans voisins s'il n'en demande
+peut dire, et un appel sans réponse en 10 s aussi (`hippocampe.tool_timeout_ms`). La clé du
+serveur est comparée en temps constant. Elle passe aujourd'hui sur la ligne de commande de
+`claude` (`--mcp-config`, visible dans `ps`) : à corriger (2026-10-12, revue). Deux retouches au relais : une recherche du LLM se fait sans voisins s'il n'en demande
 pas (avec les trois voisins par défaut, une recherche de dix fiches pesait environ 17 000 jetons,
 une seconde de plus avant le premier mot) ; tout résultat porte `resultType`, que la révision MCP
 parlée par le serveur exige et que l'adaptateur refuse sans lui.
