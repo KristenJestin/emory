@@ -113,6 +113,39 @@ pub struct TranscriptionConfig {
     pub hotwords_score: f32,
     /// The `bpe.vocab` of the model (default: in the Parakeet folder).
     pub bpe_vocab: Option<ConfigPath>,
+    /// Where Parakeet computes: `cpu` (default) or `cuda`.
+    #[serde(default)]
+    pub provider: Provider,
+}
+
+/// Where a model computes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Cpu,
+    /// An NVIDIA GPU: needs the program built with the `cuda` feature.
+    Cuda,
+}
+
+impl Provider {
+    /// The name onnxruntime knows it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda => "cuda",
+        }
+    }
+
+    /// An error at start, not a silent fall back to the CPU, when this build cannot do it.
+    pub fn check(self) -> Result<()> {
+        if self == Self::Cuda && !cfg!(feature = "cuda") {
+            anyhow::bail!(
+                "provider = \"cuda\" needs a build with the `cuda` feature (see hearing/README.md)"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// How Parakeet searches for the text.
@@ -149,6 +182,7 @@ impl Default for TranscriptionConfig {
             hotwords: None,
             hotwords_score: default_hotwords_score(),
             bpe_vocab: None,
+            provider: Provider::Cpu,
         }
     }
 }
@@ -164,6 +198,8 @@ pub struct VadConfig {
     pub min_speech: f32,
     /// Beyond this, a sentence is cut by force, in seconds.
     pub max_speech: f32,
+    /// Where Silero computes: `cpu` (default) or `cuda`.
+    pub provider: Provider,
 }
 
 impl Default for VadConfig {
@@ -173,6 +209,7 @@ impl Default for VadConfig {
             min_silence: 0.5,
             min_speech: 0.25,
             max_speech: 20.0,
+            provider: Provider::Cpu,
         }
     }
 }
@@ -247,7 +284,48 @@ mod tests {
         assert!(config.transcription.hotwords.is_none());
         assert_eq!(config.transcription.hotwords_score, 2.0);
         assert_eq!(config.vad.min_silence, 0.5);
+        assert_eq!(config.transcription.provider, Provider::Cpu);
+        assert_eq!(config.vad.provider, Provider::Cpu);
         assert_eq!(config.turns.max_turn(), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn the_provider_of_each_model_is_chosen_apart() {
+        let config: Config = toml::from_str(
+            r#"
+            [models]
+            vad = "/m/v.onnx"
+            parakeet = "/m/p"
+            [transcription]
+            provider = "cuda"
+            [vad]
+            provider = "cpu"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.transcription.provider, Provider::Cuda);
+        assert_eq!(config.vad.provider, Provider::Cpu);
+        assert_eq!(Provider::Cuda.name(), "cuda");
+    }
+
+    #[test]
+    fn an_unknown_provider_is_refused() {
+        let config = toml::from_str::<Config>(
+            r#"
+            [models]
+            vad = "/m/v.onnx"
+            parakeet = "/m/p"
+            [transcription]
+            provider = "tpu"
+            "#,
+        );
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn cuda_is_refused_by_a_build_without_it() {
+        assert!(Provider::Cpu.check().is_ok());
+        assert_eq!(Provider::Cuda.check().is_ok(), cfg!(feature = "cuda"));
     }
 
     #[test]

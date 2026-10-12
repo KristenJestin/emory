@@ -55,6 +55,7 @@ pub struct Detector {
 
 impl Detector {
     pub fn new(model: &Path, settings: &VadConfig) -> Result<Self> {
+        settings.provider.check()?;
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
                 model: Some(path_string(model)?),
@@ -66,7 +67,7 @@ impl Detector {
             },
             sample_rate: SAMPLE_RATE,
             num_threads: 1,
-            provider: Some("cpu".to_owned()),
+            provider: Some(settings.provider.name().to_owned()),
             ..VadModelConfig::default()
         };
         let vad = VoiceActivityDetector::create(&config, 30.0)
@@ -293,6 +294,7 @@ pub struct Transcriber {
 impl Transcriber {
     /// Loads Parakeet, warms it up on a second of silence, then starts the thread.
     pub fn start(models: &ModelsConfig, settings: &TranscriptionConfig) -> Result<Self> {
+        settings.provider.check()?;
         let folder = models.parakeet.as_ref();
         let decoding = Decoding::read(
             settings.decoding_method,
@@ -318,7 +320,7 @@ impl Transcriber {
                 },
                 tokens: Some(path_string(&folder.join("tokens.txt"))?),
                 num_threads: settings.threads.max(1),
-                provider: Some("cpu".to_owned()),
+                provider: Some(settings.provider.name().to_owned()),
                 model_type: Some("nemo_transducer".to_owned()),
                 modeling_unit: vocabulary.then(|| "bpe".to_owned()),
                 bpe_vocab,
@@ -341,6 +343,7 @@ impl Transcriber {
         let warm_up = Instant::now();
         transcribe(&recognizer, &vec![0.0; SAMPLE_RATE as usize])?;
         tracing::info!(
+            provider = settings.provider.name(),
             threads = settings.threads,
             decoding = decoding.method.name(),
             hotwords = decoding.hotwords.len(),
