@@ -401,6 +401,10 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             debug!(%device, turn = %sentence.turn, "sentence of an older turn: ignored");
             return;
         }
+        // Nothing in it: nothing to search, and no conversation to open for it.
+        if !has_words(&sentence.text) {
+            return;
+        }
         // The press may come after it, or have been missed (a mind that restarts): the turn
         // starts here.
         if self
@@ -414,9 +418,6 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                 turn: sentence.turn,
                 searches: Vec::new(),
             });
-        }
-        if !has_words(&sentence.text) {
-            return;
         }
         let memory = self.memory.clone();
         let limit = self.settings.search_limit;

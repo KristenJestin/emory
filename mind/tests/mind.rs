@@ -631,6 +631,16 @@ async fn nothing_heard_without_its_press_stops_the_older_answer() {
 }
 
 #[tokio::test]
+async fn an_empty_sentence_opens_no_conversation() {
+    let mut b = bench(FakeMemory::default());
+    b.mind
+        .handle(sentence("office", new_turn(), 0, " ... "))
+        .await;
+    assert!(!b.mind.has_conversation(&device("office")));
+    assert_eq!(*b.brain.opened.lock().unwrap(), 0);
+}
+
+#[tokio::test]
 async fn a_late_empty_turn_is_not_said() {
     let mut b = bench(FakeMemory::default());
     let old = new_turn();
