@@ -434,8 +434,10 @@ du GPU (l'int8 ne le peut pas). Le fichier fait 2,4 Go de poids (modèle
 `~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3`), et la carte de 8 Go du PC n'avait
 que 1,6 Go de libre, le moteur Kyutai en tenant 4,5 : le chargement échoue faute de mémoire
 (`BFCArena ... Failed to allocate memory`). Estimation à vérifier : 3 Go environ pour Parakeet
-fp32, donc 7,5 Go avec Kyutai, qui tient dans 12 Go avec 4 Go de reste. Le banc
-`scratch/hearing2/fp32.sh` refait la mesure dès que 4,2 Go sont libres.
+fp32, donc 7,5 Go avec Kyutai, qui tient dans 12 Go avec 4 Go de reste. Le moteur
+Kyutai fait partie de la chaîne vivante de Kris et reste chargé : la mesure du fp32 se fera sur la
+carte de 12 Go du serveur, ou sur ce PC quand Kyutai sera déchargé (même banc, mêmes
+enregistrements).
 
 **Décision pour le serveur** : ne pas compter sur l'int8 pour le GPU. Pour la carte de 12 Go,
 configurer le modèle fp32 (`encoder.onnx`, `decoder.onnx`, `joiner.onnx` au lieu des `.int8.onnx`)
