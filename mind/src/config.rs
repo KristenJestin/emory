@@ -108,6 +108,14 @@ pub struct ConversationConfig {
     /// Minutes without an exchange before the conversation closes.
     #[serde(default = "default_idle_minutes")]
     pub idle_minutes: f32,
+    /// What Emory says when a turn reaches her with nothing in it (near-silence heard): no
+    /// request to the LLM.
+    #[serde(default = "default_nothing_heard")]
+    pub nothing_heard: String,
+}
+
+fn default_nothing_heard() -> String {
+    "Je n'ai rien entendu.".to_owned()
 }
 
 fn default_idle_minutes() -> f32 {
@@ -118,6 +126,7 @@ impl Default for ConversationConfig {
     fn default() -> Self {
         Self {
             idle_minutes: default_idle_minutes(),
+            nothing_heard: default_nothing_heard(),
         }
     }
 }
@@ -200,6 +209,12 @@ impl Default for ToolsConfig {
     }
 }
 
+/// Whether a text has anything to say or to be said: a letter or a digit, not only blanks and
+/// punctuation.
+pub fn has_words(text: &str) -> bool {
+    text.chars().any(char::is_alphanumeric)
+}
+
 impl Config {
     pub fn read(path: &Path) -> Result<Self> {
         let text =
@@ -217,6 +232,10 @@ impl std::str::FromStr for Config {
             config.conversation.idle_minutes > 0.0
                 && config.conversation.idle_minutes <= 24.0 * 60.0,
             "conversation.idle_minutes must be above 0 and at most a day"
+        );
+        anyhow::ensure!(
+            has_words(&config.conversation.nothing_heard),
+            "conversation.nothing_heard must be a sentence to say"
         );
         anyhow::ensure!(
             (1..=20).contains(&config.hippocampe.search_limit),
@@ -260,11 +279,21 @@ token_file = "~/t.token"
         assert_eq!(c.llm.effort, "low");
         assert!(c.llm.args.is_empty() && c.llm.workdir.is_none());
         assert_eq!(c.conversation.idle_timeout(), Duration::from_secs(1800));
+        assert_eq!(c.conversation.nothing_heard, "Je n'ai rien entendu.");
         assert_eq!(c.hippocampe.search_limit, 5);
         assert_eq!(c.hippocampe.search_timeout(), Duration::from_millis(300));
         assert_eq!(c.hippocampe.tool_timeout(), Duration::from_secs(10));
         assert!(c.hippocampe.tools.contains(&"search".to_owned()));
         assert!(c.tools.bind.ip().is_loopback());
+    }
+
+    #[test]
+    fn only_letters_and_digits_count_as_words() {
+        assert!(has_words("Je n'ai rien entendu."));
+        assert!(has_words("2"));
+        assert!(!has_words(""));
+        assert!(!has_words(" \n\t"));
+        assert!(!has_words(" ... ,; ? "));
     }
 
     #[test]
@@ -280,6 +309,7 @@ token_file = "~/t.token"
     fn absurd_values_and_unknown_keys_are_refused() {
         for bad in [
             "[conversation]\nidle_minutes = 0\n",
+            "[conversation]\nnothing_heard = \" ... \"\n",
             "[tools]\nbind = \"0.0.0.0:0\"\n",
             "nope = 1\n",
         ] {

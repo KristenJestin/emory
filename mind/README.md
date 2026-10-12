@@ -17,7 +17,11 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   settings and skills (`_meta` of `session/new`, see `src/acp.rs`). The adapter inherits the
   environment: the local Claude Code login in development, `CLAUDE_CODE_OAUTH_TOKEN` when set.
   Every request takes from the Claude subscription.
-- **The instructions** of the LLM are in `prompts/system.fr.md`.
+- **The instructions** of the LLM are in `prompts/system.fr.md`: two or three short sentences by
+  default, longer only when Kris asks for details.
+- **A turn with nothing in it** (empty, or only blanks and punctuation: the headset sent
+  near-silence) gets no request to the LLM: Emory says `[conversation] nothing_heard` (default
+  « Je n'ai rien entendu. ») with `voice.say` and `last`, to the device of the turn.
 - **Emory's MCP server** is served by `mind` itself, on the loopback, with a key drawn at
   start-up and given only to the adapter; it is the only MCP server the LLM gets. Its tools are
   modules (`src/tools.rs`): for now Hippocampe's tools, relayed as `hippocampe_<name>`.

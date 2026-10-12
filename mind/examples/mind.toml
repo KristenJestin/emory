@@ -20,6 +20,8 @@ system_prompt = "mind/prompts/system.fr.md"
 [conversation]
 # Minutes without an exchange before a conversation (and its LLM session) closes.
 idle_minutes = 30
+# Said when a turn reaches the mind with nothing in it (near-silence heard): no request to the LLM.
+nothing_heard = "Je n'ai rien entendu."
 
 # The long-term memory, by MCP. The key is read from its file when the connection opens.
 [hippocampe]

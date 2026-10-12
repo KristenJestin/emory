@@ -152,6 +152,7 @@ pub async fn run(config: Config) -> Result<()> {
             idle_timeout: config.conversation.idle_timeout(),
             search_timeout: config.hippocampe.search_timeout(),
             search_limit: config.hippocampe.search_limit,
+            nothing_heard: config.conversation.nothing_heard.clone(),
         },
     );
     let mut tick = tokio::time::interval(TICK);

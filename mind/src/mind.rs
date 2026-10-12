@@ -45,6 +45,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     brain::{Brain, Event, SessionId},
+    config::has_words,
     memory::{Found, Memory},
     request,
     sentences::Splitter,
@@ -82,6 +83,8 @@ pub struct Settings {
     pub idle_timeout: Duration,
     pub search_timeout: Duration,
     pub search_limit: u32,
+    /// Said when a turn has nothing in it, instead of asking the LLM.
+    pub nothing_heard: String,
 }
 
 /// A conversation once open: its session, and what the memory flagged at its start.
@@ -398,6 +401,10 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             debug!(%device, turn = %sentence.turn, "sentence of an older turn: ignored");
             return;
         }
+        // Nothing in it: nothing to search, and no conversation to open for it.
+        if !has_words(&sentence.text) {
+            return;
+        }
         // The press may come after it, or have been missed (a mind that restarts): the turn
         // starts here.
         if self
@@ -411,9 +418,6 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                 turn: sentence.turn,
                 searches: Vec::new(),
             });
-        }
-        if sentence.text.trim().is_empty() {
-            return;
         }
         let memory = self.memory.clone();
         let limit = self.settings.search_limit;
@@ -459,12 +463,12 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             Some(h) => h.searches,
             None => Vec::new(),
         };
-        if turn.text.trim().is_empty() {
-            debug!(%device, turn = %turn.turn, "nothing heard: no answer");
-            return;
-        }
         // An answer to an older turn whose press never came stops as at a press.
         self.barge_in(&device, turn.turn);
+        if !has_words(&turn.text) {
+            self.nothing_heard(&device, turn.turn);
+            return;
+        }
         self.open(&device);
         let brain = self.brain.clone();
         let memory = self.memory.clone();
@@ -499,6 +503,26 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             gate,
             task: running,
         });
+    }
+
+    /// The turn has nothing in it (near-silence): Emory says so, with no request to the LLM and
+    /// no conversation opened for it. Like any answer, a press stops it.
+    fn nothing_heard(&mut self, device: &Device, turn: TurnId) {
+        info!(%device, %turn, "nothing heard: said so, no request");
+        let gate = Arc::new(Gate::default());
+        let mut sayer = Sayer {
+            mail: self.mail.clone(),
+            device: device.clone(),
+            turn,
+            gate: gate.clone(),
+            index: 0,
+            last_sent: false,
+            received: Instant::now(),
+        };
+        sayer.publish(self.settings.nothing_heard.clone(), true);
+        // No task: the answer is already over, but the voice may still be saying it.
+        let (_, task) = Running::new();
+        self.state(device).answer = Some(Answer { turn, gate, task });
     }
 
     /// Closes the conversations without an exchange for the idle time, once their answer is over.
