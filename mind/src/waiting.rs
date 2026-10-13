@@ -10,7 +10,10 @@
 //!   `pulse_delay_ms`, the voice repeats a soft pulse until the first word.
 //! - **`speech`**: a phrase while the LLM works, after `speech_delay_ms` without an answer
 //!   (pre-written) and/or at a tool call (about what is searched). At most `max_phrases` per
-//!   turn, two seconds and a half apart at least, and none once the answer has started.
+//!   turn, `phrase_spacing_ms` apart at least, and none once the answer has started. The silence
+//!   after a phrase can be filled: `pulse_after_speech` (the soft pulse of `tone`, after
+//!   `pulse_delay_ms` of silence following the phrase) and `prewritten_repeat_ms` (another
+//!   pre-written phrase after that much more silence).
 //!
 //! The system prompt still forbids the LLM's own waiting phrases: here the code speaks, chosen
 //! and bounded.
@@ -33,9 +36,22 @@ use crate::{config::ConfigPath, conversations::ConversationKey, tools::Observer}
 /// The phrases shipped with Emory, used when the configuration gives no file.
 pub const BUILTIN_PHRASES: &str = include_str!("../prompts/waiting.fr.toml");
 
-/// The least time between two phrases of a turn: the voice says them in order, and two phrases
-/// back to back sound like a stutter.
+/// The default least time between two phrases of a turn: the voice says them in order, and two
+/// phrases back to back sound like a stutter.
 pub const PHRASE_SPACING: Duration = Duration::from_millis(2500);
+
+/// What the mind assumes of the voice to guess when a phrase is over (it knows the text, not the
+/// audio): the synthesis starts to sound after `SPEECH_LEAD`, then a phrase lasts `SPEECH_BASE`
+/// plus `SPEECH_PER_CHAR` a character. Measured on 2026-10-13 with a French voice: a nine
+/// character acknowledgement was heard from +0.34 s and was 1.16 s long (this gives 1.48 s).
+const SPEECH_LEAD: Duration = Duration::from_millis(350);
+const SPEECH_BASE: Duration = Duration::from_millis(500);
+const SPEECH_PER_CHAR: Duration = Duration::from_millis(70);
+
+/// How long after it is queued a phrase is over, as far as the mind can tell.
+pub fn estimated_speech(phrase: &str) -> Duration {
+    SPEECH_LEAD + SPEECH_BASE + SPEECH_PER_CHAR * phrase.chars().count() as u32
+}
 
 /// How many of the last phrases of a pool are not repeated.
 const NOT_REPEATED: usize = 8;
@@ -66,17 +82,39 @@ pub enum Source {
     Both,
 }
 
+/// From where the spacing between two phrases is measured.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpacingFrom {
+    /// From the moment the previous phrase was sent (the first behaviour).
+    #[default]
+    Start,
+    /// From the moment the previous phrase is over, as far as it can be estimated
+    /// ([`estimated_speech`]): the spacing is then the silence between two phrases.
+    End,
+}
+
 /// How the cue behaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub mode: Mode,
-    /// `tone`: how long without an answer before the pulse starts.
+    /// `tone`: how long without an answer before the pulse starts; `speech` with
+    /// `pulse_after_speech`: how long without an answer after a phrase.
     pub pulse_delay: Duration,
     /// `speech`: how long without an answer before a pre-written phrase.
     pub speech_delay: Duration,
     pub source: Source,
     /// `speech`: the most phrases of a turn.
     pub max_phrases: u32,
+    /// `speech`: the least time between two phrases of a turn.
+    pub phrase_spacing: Duration,
+    /// `speech`: where `phrase_spacing` is measured from.
+    pub spacing_from: SpacingFrom,
+    /// `speech`: the soft pulse fills the silence after a phrase.
+    pub pulse_after_speech: bool,
+    /// `speech`: another pre-written phrase after this much more silence since the last phrase
+    /// (zero: none). Never closer than `phrase_spacing`.
+    pub prewritten_repeat: Duration,
 }
 
 impl Settings {
@@ -87,6 +125,10 @@ impl Settings {
             speech_delay: Duration::from_millis(800),
             source: Source::Both,
             max_phrases: 2,
+            phrase_spacing: PHRASE_SPACING,
+            spacing_from: SpacingFrom::Start,
+            pulse_after_speech: false,
+            prewritten_repeat: Duration::ZERO,
         }
     }
 }
@@ -269,12 +311,35 @@ impl Picker {
 /// Where the cues go: the mailbox of the mind, or a recorder in the tests.
 pub type Sink = Arc<dyn Fn(Cue) + Send + Sync>;
 
+/// What a timer of the cue is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Due {
+    /// The delay before the first pre-written phrase.
+    Delay,
+    /// More silence after a phrase: another pre-written one.
+    Repeat,
+    /// The soft pulse.
+    Pulse,
+}
+
+/// The last phrase sent in a turn.
+#[derive(Clone, Copy)]
+struct LastPhrase {
+    sent: Instant,
+    /// When it is over, as far as can be told.
+    over: Instant,
+}
+
 /// The turn being awaited on a device.
 struct Active {
     turn: TurnId,
     conversation: ConversationKey,
     phrases: u32,
-    last_phrase: Option<Instant>,
+    last_phrase: Option<LastPhrase>,
+    /// The pulse has been asked of the voice, which repeats it by itself until the answer.
+    pulse_sent: bool,
+    /// What is still to happen if no answer starts, and when. One timer wakes for the soonest.
+    due: Vec<(Instant, Due)>,
     timer: Option<JoinHandle<()>>,
 }
 
@@ -346,35 +411,30 @@ impl Waiter {
         if let Some(old) = state.active.remove(device) {
             old.end();
         }
+        let now = Instant::now();
         let mut active = Active {
             turn,
             conversation,
             phrases: 0,
             last_phrase: None,
+            pulse_sent: false,
+            due: Vec::new(),
             timer: None,
         };
         match settings.mode {
             Mode::Off => {}
             Mode::Tone => {
                 self.0.emit(device, turn, CueKind::Tone, None);
-                active.timer = Some(self.spawn_timer(device, turn, settings.pulse_delay));
+                active.due.push((now + settings.pulse_delay, Due::Pulse));
             }
             Mode::Speech => {
                 if settings.source != Source::Contextual {
-                    active.timer = Some(self.spawn_timer(device, turn, settings.speech_delay));
+                    active.due.push((now + settings.speech_delay, Due::Delay));
                 }
             }
         }
+        self.0.arm(device, &mut active);
         state.active.insert(device.clone(), active);
-    }
-
-    fn spawn_timer(&self, device: &Device, turn: TurnId, delay: Duration) -> JoinHandle<()> {
-        let inner = self.0.clone();
-        let device = device.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            inner.waited(&device, turn);
-        })
     }
 
     /// The first sentence of the answer leaves: the cue is over, and nothing of it follows. Call
@@ -419,42 +479,106 @@ impl Inner {
         }
     }
 
-    /// The delay of a turn without an answer has passed.
-    fn waited(&self, device: &Device, turn: TurnId) {
+    /// Wakes, for the soonest of the things due in the turn, if no answer has started.
+    fn arm(self: &Arc<Self>, device: &Device, active: &mut Active) {
+        if let Some(timer) = active.timer.take() {
+            timer.abort();
+        }
+        let Some(&(at, _)) = active.due.iter().min_by_key(|(at, _)| *at) else {
+            return;
+        };
+        let inner = self.clone();
+        let device = device.clone();
+        let turn = active.turn;
+        active.timer = Some(tokio::spawn(async move {
+            tokio::time::sleep_until(at).await;
+            inner.fire(&device, turn);
+        }));
+    }
+
+    /// What was due in a turn without an answer has come.
+    fn fire(self: &Arc<Self>, device: &Device, turn: TurnId) {
         let mut state = self.lock();
         let State { active, picker } = &mut *state;
         let Some(active) = active.get_mut(device).filter(|a| a.turn == turn) else {
             return;
         };
-        match self.settings.mode {
-            Mode::Off => {}
-            Mode::Tone => {
-                info!(%device, %turn, "no answer yet: the pulse");
-                self.emit(device, turn, CueKind::Pulse, None);
-            }
-            Mode::Speech => {
-                if self.may_speak(active) {
-                    let phrase = self.prewritten(picker);
-                    self.say(active, device, phrase);
+        // This very task: it ends by itself, and a new one is armed below.
+        active.timer = None;
+        let now = Instant::now();
+        let mut ready: Vec<(Instant, Due)> = active
+            .due
+            .iter()
+            .copied()
+            .filter(|(at, _)| *at <= now)
+            .collect();
+        ready.sort_by_key(|(at, _)| *at);
+        active.due.retain(|(at, _)| *at > now);
+        for (_, due) in ready {
+            match due {
+                Due::Pulse => {
+                    info!(%device, %turn, "no answer yet: the pulse");
+                    active.pulse_sent = true;
+                    self.emit(device, turn, CueKind::Pulse, None);
+                }
+                Due::Delay | Due::Repeat => {
+                    if self.may_speak(active, now) {
+                        let phrase = self.prewritten(picker);
+                        self.say(active, device, phrase);
+                    }
                 }
             }
         }
+        self.arm(device, active);
     }
 
-    /// Whether the turn may have one more phrase now.
-    fn may_speak(&self, active: &Active) -> bool {
+    /// Whether the turn may have one more phrase at `now`.
+    fn may_speak(&self, active: &Active, now: Instant) -> bool {
         active.phrases < self.settings.max_phrases
             && active
                 .last_phrase
-                .is_none_or(|at| at.elapsed() >= PHRASE_SPACING)
+                .is_none_or(|last| now >= self.spacing_from(last) + self.settings.phrase_spacing)
     }
 
-    fn say(&self, active: &mut Active, device: &Device, phrase: Option<String>) {
+    /// The moment the spacing after a phrase is counted from.
+    fn spacing_from(&self, last: LastPhrase) -> Instant {
+        match self.settings.spacing_from {
+            SpacingFrom::Start => last.sent,
+            SpacingFrom::End => last.over,
+        }
+    }
+
+    /// Sends a phrase, and plans what follows it: the pulse and the repeat start from its end
+    /// (a pulse never plays over a phrase), whatever was planned before is replaced.
+    fn say(self: &Arc<Self>, active: &mut Active, device: &Device, phrase: Option<String>) {
         let Some(phrase) = phrase else { return };
         info!(%device, turn = %active.turn, n = active.phrases + 1, "a waiting phrase");
+        let now = Instant::now();
+        let last = LastPhrase {
+            sent: now,
+            over: now + estimated_speech(&phrase),
+        };
         self.emit(device, active.turn, CueKind::Speech, Some(phrase));
         active.phrases += 1;
-        active.last_phrase = Some(Instant::now());
+        active.last_phrase = Some(last);
+
+        let settings = &self.settings;
+        let repeat = !settings.prewritten_repeat.is_zero() && settings.source != Source::Contextual;
+        // With a repeat, the phrase just said replaces the first delay too; without one, the delay
+        // stays as it was (it is dropped then if it comes too close to a phrase).
+        active.due.retain(|(_, due)| *due == Due::Delay && !repeat);
+        if settings.pulse_after_speech && !active.pulse_sent {
+            active
+                .due
+                .push((last.over + settings.pulse_delay, Due::Pulse));
+        }
+        if repeat && active.phrases < settings.max_phrases {
+            let wait = settings.prewritten_repeat.max(settings.phrase_spacing);
+            active
+                .due
+                .push((self.spacing_from(last) + wait, Due::Repeat));
+        }
+        self.arm(device, active);
     }
 
     fn prewritten(&self, picker: &mut Picker) -> Option<String> {
@@ -520,7 +644,7 @@ impl Observer for Waiter {
         else {
             return;
         };
-        if !inner.may_speak(active) {
+        if !inner.may_speak(active, Instant::now()) {
             debug!(%device, tool, "tool called: no phrase (enough said, or too soon)");
             return;
         }
@@ -550,6 +674,7 @@ mod tests {
             speech_delay: ms(800),
             source,
             max_phrases: 2,
+            ..Settings::off()
         }
     }
 
@@ -783,6 +908,242 @@ silent = true
         b.tool("hippocampe_search", json!({"query": "Atlas"}));
         pass(3000).await;
         assert_eq!(b.kinds().len(), 2, "never more than max_phrases");
+    }
+
+    /// The settings of the owner's measured case: an acknowledgement at 100 ms, a tool call at 2.5 s.
+    fn filling(spacing_from: SpacingFrom, spacing: u64) -> Settings {
+        Settings {
+            speech_delay: ms(100),
+            phrase_spacing: ms(spacing),
+            spacing_from,
+            pulse_after_speech: true,
+            pulse_delay: ms(600),
+            ..settings(Mode::Speech, Source::Both)
+        }
+    }
+
+    const ACK: &str = "prewritten = [\"D'accord.\"]\n[tools.hippocampe_search]\nargument = \"query\"\nphrases = [\"Je regarde ce que j'ai sur {}.\"]\n";
+
+    #[tokio::test(start_paused = true)]
+    async fn the_contextual_phrase_at_a_late_tool_call_is_spoken_when_spaced_from_the_end() {
+        // Before: the spacing counted from the start of the first phrase (+0.1 s): a tool call at
+        // +2.5 s was 2.4 s later, too soon, and nothing was said.
+        let b = Bench::new(
+            Settings {
+                pulse_after_speech: false,
+                ..filling(SpacingFrom::Start, 2500)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(2500).await;
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        assert_eq!(b.kinds().len(), 1, "only the acknowledgement");
+
+        // Now: the first phrase is over at about +1.6 s; 800 ms of silence after it is enough.
+        let b = Bench::new(
+            Settings {
+                pulse_after_speech: false,
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(2500).await;
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        let said: Vec<_> = b.kinds().into_iter().filter_map(|k| k.1).collect();
+        assert_eq!(said, ["D'accord.", "Je regarde ce que j'ai sur Ali."]);
+        // And not before the first phrase is over: the same call at +1 s stays silent.
+        let b = Bench::new(
+            Settings {
+                pulse_after_speech: false,
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(1000).await;
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        assert_eq!(b.kinds().len(), 1);
+    }
+
+    #[test]
+    fn a_phrase_is_estimated_from_its_length() {
+        // Measured: nine characters, 1.16 s heard from +0.34 s.
+        let nine = estimated_speech("D'accord.");
+        assert!(nine >= ms(1400) && nine <= ms(1600), "{nine:?}");
+        assert!(estimated_speech("Je regarde ce que j'ai sur Ali.") > nine);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_pulse_fills_the_silence_after_a_phrase_and_stops_at_the_first_word() {
+        let b = Bench::new(filling(SpacingFrom::End, 800), ACK);
+        let turn = b.begin();
+        pass(150).await;
+        assert_eq!(b.kinds(), [(CueKind::Speech, Some("D'accord.".to_owned()))]);
+        // The phrase is over at about +1.6 s, the pulse follows 600 ms later, not before.
+        pass(1900).await; // +2.05 s
+        assert_eq!(b.kinds().len(), 1, "not while the phrase is said");
+        pass(300).await; // +2.35 s
+        assert_eq!(b.kinds().len(), 2);
+        assert_eq!(b.kinds()[1], (CueKind::Pulse, None));
+        // The voice repeats it by itself: the mind sends it once.
+        pass(10_000).await;
+        assert_eq!(b.kinds().len(), 2);
+
+        // An answer that starts before the pulse is due spares it.
+        let b = Bench::new(filling(SpacingFrom::End, 800), ACK);
+        let turn2 = b.begin();
+        pass(2000).await;
+        b.waiter.answer_started(&device(), turn2);
+        pass(10_000).await;
+        assert_eq!(b.kinds().len(), 1);
+        assert_ne!(turn, turn2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_phrase_at_a_tool_call_moves_the_pulse_after_itself() {
+        let b = Bench::new(
+            Settings {
+                pulse_delay: ms(900), // the pulse would be due at +2.5 s
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(2400).await;
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        let kinds: Vec<_> = b.kinds().into_iter().map(|k| k.0).collect();
+        assert_eq!(kinds, [CueKind::Speech, CueKind::Speech]);
+        // The second phrase (31 characters) is over at about +5.4 s: the pulse is due 900 ms after.
+        pass(2500).await; // +4.9 s
+        assert_eq!(b.kinds().len(), 2);
+        pass(2000).await; // +6.9 s
+        let kinds: Vec<_> = b.kinds().into_iter().map(|k| k.0).collect();
+        assert_eq!(kinds, [CueKind::Speech, CueKind::Speech, CueKind::Pulse]);
+
+        // A phrase after the pulse has started does not ask for it again: the voice goes on.
+        let b = Bench::new(
+            Settings {
+                max_phrases: 3,
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(2500).await; // pulse at +2.2 s
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        pass(20_000).await;
+        let kinds: Vec<_> = b.kinds().into_iter().map(|k| k.0).collect();
+        assert_eq!(kinds, [CueKind::Speech, CueKind::Pulse, CueKind::Speech]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_is_sent_after_the_answer_has_started() {
+        let b = Bench::new(
+            Settings {
+                prewritten_repeat: ms(3000),
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        let turn = b.begin();
+        pass(50).await;
+        b.waiter.answer_started(&device(), turn);
+        pass(20_000).await;
+        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        assert!(b.kinds().is_empty(), "{:?}", b.kinds());
+        // The same for a barge-in after the first phrase.
+        let b = Bench::new(
+            Settings {
+                prewritten_repeat: ms(3000),
+                ..filling(SpacingFrom::End, 800)
+            },
+            ACK,
+        );
+        b.begin();
+        pass(500).await;
+        b.waiter.cancel(&device());
+        pass(20_000).await;
+        assert_eq!(b.kinds().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prewritten_phrase_can_repeat_after_more_silence_up_to_the_maximum() {
+        let file = "prewritten = [\"A.\", \"B.\", \"C.\"]\n";
+        let repeating = |max_phrases| Settings {
+            speech_delay: ms(100),
+            source: Source::Prewritten,
+            prewritten_repeat: ms(3000),
+            max_phrases,
+            ..Settings::off()
+        };
+        let b = Bench::new(
+            Settings {
+                mode: Mode::Speech,
+                ..repeating(3)
+            },
+            file,
+        );
+        b.begin();
+        pass(150).await;
+        assert_eq!(b.kinds().len(), 1);
+        pass(2900).await; // +3.05 s: 3 s after the first (counted from its start by default)
+        assert_eq!(b.kinds().len(), 1);
+        pass(200).await;
+        assert_eq!(b.kinds().len(), 2);
+        pass(3000).await;
+        assert_eq!(b.kinds().len(), 3);
+        pass(30_000).await;
+        assert_eq!(b.kinds().len(), 3, "never more than max_phrases");
+        let said: Vec<_> = b.kinds().into_iter().filter_map(|k| k.1).collect();
+        assert!(said[0] != said[1] && said[1] != said[2]);
+
+        // With the default maximum of two, a single repeat.
+        let b = Bench::new(
+            Settings {
+                mode: Mode::Speech,
+                ..repeating(2)
+            },
+            file,
+        );
+        b.begin();
+        pass(30_000).await;
+        assert_eq!(b.kinds().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_repeat_never_goes_closer_than_the_spacing() {
+        let b = Bench::new(
+            Settings {
+                mode: Mode::Speech,
+                source: Source::Prewritten,
+                speech_delay: ms(100),
+                prewritten_repeat: ms(200),
+                phrase_spacing: ms(2500),
+                ..Settings::off()
+            },
+            "prewritten = [\"A.\", \"B.\"]\n",
+        );
+        b.begin();
+        pass(2000).await;
+        assert_eq!(b.kinds().len(), 1);
+        pass(700).await; // +2.7 s: 2.5 s after the first one
+        assert_eq!(b.kinds().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_defaults_keep_the_behaviour_of_before() {
+        let d = Settings::off();
+        assert_eq!(d.phrase_spacing, ms(2500));
+        assert_eq!(d.spacing_from, SpacingFrom::Start);
+        assert!(!d.pulse_after_speech);
+        assert!(d.prewritten_repeat.is_zero());
+        // One phrase of the delay, nothing after it, however long the wait.
+        let b = Bench::new(settings(Mode::Speech, Source::Both), FILE);
+        b.begin();
+        pass(60_000).await;
+        assert_eq!(b.kinds().len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
