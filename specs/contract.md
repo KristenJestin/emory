@@ -1,6 +1,6 @@
 # Le contrat
 
-Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13.
+Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13. `voice.cue` ajouté le 2026-10-13.
 
 Le contrat est la seule chose que les programmes d'Emory partagent : les sujets du bus et le format
 de chaque message. Il vit dans `contract/`, une crate Rust sans réseau (des types `serde`, des
@@ -61,6 +61,7 @@ Les en-têtes d'un message audio :
 | `hearing.vocabulary.add` | `mind` | `hearing` | `VocabularyAdd`, demande avec réponse `VocabularyReply` |
 | `voice.say` | `mind` | `voice` | `Say` |
 | `voice.stop` | `mind` | `voice` | `Stop` |
+| `voice.cue` | `mind` | `voice` | `Cue` |
 | `voice.<nom>.speaking` | `voice` | `emory-hands` de l'appareil | `Speaking` |
 | `hands.<nom>.announce` | `emory-hands` | `mind` | `Announce` |
 | `hands.<nom>.<action>` | `mind` | `emory-hands` | demande avec réponse |
@@ -69,7 +70,7 @@ Les en-têtes d'un message audio :
 Dans le code, les sujets et les abonnements viennent de `contract::subjects` :
 `subjects::button(&device)`, `subjects::ear_audio`, `subjects::ear_announce`,
 `subjects::mouth_audio`, `subjects::mouth_announce`, `subjects::hands_announce`,
-`subjects::speaking`, `subjects::action`, les constantes `SENTENCE`, `TURN`, `VOCABULARY_ADD`, `SAY`, `STOP`,
+`subjects::speaking`, `subjects::action`, les constantes `SENTENCE`, `TURN`, `VOCABULARY_ADD`, `SAY`, `STOP`, `CUE`,
 `ANNOUNCE_REQUEST`, et les abonnements à tous les appareils `ALL_BUTTONS`, `ALL_EAR_AUDIO`,
 `ALL_EAR_ANNOUNCES`, `ALL_MOUTH_ANNOUNCES`, `ALL_HANDS_ANNOUNCES`. `device_of_subject` retrouve
 l'appareil d'un sujet qui commence par `ear`, `mouth`, `hands` ou `voice`.
@@ -139,6 +140,33 @@ la réponse. Alors `voice` sait que rien ne suivra : elle envoie `Speaking` `end
 phrase a fini d'être jouée, sans attendre. Tant qu'aucune phrase n'est marquée `last`, `voice` garde
 un court délai de grâce après le dernier son avant de dire qu'elle a fini, au cas où `mind` enverrait
 une phrase de plus ; ce délai reste le repli quand `last` n'arrive jamais.
+
+### `Cue`
+
+Ajouté le 2026-10-13. Le signal d'attente : ce qu'Emory fait entendre pendant que la réponse se
+prépare, pour que l'utilisateur sache qu'elle l'a entendu (voir [`mind.md`](mind.md), « Le signal
+d'attente »).
+
+```json
+{ "turn": "01K…", "device": "office", "kind": "tone" }
+{ "turn": "01K…", "device": "office", "kind": "pulse" }
+{ "turn": "01K…", "device": "office", "kind": "speech", "text": "Je regarde." }
+```
+
+- `kind` vaut `tone` (le son court de deux notes montantes), `pulse` (une pulsation douce que
+  `voice` répète jusqu'à la première phrase de la réponse, ou au `Stop`) ou `speech` (une phrase à
+  dire, dans `text`, qui est requis dans ce cas et ignoré sinon).
+- Ce n'est pas une phrase de la réponse : `voice` le joue avant la première phrase du tour et
+  **jamais après** ; un `Cue` qui arrive une fois la première phrase reçue, ou pour un tour
+  arrêté ou remplacé, est ignoré. La première `Say` du tour met fin à la pulsation.
+- Le son part dans le même flux que la voix (`mouth.<nom>.audio`), avec les mêmes en-têtes : le
+  même tour, la numérotation `Emory-Seq` qui continue celle de la réponse, `Emory-Sentence` à
+  4294967295 (`u32::MAX`, qu'aucune phrase de la réponse ne porte), `Emory-End` sur chaque son
+  d'un coup (le ton, une pulsation) ou sur la fin de la phrase. `emory-mouth` n'a rien de
+  nouveau à faire.
+- `voice` publie `Speaking` pour une phrase d'attente (la musique baisse), pas pour un ton ni une
+  pulsation.
+- Un `kind` que `voice` ne connaît pas est refusé et journalisé, comme tout message illisible.
 
 ### `Speaking`
 

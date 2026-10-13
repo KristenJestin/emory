@@ -1,0 +1,114 @@
+# Les phrases d'attente d'Emory (`[waiting] mode = "speech"`), en français.
+#
+# Ce fichier est un modèle générique : il ne nomme personne. Pour avoir les siennes, copier ce
+# fichier, le modifier, et donner son chemin dans `[waiting] phrases = "..."` de `mind.toml`.
+#
+# Règles pour les écrire : très courtes, naturelles, jamais une promesse (« une seconde »,
+# « j'arrive tout de suite ») ni une question, et rien qui s'adresse à la personne (tutoiement ou
+# vouvoiement : Emory ne sait pas lequel, c'est la configuration de `mind` qui le dit au LLM).
+
+# Dites quand rien de précis n'est cherché, ou quand les arguments d'un outil ne donnent rien de
+# dicible. Tirées au hasard, sans retomber sur les dernières.
+prewritten = [
+  "Je regarde.",
+  "Je cherche.",
+  "Voyons voir.",
+  "Voyons.",
+  "Je vérifie.",
+  "Je regarde ça.",
+  "Je cherche ça.",
+  "Je vérifie ça.",
+  "Je vois ça.",
+  "Je jette un œil.",
+  "Je jette un coup d'œil.",
+  "Je regarde dans mes notes.",
+  "Je regarde dans mes fiches.",
+  "Je consulte mes notes.",
+  "Je cherche dans mes notes.",
+  "Je cherche dans ma mémoire.",
+  "Je regarde ce que j'ai.",
+  "Voyons ce que j'ai.",
+  "Je regarde ce que je trouve.",
+  "Je regarde ce que je sais là-dessus.",
+  "Je cherche ce qu'il y a.",
+  "Je regarde ce qu'il y a.",
+  "Je fouille un peu.",
+  "Je creuse un peu.",
+  "Je cherche un peu.",
+  "Je regarde un peu.",
+  "Je regarde de plus près.",
+  "Je retrouve ça.",
+  "Je fais une recherche.",
+  "Je m'en occupe.",
+  "Je réfléchis.",
+  "Je réfléchis à ça.",
+  "Hum, voyons voir.",
+  "Bien, je regarde.",
+  "D'accord, je regarde.",
+  "D'accord, je cherche.",
+  "Ça marche, je regarde.",
+  "Oui, je regarde.",
+  "Oui, je cherche.",
+  "Je vais voir.",
+]
+
+# Les phrases d'un outil de `mind`, par son nom tel que le voit le LLM (`<module>_<outil>`).
+#
+# - `argument` : l'argument de l'outil dont la valeur remplace `{}` dans `phrases`. Elle n'est dite
+#   que si elle est dicible : quelques mots, sans identifiant, chemin, adresse ni code. Sinon (et
+#   si l'outil n'a pas d'`argument`), on tire dans `plain`, puis dans `prewritten`.
+# - `phrases` : avec `{}` exactement une fois.
+# - `plain` : sans `{}`.
+# - `silent = true` : cet outil ne fait jamais parler (il répond tout de suite).
+
+[tools.hippocampe_search]
+argument = "query"
+phrases = [
+  "Je regarde ce que j'ai sur {}.",
+  "Je cherche ce que je sais sur {}.",
+  "Voyons ce que j'ai sur {}.",
+  "Je regarde dans mes notes pour {}.",
+  "Je cherche {} dans mes notes.",
+]
+plain = [
+  "Je regarde dans mes notes.",
+  "Je cherche dans mes fiches.",
+  "Je consulte mes notes.",
+]
+
+# La valeur de `entry` est un identifiant : elle n'est jamais dite.
+[tools.hippocampe_read]
+plain = [
+  "Je regarde cette fiche.",
+  "J'ouvre la fiche.",
+  "Je relis la fiche.",
+]
+
+[tools.hippocampe_write]
+plain = [
+  "Je note ça.",
+  "Je l'écris.",
+  "J'écris ça dans mes notes.",
+]
+
+[tools.hippocampe_link]
+plain = [
+  "Je fais le lien.",
+  "Je relie ça.",
+]
+
+[tools.hippocampe_types]
+silent = true
+
+[tools.dictionary_propose]
+silent = true
+
+[tools.dictionary_add]
+argument = "word"
+phrases = [
+  "J'ajoute {} au dictionnaire.",
+  "J'ajoute {} à mon dictionnaire.",
+]
+plain = [
+  "J'ajoute ce mot.",
+]

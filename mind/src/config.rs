@@ -49,6 +49,9 @@ pub struct Config {
     pub owner: OwnerConfig,
     #[serde(default)]
     pub dictionary: DictionaryConfig,
+    /// What the owner hears while the answer is prepared. Absent: nothing.
+    #[serde(default)]
+    pub waiting: WaitingConfig,
 }
 
 /// The person Emory serves. Both fields fill the placeholders of the instructions
@@ -457,6 +460,78 @@ impl DictionaryConfig {
     }
 }
 
+/// The waiting cue (see [`crate::waiting`]): `off`, a `tone`, or a short phrase (`speech`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WaitingConfig {
+    pub mode: crate::waiting::Mode,
+    /// `tone`: milliseconds without an answer before the soft pulse starts.
+    pub pulse_delay_ms: u64,
+    /// `speech`: milliseconds without an answer before a pre-written phrase.
+    pub speech_delay_ms: u64,
+    /// `speech`: pre-written phrases only, ones about what is searched only, or both.
+    pub source: crate::waiting::Source,
+    /// `speech`: the most phrases said in a turn.
+    pub max_phrases: u32,
+    /// `speech`: the file of the phrases; the built-in French ones without it.
+    pub phrases: Option<ConfigPath>,
+}
+
+impl Default for WaitingConfig {
+    fn default() -> Self {
+        let defaults = crate::waiting::Settings::off();
+        Self {
+            mode: crate::waiting::Mode::Off,
+            pulse_delay_ms: defaults.pulse_delay.as_millis() as u64,
+            speech_delay_ms: defaults.speech_delay.as_millis() as u64,
+            source: defaults.source,
+            max_phrases: defaults.max_phrases,
+            phrases: None,
+        }
+    }
+}
+
+impl WaitingConfig {
+    pub fn settings(&self) -> crate::waiting::Settings {
+        crate::waiting::Settings {
+            mode: self.mode,
+            pulse_delay: Duration::from_millis(self.pulse_delay_ms),
+            speech_delay: Duration::from_millis(self.speech_delay_ms),
+            source: self.source,
+            max_phrases: self.max_phrases,
+        }
+    }
+
+    /// Refuses absurd values.
+    pub fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            (100..=60_000).contains(&self.pulse_delay_ms),
+            "waiting.pulse_delay_ms must be between 100 and 60000"
+        );
+        anyhow::ensure!(
+            (100..=60_000).contains(&self.speech_delay_ms),
+            "waiting.speech_delay_ms must be between 100 and 60000"
+        );
+        anyhow::ensure!(
+            (1..=5).contains(&self.max_phrases),
+            "waiting.max_phrases must be between 1 and 5"
+        );
+        Ok(())
+    }
+
+    /// The waiter of this configuration, with its phrases read.
+    pub fn waiter(&self) -> Result<crate::waiting::Waiter> {
+        self.check()?;
+        let settings = self.settings();
+        let phrases = match settings.mode {
+            crate::waiting::Mode::Speech => crate::waiting::Phrases::load(self.phrases.as_ref())?,
+            _ => crate::waiting::Phrases::default(),
+        };
+        phrases.check_for(&settings)?;
+        Ok(crate::waiting::Waiter::new(settings, phrases))
+    }
+}
+
 /// Whether a text has anything to say or to be said: a letter or a digit, not only blanks and
 /// punctuation.
 pub fn has_words(text: &str) -> bool {
@@ -511,6 +586,7 @@ impl std::str::FromStr for Config {
             (100..=30_000).contains(&config.dictionary.timeout_ms),
             "dictionary.timeout_ms must be between 100 and 30000"
         );
+        config.waiting.check()?;
         anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
@@ -579,6 +655,82 @@ token_file = "~/t.token"
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn the_waiting_cue_is_off_by_default_and_set_by_its_section() {
+        use crate::waiting::{Mode, Source};
+        let c: Config = MINIMAL.parse().unwrap();
+        assert_eq!(c.waiting.mode, Mode::Off);
+        assert!(c.waiting.waiter().is_ok());
+        let c: Config = format!("{MINIMAL}\n[waiting]\nmode = \"tone\"\n")
+            .parse()
+            .unwrap();
+        assert_eq!(c.waiting.mode, Mode::Tone);
+        assert_eq!(
+            c.waiting.settings().pulse_delay,
+            Duration::from_millis(1500)
+        );
+        let c: Config = format!(
+            "{MINIMAL}\n[waiting]\nmode = \"speech\"\nsource = \"contextual\"\nspeech_delay_ms = 1200\nmax_phrases = 1\n"
+        )
+        .parse()
+        .unwrap();
+        let settings = c.waiting.settings();
+        assert_eq!(
+            (settings.mode, settings.source, settings.max_phrases),
+            (Mode::Speech, Source::Contextual, 1)
+        );
+        assert_eq!(settings.speech_delay, Duration::from_millis(1200));
+        // Speech without a file takes the built-in phrases.
+        assert!(c.waiting.waiter().is_ok());
+        for bad in [
+            "mode = \"beep\"",
+            "pulse_delay_ms = 5",
+            "speech_delay_ms = 999999",
+            "max_phrases = 0",
+            "source = \"random\"",
+            "volume = 1",
+        ] {
+            assert!(
+                format!("{MINIMAL}\n[waiting]\n{bad}\n")
+                    .parse::<Config>()
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        // A phrases file that does not exist is an error at start-up, in speech mode only.
+        let missing: Config = format!(
+            "{MINIMAL}\n[waiting]\nmode = \"speech\"\nphrases = \"/nonexistent/phrases.toml\"\n"
+        )
+        .parse()
+        .unwrap();
+        assert!(missing.waiting.waiter().is_err());
+        let unused: Config = format!(
+            "{MINIMAL}\n[waiting]\nmode = \"tone\"\nphrases = \"/nonexistent/phrases.toml\"\n"
+        )
+        .parse()
+        .unwrap();
+        assert!(unused.waiting.waiter().is_ok());
+    }
+
+    #[test]
+    fn the_shipped_configurations_are_valid() {
+        use crate::waiting::Mode;
+        let example: Config = include_str!("../examples/mind.toml").parse().unwrap();
+        assert_eq!(example.waiting.mode, Mode::Off);
+        // The example in each mode, with its commented keys switched on.
+        let speech = include_str!("../examples/mind.toml")
+            .replace("mode = \"off\"", "mode = \"speech\"")
+            .replace("# speech_delay_ms", "speech_delay_ms")
+            .replace("# source =", "source =")
+            .replace("# max_phrases", "max_phrases")
+            .replace("# phrases =", "phrases =");
+        let speech: Config = speech.parse().unwrap();
+        assert_eq!(speech.waiting.mode, Mode::Speech);
+        assert_eq!(speech.waiting.max_phrases, 2);
+        let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
+        assert_eq!(dev.waiting.mode, Mode::Tone);
     }
 
     #[test]

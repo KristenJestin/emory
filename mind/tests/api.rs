@@ -28,7 +28,7 @@ use mind::{
     config::Thinking,
     conversations::{ConversationKey, Conversations},
     dictionary::{Dictionary, Vocabulary},
-    tools::{Module, Tools},
+    tools::{Module, Observer, Tools},
 };
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
 use serde_json::{Value, json};
@@ -260,8 +260,30 @@ impl Vocabulary for Hearing {
     }
 }
 
+/// A tool call as an observer sees it: its conversation, its name, its arguments.
+type Call = (Option<ConversationKey>, String, Option<JsonObject>);
+
+/// Sees every tool call, as the waiting cue does.
+#[derive(Default)]
+struct Observed(Mutex<Vec<Call>>);
+
+impl Observer for Observed {
+    fn called(
+        &self,
+        conversation: Option<&ConversationKey>,
+        tool: &str,
+        arguments: Option<&JsonObject>,
+    ) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((conversation.cloned(), tool.to_owned(), arguments.cloned()));
+    }
+}
+
 struct Bench {
     fake: Arc<Fake>,
+    observed: Arc<Observed>,
     brain: ApiBrain,
     clock: Arc<Clock>,
     hearing: Hearing,
@@ -285,10 +307,12 @@ async fn bench(scripts: Vec<Script>, configure: impl FnOnce(&mut ApiSettings)) -
     let clock = Arc::new(Clock::default());
     let hearing = Hearing::default();
     let conversations = Conversations::default();
+    let observed = Arc::new(Observed::default());
     let tools = Tools::new(vec![
         clock.clone(),
         Arc::new(Dictionary::new(hearing.clone(), conversations.clone())),
-    ]);
+    ])
+    .observed_by(observed.clone());
     let mut settings = ApiSettings {
         provider: Provider::named("anthropic").unwrap(),
         model: "claude-haiku-5-5".to_owned(),
@@ -305,6 +329,7 @@ async fn bench(scripts: Vec<Script>, configure: impl FnOnce(&mut ApiSettings)) -
     Bench {
         brain: ApiBrain::new(settings, tools).unwrap(),
         fake,
+        observed,
         clock,
         hearing,
         conversations,
@@ -437,7 +462,7 @@ async fn the_answer_streams_and_the_conversation_is_kept() {
 async fn a_tool_runs_in_the_process_for_its_conversation_and_the_answer_follows() {
     let b = bench(
         vec![
-            Script::Tool("Voyons. ", "clock_now", json!({})),
+            Script::Tool("Voyons. ", "clock_now", json!({"where": "ici"})),
             Script::Text(vec!["Il est midi."]),
         ],
         |_| {},
@@ -455,7 +480,16 @@ async fn a_tool_runs_in_the_process_for_its_conversation_and_the_answer_follows(
             Event::Done(Ok("end_turn".into()))
         ]
     );
-    assert_eq!(*b.clock.asked_by.lock().unwrap(), [Some(key)]);
+    assert_eq!(*b.clock.asked_by.lock().unwrap(), [Some(key.clone())]);
+    // The observer of the tools (the waiting cue) sees the call, its conversation and arguments.
+    assert_eq!(
+        *b.observed.0.lock().unwrap(),
+        [(
+            Some(key),
+            "clock_now".to_owned(),
+            json!({"where": "ici"}).as_object().cloned()
+        )]
+    );
     assert_eq!(
         b.messages(1),
         pairs(&[

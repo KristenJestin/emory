@@ -9,6 +9,8 @@ pub const SENTENCE: &str = "hearing.sentence";
 pub const TURN: &str = "hearing.turn";
 /// A sentence to say ([`crate::Say`]).
 pub const SAY: &str = "voice.say";
+/// A waiting cue: a tone, a pulse or a short phrase while the answer is prepared ([`crate::Cue`]).
+pub const CUE: &str = "voice.cue";
 /// Everything not yet said of a turn is thrown away ([`crate::Stop`]).
 pub const STOP: &str = "voice.stop";
 /// A word to add to the vocabulary of the hearing ([`crate::VocabularyAdd`]), a request whose

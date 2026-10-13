@@ -91,7 +91,8 @@ Une entrée écrite par Emory n'attend aucune validation ; Kris confirme quand i
 
 - Il parle, il n'écrit pas : des phrases courtes, pas de listes ni de mise en forme, les nombres,
   les dates et les heures en toutes lettres.
-- Pas de phrase d'attente (voir [`voice.md`](voice.md)).
+- Pas de phrase d'attente (voir [`voice.md`](voice.md)) : celle du signal d'attente (plus bas) est
+  dite par le code, pas par le LLM.
 - Il cherche dans Hippocampe avant d'affirmer quelque chose sur la vie de Kris, et dit quand il
   ne sait pas.
 
@@ -391,6 +392,89 @@ Ce que cela veut dire :
   fois à Sonnet effort bas (il a appelé `dictionary_add` d'emblée, refusé, puis proposé).
 - Limite de `genai` : il envoie `thinking: disabled`, que Sonnet 5.5 refuse (il veut `between_tools`,
   mis à la main dans le corps). Haiku 5.5 l'accepte.
+
+## Le signal d'attente (2026-10-13)
+
+Kris l'a demandé pour combler le silence entre la fin de son tour et le premier mot (1 à 2 s sans
+outil, 3 à 5 s quand le LLM lit la mémoire) : les assistants du commerce le comblent par un petit
+son. Deux sortes de signal sont codées, et on choisit dans la configuration, une fois installé,
+pour les essayer. Le prompt du LLM continue d'interdire ses propres phrases d'attente : ici, c'est
+le code qui parle, choisi et borné.
+
+**Où ça vit.** `mind` possède le moment, parce que seul lui sait quand un tour se ferme
+(`hearing.turn`), quand la première phrase de la réponse part, et quand le LLM appelle un outil
+(l'appel arrive sur son propre serveur MCP, avec ses arguments). `mind` ne décide que *quoi* :
+un `Cue` sur `voice.cue` (voir [`contract.md`](contract.md)), que `voice` joue (voir
+[`voice.md`](voice.md), « Le signal d'attente »). Le code est dans `mind/src/waiting.rs`.
+Choix de conception, le plus simple et le plus réversible : un sujet de plus plutôt qu'un champ
+sur `Say`, parce qu'un son n'est pas une phrase (autre numérotation, jamais après la réponse) ; et
+la synthèse du ton dans `voice`, pour que `emory-mouth` reste inchangé.
+
+**La configuration**, section `[waiting]` de `mind` (par défaut `off`, le comportement d'avant) :
+
+```toml
+[waiting]
+mode = "tone"          # "off", "tone" ou "speech"
+pulse_delay_ms = 1500  # tone : sans réponse au bout de ce temps, la pulsation commence
+speech_delay_ms = 800  # speech : sans réponse au bout de ce temps, une phrase pré-écrite
+source = "both"        # speech : "prewritten", "contextual" ou "both"
+max_phrases = 2        # speech : au plus ce nombre de phrases par tour
+phrases = "mind/prompts/waiting.fr.toml"   # speech : le fichier de phrases (celui livré sans cette clé)
+```
+
+Le volume, la forme du ton et le temps entre deux pulsations sont dans la configuration de `voice`
+(`[cue]`).
+
+**`tone`.** Dès que le tour est fermé et qu'il contient des mots (un tour vide dit « Je n'ai rien
+entendu. » et n'a pas de ton), `mind` envoie un `Cue` `tone`. Si aucune réponse n'a commencé au
+bout de `pulse_delay_ms`, il envoie un `Cue` `pulse`, que `voice` répète jusqu'au premier mot.
+
+**`speech`.** Une phrase courte, dite par la voix d'Emory :
+
+- **pré-écrites** : une quarantaine de phrases françaises très courtes (« Je regarde. », « Je
+  cherche. », « Voyons voir. »), tirées au hasard sans retomber sur les huit dernières. Le fichier
+  `mind/prompts/waiting.fr.toml` est le modèle générique livré avec le dépôt, aussi intégré au
+  programme ; le propriétaire écrit les siennes dans un autre fichier et met son chemin dans
+  `phrases`. Aucune ne promet (« une seconde ») ni ne s'adresse à la personne.
+- **contextuelles** : quand le LLM appelle un outil, `mind` le sait par son serveur MCP, avec les
+  arguments. Le fichier de phrases a, par outil, un `argument` dont la valeur remplace `{}`
+  (`hippocampe_search`, `query` = « Ali » donne « Je regarde ce que j'ai sur Ali. »), des phrases
+  `plain` sans `{}`, et `silent = true` pour les outils qui répondent tout de suite. **Une valeur
+  n'est dite que si elle est dicible** : cinq mots au plus, quarante caractères, sans chiffre
+  collé à des lettres, ni `_ / \ @ # = < >`, ni mot unique à tiret (`mon-contrat-internet`). Un
+  identifiant, un chemin, une adresse ne sont jamais lus. Sinon : la phrase `plain` de l'outil,
+  puis une pré-écrite. `hippocampe_read` (dont l'argument est un identifiant) n'a que des `plain`.
+- **quand** : `source = "prewritten"`, une pré-écrite après `speech_delay_ms` sans réponse ;
+  `"contextual"`, une phrase à chaque appel d'outil seulement ; `"both"`, au premier appel d'outil
+  la contextuelle, et la pré-écrite au délai sinon. Au plus `max_phrases` par tour, **deux
+  secondes et demie d'écart au moins** (sinon deux phrases collées sonnent comme un bégaiement :
+  « Je regarde. Je regarde ce que j'ai sur Ali. »), et **aucune une fois la réponse commencée**.
+- **la réponse arrive pendant une phrase** : elle la suit, sans couper un mot (voir
+  [`voice.md`](voice.md) pour le pourquoi).
+
+**Fin du signal.** La première phrase de la réponse l'arrête (`mind` le dit avant de mettre la
+phrase en file, sous le même verrou : aucun signal ne part après elle), un appui (barge-in) ou un
+nouveau tour aussi, et `voice` ignore de toute façon un signal arrivé après la réponse.
+
+**Les outils observés.** `Tools::observed_by` donne à un observateur chaque appel (conversation,
+nom, arguments) avant l'exécution ; `Waiter` en est un. La conversation vient de l'en-tête
+`emory-conversation` déjà posé pour le dictionnaire. Le signal ne dépend donc d'aucun LLM branché :
+tout LLM passe par ce serveur MCP.
+
+**Ce qui est testé** (avec des faux : `mind/src/waiting.rs`, `mind/tests/waiting.rs`, la file de
+`voice`) : le ton part au tour fermé ; la pulsation après le délai et pas si la réponse est venue à
+temps ; rien après la première phrase ; un appui ou un nouveau tour la coupe ; pas de répétition
+des dernières phrases ; la phrase contextuelle depuis un appel avec une requête ; le repli sans
+requête, avec un identifiant, un chemin ou une phrase trop longue ; l'écart et le plafond de
+phrases ; les trois sources ; `off` n'envoie rien. De bout en bout sur un NATS à part (voice et
+Pocket réels, `voice/examples/cue-check.rs`) : voir `voice.md`.
+
+**Pas vérifié.** Rien de tout cela n'a été écouté par la personne qui l'a codé : le volume, le
+caractère des quatre tons, la gêne ou non de la pulsation, et surtout le naturel de la phrase
+d'attente avec la voix d'Emory (Pocket, puis Kyutai) restent à juger à l'oreille. Aucune requête
+au vrai LLM : la phrase contextuelle depuis un vrai appel d'outil du LLM (par le serveur MCP) n'a
+été testée qu'avec un faux appel. Les échantillons à écouter sont décrits dans le `LISEZMOI.txt`
+de `.agent-relay/scratch/attente/`.
 
 ## Le choix du moteur : ACP ou appel direct, par la configuration (2026-10-13)
 

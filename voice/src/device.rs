@@ -10,7 +10,7 @@ use std::{
 
 use async_nats::Client;
 use bytes::Bytes;
-use contract::{Device, Say, Speaking, TurnId, audio::Format, subjects};
+use contract::{Cue, Device, Say, Speaking, TurnId, audio::Format, subjects};
 use tokio::{
     sync::{
         mpsc::{UnboundedReceiver, UnboundedSender},
@@ -23,14 +23,17 @@ use tracing::{debug, info, warn};
 use crate::{
     audio::{Chunker, chunk_headers, duration_of},
     config::Config,
+    cue,
     engine::Engine,
-    queue::{Effect, Queue},
+    queue::{CueSound, Effect, Queue},
     text,
 };
 
 /// What a device receives: orders from the bus, and news of its synthesis.
 pub enum Input {
     Say(Say),
+    /// A waiting cue: a tone, a pulse, or a phrase.
+    Cue(Cue),
     Stop(TurnId),
     /// Audio of this turn is leaving (or has just left). With `ack`, the chunk has not been
     /// published yet and waits for the answer: the `Speaking` `start` that this sound may cause
@@ -77,7 +80,8 @@ async fn run(
     mut inbox: UnboundedReceiver<Input>,
     own: Inbox,
 ) {
-    let mut queue = Queue::new(config.end_grace(), config.missing_sentence_timeout());
+    let mut queue = Queue::new(config.end_grace(), config.missing_sentence_timeout())
+        .with_pulse_interval(config.cue.pulse_interval());
     let mut job: Option<Job> = None;
     macro_rules! cx {
         () => {
@@ -99,6 +103,7 @@ async fn run(
                 let now = Instant::now();
                 match input {
                     Input::Say(say) => queue.say(&say, now),
+                    Input::Cue(cue) => queue.cue(&cue, now),
                     Input::Stop(turn) => queue.stop(turn),
                     Input::Sound { turn, duration, ack: wanted } => {
                         ack = wanted;
@@ -170,6 +175,21 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     %device, %turn, from, to,
                     "sentence missing: skipped after the delay"
                 );
+            }
+            Effect::PlayCue { turn, sound, seq } => {
+                let pcm = match sound {
+                    CueSound::Tone => cue::tone(cx.config.cue.tone, cx.config.cue.volume),
+                    CueSound::Pulse => cue::pulse(cx.config.cue.volume),
+                };
+                let headers = chunk_headers(turn, seq, cue::FORMAT, cue::SENTENCE, true);
+                match cx
+                    .nats
+                    .publish_with_headers(subjects::mouth_audio(device), headers, Bytes::from(pcm))
+                    .await
+                {
+                    Ok(()) => debug!(%device, %turn, ?sound, seq, "cue sound sent"),
+                    Err(e) => warn!(%device, %turn, "cue sound not sent: {e}"),
+                }
             }
             Effect::Speaking(state) => {
                 debug!(%device, ?state, "speaking");

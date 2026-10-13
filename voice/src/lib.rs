@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod cue;
 pub mod device;
 pub mod engine;
 pub mod nats;
@@ -12,14 +13,15 @@ pub mod text;
 
 use std::collections::HashMap;
 
-use contract::{Device, Say, Stop, subjects};
+use contract::{Cue, Device, Say, Stop, subjects};
 use futures_util::StreamExt;
 use tracing::{info, warn};
 
 use config::Config;
 use device::Input;
 
-/// Everything the mind says to the voice, on one subscription: `voice.say` and `voice.stop`.
+/// Everything the mind says to the voice, on one subscription: `voice.say`, `voice.stop` and
+/// `voice.cue`.
 /// (`voice.<device>.speaking` has three tokens and is not matched.) One subscription keeps the
 /// order of the mind: a `Stop` cannot overtake the sentences sent before it.
 const VOICE_SUBJECTS: &str = "voice.*";
@@ -29,12 +31,14 @@ const VOICE_SUBJECTS: &str = "voice.*";
 enum VoiceMessage {
     Say,
     Stop,
+    Cue,
 }
 
 fn voice_message(subject: &str) -> Option<VoiceMessage> {
     match subject {
         subjects::SAY => Some(VoiceMessage::Say),
         subjects::STOP => Some(VoiceMessage::Stop),
+        subjects::CUE => Some(VoiceMessage::Cue),
         _ => None,
     }
 }
@@ -83,6 +87,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
                         Ok(s) => { let _ = inbox_of(&s.device).send(Input::Stop(s.turn)); }
                         Err(e) => warn!("unreadable Stop: {e}"),
                     },
+                    Some(VoiceMessage::Cue) => match serde_json::from_slice::<Cue>(&message.payload) {
+                        Ok(c) => { let _ = inbox_of(&c.device).send(Input::Cue(c)); }
+                        Err(e) => warn!("unreadable Cue: {e}"),
+                    },
                     None => {}
                 }
             }
@@ -115,6 +123,7 @@ mod tests {
     fn the_voice_subscription_is_dispatched_on_the_subject() {
         assert_eq!(voice_message("voice.say"), Some(VoiceMessage::Say));
         assert_eq!(voice_message("voice.stop"), Some(VoiceMessage::Stop));
+        assert_eq!(voice_message("voice.cue"), Some(VoiceMessage::Cue));
         assert_eq!(voice_message("voice.other"), None);
         assert_eq!(voice_message("voice.office.speaking"), None);
     }
@@ -133,7 +142,7 @@ mod tests {
                     .zip(&subject)
                     .all(|(p, s)| *p == "*" || p == s)
         };
-        assert!(carried(subjects::SAY) && carried(subjects::STOP));
+        assert!(carried(subjects::SAY) && carried(subjects::STOP) && carried(subjects::CUE));
         let office = "office".parse().unwrap();
         assert!(!carried(&subjects::speaking(&office)));
     }
