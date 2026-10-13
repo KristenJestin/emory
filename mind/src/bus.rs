@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_nats::ConnectOptions;
-use contract::{Say, Stop, subjects};
+use contract::{Cue, Say, Stop, subjects};
 use serde::Serialize;
 
 use crate::{config::NatsConfig, mind::Outbox};
@@ -68,5 +68,9 @@ impl Outbox for Bus {
 
     async fn stop(&self, stop: Stop) -> Result<()> {
         publish(&self.0, subjects::STOP, &stop).await
+    }
+
+    async fn cue(&self, cue: Cue) -> Result<()> {
+        publish(&self.0, subjects::CUE, &cue).await
     }
 }

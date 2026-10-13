@@ -66,17 +66,36 @@ pub trait Module: Send + Sync + 'static {
     }
 }
 
+/// Told of each call to a tool, with its arguments, before the tool runs: the waiting cue says
+/// what is being searched (see [`crate::waiting`]). It must not wait.
+pub trait Observer: Send + Sync + 'static {
+    fn called(
+        &self,
+        conversation: Option<&ConversationKey>,
+        tool: &str,
+        arguments: Option<&JsonObject>,
+    );
+}
+
 /// The tools of all the modules.
 #[derive(Clone)]
 pub struct Tools {
     modules: Arc<Vec<Arc<dyn Module>>>,
+    observer: Option<Arc<dyn Observer>>,
 }
 
 impl Tools {
     pub fn new(modules: Vec<Arc<dyn Module>>) -> Self {
         Self {
             modules: Arc::new(modules),
+            observer: None,
         }
+    }
+
+    /// Tells `observer` of each call.
+    pub fn observed_by(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     pub async fn list(&self) -> Vec<Tool> {
@@ -102,6 +121,9 @@ impl Tools {
         conversation: Option<ConversationKey>,
     ) -> CallToolResult {
         let started = Instant::now();
+        if let Some(observer) = &self.observer {
+            observer.called(conversation.as_ref(), name, arguments.as_ref());
+        }
         let routed = self.modules.iter().find_map(|m| {
             name.strip_prefix(m.name())
                 .and_then(|rest| rest.strip_prefix('_'))
@@ -351,6 +373,44 @@ mod tests {
         assert_eq!(
             with_defaults("read", args(serde_json::json!({"entry": "e"}))),
             args(serde_json::json!({"entry": "e"}))
+        );
+    }
+
+    #[derive(Default)]
+    struct Calls(std::sync::Mutex<Vec<(Option<ConversationKey>, String, Option<JsonObject>)>>);
+
+    impl Observer for Calls {
+        fn called(
+            &self,
+            conversation: Option<&ConversationKey>,
+            tool: &str,
+            arguments: Option<&JsonObject>,
+        ) {
+            self.0.lock().unwrap().push((
+                conversation.cloned(),
+                tool.to_owned(),
+                arguments.cloned(),
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_observer_is_told_of_each_call_with_its_arguments() {
+        let calls = Arc::new(Calls::default());
+        let tools = Tools::new(vec![Arc::new(Old)]).observed_by(calls.clone());
+        let arguments = serde_json::json!({"query": "Ali"}).as_object().cloned();
+        let key = ConversationKey("k".to_owned());
+        tools
+            .call_in("old_thing", arguments.clone(), Some(key.clone()))
+            .await;
+        tools.call("nope", None).await;
+        let seen = calls.0.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [
+                (Some(key), "old_thing".to_owned(), arguments),
+                (None, "nope".to_owned(), None)
+            ]
         );
     }
 
