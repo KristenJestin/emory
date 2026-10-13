@@ -22,10 +22,11 @@ use tracing::{debug, info, warn};
 
 use crate::{
     audio::{Chunker, chunk_headers, duration_of},
-    config::Config,
+    config::{Config, LoudnessSettings},
     cue,
     engine::Engine,
     gain::Gain,
+    loudness::Loudness,
     queue::{CueSound, Effect, Queue},
     text,
 };
@@ -228,7 +229,10 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     cx.nats.clone(),
                     cx.engine.clone(),
                     cx.config.chunk_ms,
-                    Gain::new(cx.config.gain),
+                    Volume {
+                        gain: Gain::new(cx.config.gain),
+                        loudness: cx.config.loudness,
+                    },
                     cx.own.clone(),
                     cancelled.clone(),
                 ));
@@ -247,6 +251,48 @@ struct Sentence {
     seq: u32,
 }
 
+/// How the audio of the engine is made louder before it leaves: the loudness stage when it is
+/// enabled (then `gain` is ignored), otherwise the gain.
+#[derive(Clone, Copy)]
+struct Volume {
+    gain: Gain,
+    loudness: LoudnessSettings,
+}
+
+/// Turns the audio of the engine into what leaves, for one sentence.
+struct Shaping {
+    volume: Volume,
+    /// The loudness stage of this sentence, made with the first sound (its format is then known).
+    /// Its state belongs to the sentence: it is drained at the end and never carried over.
+    stage: Option<Loudness>,
+}
+
+impl Shaping {
+    fn new(volume: Volume) -> Self {
+        Self {
+            volume,
+            stage: None,
+        }
+    }
+
+    /// The audio as it leaves: through the loudness stage, or the gain. The stage delays the
+    /// sound by its look-ahead, so the last chunk also carries what it still holds.
+    fn shape(&mut self, mut payload: Vec<u8>, format: Format, last: bool) -> Vec<u8> {
+        if !self.volume.loudness.enabled {
+            self.volume.gain.apply(&mut payload);
+            return payload;
+        }
+        let stage = self.stage.get_or_insert_with(|| {
+            Loudness::new(&self.volume.loudness, format.sample_rate, format.channels)
+        });
+        let mut shaped = stage.process(&payload);
+        if last {
+            shaped.extend(stage.finish());
+        }
+        shaped
+    }
+}
+
 /// Sends the chunks of a sentence, numbered over the whole turn.
 struct Sender {
     nats: Client,
@@ -254,7 +300,7 @@ struct Sender {
     turn: TurnId,
     index: u32,
     format: Format,
-    gain: Gain,
+    shaping: Shaping,
     seq: u32,
     audio: Duration,
     first_sound: Option<Instant>,
@@ -279,8 +325,12 @@ impl Sender {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    async fn send(&mut self, mut payload: Vec<u8>, last: bool) -> anyhow::Result<()> {
-        self.gain.apply(&mut payload);
+    async fn send(&mut self, payload: Vec<u8>, last: bool) -> anyhow::Result<()> {
+        let payload = self.shaping.shape(payload, self.format, last);
+        if payload.is_empty() && !last {
+            // The stage is still filling its look-ahead: nothing to send yet.
+            return Ok(());
+        }
         let duration = duration_of(payload.len(), self.format);
         let first = self.first_sound.is_none() && !duration.is_zero();
         if first {
@@ -330,7 +380,7 @@ async fn say(
     nats: Client,
     engine: Engine,
     chunk_ms: u32,
-    gain: Gain,
+    volume: Volume,
     inbox: Inbox,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -349,7 +399,7 @@ async fn say(
         turn,
         index,
         format: engine.last_format().unwrap_or(FALLBACK_FORMAT),
-        gain,
+        shaping: Shaping::new(volume),
         seq,
         audio: Duration::ZERO,
         first_sound: None,
@@ -381,6 +431,10 @@ async fn say(
     }
     let synth = started.elapsed();
     let audio = sender.audio;
+    let loudness = sender.shaping.stage.as_ref();
+    if let Some(clipped) = loudness.map(Loudness::clipped).filter(|&n| n > 0) {
+        warn!(%device, %turn, index, clipped, "samples cut at the ceiling by the safety net of the limiter");
+    }
     info!(
         %device, %turn, index,
         first_sound_ms = sender.first_sound.map(|t| (t - received).as_millis() as u64),
@@ -390,6 +444,8 @@ async fn say(
         synth_s = format!("{:.2}", synth.as_secs_f64()),
         rtf = (!audio.is_zero()).then(|| format!("{:.2}", synth.as_secs_f64() / audio.as_secs_f64())),
         chunks = sender.seq - seq,
+        level_lufs = loudness.and_then(Loudness::level).map(|l| format!("{l:.1}")),
+        limited_db = loudness.map(|s| format!("{:.1}", s.limited())),
         "sentence said"
     );
     let _ = inbox.send(Input::Finished {
@@ -427,4 +483,113 @@ async fn stream(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FORMAT: Format = Format {
+        sample_rate: 24_000,
+        channels: 1,
+    };
+
+    fn voice() -> Vec<u8> {
+        // A few syllables of a made-up voice at a low level, as bytes of 16-bit PCM.
+        (0..24_000)
+            .flat_map(|i| {
+                let t = i as f32 / 24_000.0;
+                let syllable = (std::f32::consts::PI * 3.0 * t).sin().abs();
+                let wave = (2.0 * std::f32::consts::PI * 150.0 * t).sin()
+                    + 0.4 * (2.0 * std::f32::consts::PI * 450.0 * t).sin();
+                ((syllable * wave * 2500.0) as i16).to_le_bytes()
+            })
+            .collect()
+    }
+
+    fn shaped(volume: Volume, audio: &[u8], piece: usize) -> Vec<u8> {
+        let mut shaping = Shaping::new(volume);
+        let pieces: Vec<&[u8]> = audio.chunks(piece).collect();
+        let mut out = Vec::new();
+        for (i, part) in pieces.iter().enumerate() {
+            out.extend(shaping.shape(part.to_vec(), FORMAT, i + 1 == pieces.len()));
+        }
+        out
+    }
+
+    fn volume(gain: f32, enabled: bool) -> Volume {
+        Volume {
+            gain: Gain::new(gain),
+            loudness: LoudnessSettings {
+                enabled,
+                ..LoudnessSettings::default()
+            },
+        }
+    }
+
+    #[test]
+    fn by_default_the_audio_leaves_as_the_engine_said_it() {
+        let config: Config = "nats_url = \"a\"\nengine_url = \"b\"\n".parse().unwrap();
+        let volume = Volume {
+            gain: Gain::new(config.gain),
+            loudness: config.loudness,
+        };
+        assert!(!volume.loudness.enabled);
+        let audio = voice();
+        assert_eq!(shaped(volume, &audio, 2880), audio);
+        // Even the full-scale extremes, and a stray byte.
+        let mut odd = vec![0xff, 0x7f, 0x00, 0x80, 0x12];
+        assert_eq!(shaped(volume, &odd.clone(), 5), odd);
+        odd.clear();
+        assert_eq!(shaped(volume, &odd, 5), odd);
+    }
+
+    #[test]
+    fn without_the_stage_the_gain_still_works_as_before() {
+        let audio = voice();
+        let mut expected = audio.clone();
+        Gain::new(2.0).apply(&mut expected);
+        assert_eq!(shaped(volume(2.0, false), &audio, 2880), expected);
+    }
+
+    #[test]
+    fn with_the_stage_the_sound_is_whole_and_the_gain_is_ignored() {
+        let audio = voice();
+        let one = shaped(volume(1.0, true), &audio, 2880);
+        assert_eq!(
+            one.len(),
+            audio.len(),
+            "the look-ahead is drained at the last chunk"
+        );
+        assert_ne!(one, audio);
+        assert_eq!(shaped(volume(5.0, true), &audio, 2880), one);
+        // Whatever the cutting by the chunker.
+        assert_eq!(shaped(volume(1.0, true), &audio, 480), one);
+        assert_eq!(shaped(volume(1.0, true), &audio, audio.len()), one);
+    }
+
+    #[test]
+    fn the_first_chunk_is_shorter_by_the_look_ahead_and_the_last_has_it() {
+        let audio = voice();
+        let mut shaping = Shaping::new(volume(1.0, true));
+        let first = shaping.shape(audio[..2880].to_vec(), FORMAT, false);
+        assert_eq!(first.len(), 2880 - 2 * 120);
+        let rest = shaping.shape(audio[2880..].to_vec(), FORMAT, true);
+        assert_eq!(rest.len(), audio.len() - 2880 + 2 * 120);
+        // A chunk smaller than the look-ahead gives nothing yet, and it is not lost.
+        let mut shaping = Shaping::new(volume(1.0, true));
+        assert!(
+            shaping
+                .shape(audio[..100].to_vec(), FORMAT, false)
+                .is_empty()
+        );
+        let rest = shaping.shape(audio[100..].to_vec(), FORMAT, true);
+        assert_eq!(rest.len(), audio.len());
+    }
+
+    #[test]
+    fn a_sentence_without_sound_still_ends() {
+        let mut shaping = Shaping::new(volume(1.0, true));
+        assert!(shaping.shape(Vec::new(), FORMAT, true).is_empty());
+    }
 }
