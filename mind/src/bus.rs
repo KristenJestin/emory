@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_nats::ConnectOptions;
-use contract::{Cue, Say, Stop, subjects};
+use contract::{Cue, Say, Stop, TimerFired, Timers, subjects};
 use serde::Serialize;
+use tracing::warn;
 
-use crate::{config::NatsConfig, mind::Outbox};
+use crate::{config::NatsConfig, mind::Outbox, time::ring::Board};
 
 /// Connects to the bus under the name `name`. With `wait`, a bus that is not there yet at start-up
 /// is not an error: the connection retries.
@@ -72,5 +73,20 @@ impl Outbox for Bus {
 
     async fn cue(&self, cue: Cue) -> Result<()> {
         publish(&self.0, subjects::CUE, &cue).await
+    }
+}
+
+/// The state of the timers goes on the bus, for a display.
+impl Board for Bus {
+    async fn changed(&self, timers: Timers) {
+        if let Err(e) = publish(&self.0, subjects::TIMER_CHANGED, &timers).await {
+            warn!("publishing {}: {e:#}", subjects::TIMER_CHANGED);
+        }
+    }
+
+    async fn fired(&self, fired: TimerFired) {
+        if let Err(e) = publish(&self.0, subjects::TIMER_FIRED, &fired).await {
+            warn!("publishing {}: {e:#}", subjects::TIMER_FIRED);
+        }
     }
 }

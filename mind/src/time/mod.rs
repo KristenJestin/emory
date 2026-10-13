@@ -1,11 +1,12 @@
 //! The time: a module of Emory's MCP server (`time_<tool>`) for the timers and reminders the
-//! owner asks for (`specs/time.md`). In this version they are kept and listed, and they survive a
-//! restart; nothing rings yet (the ringing is the next unit, once the mind can speak by itself).
+//! owner asks for (`specs/time.md`). They are kept in a file and survive a restart; at the due
+//! time, Emory says them on the device on her own ([`ring`]).
 //!
 //! Every answer says the durations and the due times in words, because the LLM repeats them to a
 //! voice. The logs say the id, the kind, the due time and the device, never the text or the label.
 
 pub mod config;
+pub mod ring;
 pub mod store;
 pub mod words;
 pub mod zone;
@@ -20,6 +21,7 @@ use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use futures_util::future::BoxFuture;
 use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 pub use config::{DataConfig, TimeConfig};
@@ -71,9 +73,34 @@ impl Clock for ManualClock {
     }
 }
 
+/// A clock that follows tokio's from a given instant: for the tests where tokio's time is paused
+/// and moves on its own.
+pub struct TokioClock {
+    origin: DateTime<Utc>,
+    start: tokio::time::Instant,
+}
+
+impl TokioClock {
+    pub fn new(origin: DateTime<Utc>) -> Self {
+        Self {
+            origin,
+            start: tokio::time::Instant::now(),
+        }
+    }
+}
+
+impl Clock for TokioClock {
+    fn now(&self) -> DateTime<Utc> {
+        let elapsed = Duration::from_std(self.start.elapsed()).unwrap_or_default();
+        self.origin + elapsed
+    }
+}
+
 /// The `time` module: the four tools.
 pub struct Time {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
+    /// Told of every change of the store: the ringer waits for the next due time again.
+    changed: Arc<Notify>,
     zone: Zone,
     clock: Arc<dyn Clock>,
     conversations: Conversations,
@@ -129,7 +156,8 @@ impl Time {
             "timers read"
         );
         Ok(Self {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
+            changed: Arc::new(Notify::new()),
             zone,
             clock,
             conversations,
@@ -139,9 +167,26 @@ impl Time {
     }
 
     fn store(&self) -> MutexGuard<'_, Store> {
-        self.store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.store)
+    }
+
+    /// What rings the timers and reminders of this module: run it in a task of its own.
+    pub fn ringer<B: ring::Board>(
+        &self,
+        config: &TimeConfig,
+        speaker: crate::speech::Speaker,
+        board: Arc<B>,
+    ) -> ring::Ringer<B> {
+        ring::Ringer {
+            store: self.store.clone(),
+            changed: self.changed.clone(),
+            zone: self.zone.clone(),
+            clock: self.clock.clone(),
+            conversations: self.conversations.clone(),
+            config: config.clone(),
+            speaker,
+            board,
+        }
     }
 
     /// The device that a timer set in this conversation belongs to.
@@ -295,6 +340,7 @@ impl Time {
             device = ?item.device,
             "timer or reminder set"
         );
+        self.changed.notify_one();
         Ok(item)
     }
 
@@ -350,6 +396,7 @@ impl Time {
             ));
         };
         info!(id = item.id, kind = ?item.kind, "timer or reminder cancelled");
+        self.changed.notify_one();
         Ok(match item.kind {
             Kind::Timer => format!(
                 "Minuteur {}{} annulé.",
@@ -359,6 +406,12 @@ impl Time {
             Kind::Reminder => format!("Rappel {} annulé.", item.id),
         })
     }
+}
+
+fn lock(store: &Mutex<Store>) -> MutexGuard<'_, Store> {
+    store
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn zone_name(config: &TimeConfig) -> &str {
@@ -968,7 +1021,7 @@ mod tests {
         let file = std::fs::read_to_string(bench.dir.path().join("timers.json")).unwrap();
         assert!(!file.contains("\"timer\""), "{file}");
         assert!(file.contains("\"reminder\""), "{file}");
-        // Down for 3 hours: it would be said late (the next unit), so it is kept.
+        // Down for 3 hours: it is kept, for the ringer to say it late.
         let mut bench = Bench::at(EVENING);
         bench.ok("timer", json!({"seconds": 600})).await;
         bench.clock.advance(Duration::hours(3));

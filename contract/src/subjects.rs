@@ -16,6 +16,10 @@ pub const STOP: &str = "voice.stop";
 /// A word to add to the vocabulary of the hearing ([`crate::VocabularyAdd`]), a request whose
 /// reply is a [`crate::VocabularyReply`].
 pub const VOCABULARY_ADD: &str = "hearing.vocabulary.add";
+/// The timers and reminders waiting, published by the mind at each change ([`crate::Timers`]).
+pub const TIMER_CHANGED: &str = "mind.timer.changed";
+/// A timer or a reminder rings ([`crate::TimerFired`]).
+pub const TIMER_FIRED: &str = "mind.timer.fired";
 /// The mind asks all the ears, mouths and hands to announce themselves (empty message).
 pub const ANNOUNCE_REQUEST: &str = "announce.request";
 

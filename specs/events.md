@@ -95,6 +95,11 @@ conversation ouverte se ferme d'elle-même après 30 minutes sans échange, donc
 compte pas comme un échange. Une parole arrêtée par un appui y entre quand même (le début a été
 entendu).
 
+**Suivre une parole** (ajouté par T2 le 2026-10-13, voir [`time.md`](time.md)) :
+`Speech::followed()` rend la parole et un canal où `mind` dit `Said` quand il la dit, puis
+`Pressed` au premier appui sur l'appareil (et ferme le canal), ou `Dropped` si elle n'a jamais pu
+être dite. C'est le crochet de la répétition des minuteurs ; l'entrée interne peut s'en servir.
+
 **Le journal** : `asked to speak on its own` (origine, appareil, longueur, `busy`), `speaking on
 its own` (origine, appareil, tour, `waited_ms`, longueur, nombre de phrases, `chime`),
 `barge-in: speech on its own stopped`, `speech on its own dropped` (attente). Jamais le texte. Un

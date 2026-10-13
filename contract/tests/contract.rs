@@ -141,6 +141,23 @@ fn vocabulary() {
 }
 
 #[test]
+fn timers() {
+    let timers: Timers = round_trip(json!({ "items": [
+        { "id": 3, "kind": "timer", "label": "pâtes", "due": "2026-10-13T19:12:11+02:00",
+          "device": "office" },
+        { "id": 4, "kind": "reminder", "text": "appeler le garage",
+          "due": "2026-10-14T09:00:00+02:00", "device": "office" } ] }));
+    assert_eq!(timers.items[1].kind, TimerKind::Reminder);
+    let fired: TimerFired = round_trip(json!({
+        "id": 3, "kind": "timer", "label": "pâtes", "due": "2026-10-13T19:12:11+02:00",
+        "device": "office", "late_s": 0
+    }));
+    assert_eq!(fired.item.id, 3);
+    assert_eq!(subjects::TIMER_CHANGED, "mind.timer.changed");
+    assert_eq!(subjects::TIMER_FIRED, "mind.timer.fired");
+}
+
+#[test]
 fn an_invalid_device_name_is_refused() {
     for name in ["", "Office", "office.living", "of fice", "*", ">"] {
         assert!(Device::new(name).is_err(), "{name:?}");

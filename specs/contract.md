@@ -285,6 +285,10 @@ Proposé le 2026-10-13 (voir [`time.md`](time.md)). L'état des minuteurs et rap
 `kind` vaut `timer` ou `reminder` ; `label` et `text` sont facultatifs ; `late_s` dit le retard
 d'une sonnerie (après un redémarrage de `mind`).
 
+Dans la crate depuis T2 (2026-10-13) : `Timers`, `TimerItem`, `TimerKind`, `TimerFired` (qui
+reprend les champs de `TimerItem` à plat, plus `late_s`), `subjects::TIMER_CHANGED` et
+`subjects::TIMER_FIRED`.
+
 ## Hors du contrat
 
 Le verrouillage du bus (TLS, une nkey par programme et par appareil, les droits par sujet) se

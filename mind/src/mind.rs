@@ -26,7 +26,9 @@
 //!
 //! Emory also speaks on her own ([`Input::Speak`], see [`crate::speech`]): the speech waits until
 //! its device is free, then goes out like an answer, in a turn drawn by the mind, after a tone if
-//! asked. A press stops it, and the next request of the device carries what was said.
+//! asked. A press stops it, and the next request of the device carries what was said. Whoever
+//! follows a speech ([`Speech::followed`]) is told when it is said and of the first press on its
+//! device after that: a timer stops repeating itself there.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -54,7 +56,7 @@ use crate::{
     memory::{Found, Memory},
     request,
     sentences::Splitter,
-    speech::Speech,
+    speech::{Heard, Speech},
     waiting::{Waiter, estimated_speech},
 };
 
@@ -252,6 +254,8 @@ struct DeviceState {
     held: Option<Instant>,
     /// What Emory said on her own, for the next request: when, and the text.
     own: VecDeque<(Instant, String)>,
+    /// Who follows the speeches said on the device, told of the next press.
+    followers: Vec<mpsc::UnboundedSender<Heard>>,
 }
 
 impl DeviceState {
@@ -421,6 +425,10 @@ impl<B: Brain, M: Memory> Mind<B, M> {
 
     /// The owner presses: what Emory says of an older turn stops, and this turn is heard.
     fn pressed(&mut self, device: &Device, turn: TurnId) {
+        // A press, even of a late turn: the owner is there.
+        for follower in self.state(device).followers.drain(..) {
+            let _ = follower.send(Heard::Pressed);
+        }
         if !self.state(device).see(turn) {
             debug!(%device, %turn, "late press: ignored");
             return;
@@ -516,7 +524,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                 c.last_exchange = Instant::now();
             }
             None => {
-                let key = conversations.open();
+                let key = conversations.open_on(device.clone());
                 state.conversation = Some(Conversation {
                     link: Arc::new(Mutex::new(Link::new(opening(
                         brain,
@@ -701,6 +709,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
     fn asked_to_speak(&mut self, speech: Speech) {
         if !has_words(&speech.text) {
             warn!(origin = %speech.origin, device = %speech.device, "speech on its own without words: dropped");
+            speech.tell(Heard::Dropped);
             return;
         }
         info!(
@@ -730,6 +739,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                     waited_ms = pending.asked.elapsed().as_millis() as u64,
                     "speech on its own dropped: the device was never free"
                 );
+                pending.speech.tell(Heard::Dropped);
                 self.pending.remove(i);
                 continue;
             }
@@ -748,11 +758,13 @@ impl<B: Brain, M: Memory> Mind<B, M> {
 
     /// Says a speech on Emory's own, in a turn of its own, like an answer.
     fn speak(&mut self, pending: Pending) {
+        pending.speech.tell(Heard::Said);
         let Speech {
             device,
             text,
             origin,
             chime,
+            follower,
             ..
         } = pending.speech;
         let turn = TurnId::new();
@@ -807,6 +819,10 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             }
         });
         let state = self.state(&device);
+        if let Some(follower) = follower {
+            state.followers.retain(|f| !f.is_closed());
+            state.followers.push(follower);
+        }
         state.own.push_back((Instant::now(), text));
         while state.own.len() > OWN_KEPT {
             state.own.pop_front();

@@ -33,6 +33,22 @@ impl fmt::Display for Origin {
     }
 }
 
+/// What became of a followed speech ([`Speech::followed`]), in this order: `Said`, then
+/// `Pressed` at the first press on its device. Or `Dropped` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// It went to the voice (the tone, if any, then the text).
+    Said,
+    /// The owner pressed on the device after it was said, whatever for.
+    Pressed,
+    /// It was never said: the device was not free before its expiry, or it had no words.
+    Dropped,
+}
+
+/// What a followed speech becomes. Closed (`None`) once nothing more will come: a mind that
+/// stops, or after `Pressed`.
+pub type Follow = mpsc::UnboundedReceiver<Heard>;
+
 /// A text to say on a device, on Emory's own.
 #[derive(Clone, Debug)]
 pub struct Speech {
@@ -44,6 +60,8 @@ pub struct Speech {
     pub chime: bool,
     /// Dropped, and logged, if the device is not free within this time.
     pub expires_in: Duration,
+    /// Told what became of it: when it is said, and the press that follows.
+    pub follower: Option<mpsc::UnboundedSender<Heard>>,
 }
 
 impl Speech {
@@ -54,6 +72,7 @@ impl Speech {
             origin,
             chime: true,
             expires_in: DEFAULT_EXPIRY,
+            follower: None,
         }
     }
 
@@ -65,6 +84,21 @@ impl Speech {
     pub fn expires_in(mut self, expires_in: Duration) -> Self {
         self.expires_in = expires_in;
         self
+    }
+
+    /// Follows the speech: when it is said, then the first press on its device (a timer that
+    /// rings stops its repetition at that press), or that it was dropped.
+    pub fn followed(mut self) -> (Self, Follow) {
+        let (follower, follow) = mpsc::unbounded_channel();
+        self.follower = Some(follower);
+        (self, follow)
+    }
+
+    /// Tells the follower, if any.
+    pub(crate) fn tell(&self, heard: Heard) {
+        if let Some(follower) = &self.follower {
+            let _ = follower.send(heard);
+        }
     }
 }
 

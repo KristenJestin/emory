@@ -72,8 +72,14 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   `time_cancel(id)`. They are kept in `timers.json` in `[data] dir` (written beside, then renamed:
   never half written; read again at start; a file that cannot be read is put aside as
   `timers.json.broken-<date>` and `mind` starts without timers). Durations and due times are said
-  in French words. Nothing rings yet (the next unit). The logs give the id, the kind, the due time
-  and the device, never the label or the text.
+  in French words. At the due time (`src/time/ring.rs`) Emory says a fixed phrase of `[time]`
+  (no LLM) on the device the timer was set on (else `default_device`, else where the owner last
+  spoke), on her own (`src/speech.rs`): a tone, then the phrase once the device is free; again
+  after `repeat_after_s` if nobody pressed on that device, `repeat` times. What came due while
+  `mind` was stopped is said at start-up, « Avec du retard : » first, up to `late_limit_hours`;
+  older, dropped. The state goes on the bus for a display: `mind.timer.changed` (the whole list)
+  and `mind.timer.fired`. The logs give the id, the kind, the due time and the device, never the
+  label or the text.
 - **The memory**: one connection to Hippocampe kept open. Each sentence heard is searched as it is
   (top 5, given up beyond 300 ms); at the end of the turn, the title, summary and excerpt of the
   entries found go into the request, with what Hippocampe flags for the day (`briefing`) in the

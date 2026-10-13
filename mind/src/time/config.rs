@@ -56,24 +56,24 @@ pub struct TimeConfig {
     /// The zone in which a reminder « at nine » is understood and the hours are said: an IANA
     /// name (`Europe/Paris`); empty, the system's (`TZ`).
     pub timezone: String,
-    /// The device that rings when the timer has none. T2.
+    /// The device that rings when the timer has none; without it, where the owner last spoke.
     pub default_device: Option<String>,
     /// The most timers and reminders waiting at once.
     pub max_active: usize,
-    /// A short tone before the phrase. T2.
+    /// A short tone before the phrase.
     pub chime: bool,
-    /// How many times the phrase is said again if nobody pressed. T2.
+    /// How many times the phrase is said again if nobody pressed.
     pub repeat: u32,
-    /// Seconds before it is said again. T2.
+    /// Seconds before it is said again.
     pub repeat_after_s: u64,
-    /// What came due during a stop longer than this many hours is dropped, not said. T2 says what
-    /// is kept; the start of the module already drops the rest.
+    /// What came due during a stop longer than this many hours is dropped, not said; what is less
+    /// late is said « Avec du retard ».
     pub late_limit_hours: u64,
-    /// What is said when a labelled timer ends. `{label}`. T2.
+    /// What is said when a labelled timer ends. `{label}`.
     pub timer_done: String,
-    /// What is said when a timer without a label ends. `{duration}`, in words. T2.
+    /// What is said when a timer without a label ends. `{duration}`, in words.
     pub timer_done_unlabeled: String,
-    /// What is said when a reminder comes due. `{text}`. T2.
+    /// What is said when a reminder comes due. `{text}`.
     pub reminder: String,
 }
 

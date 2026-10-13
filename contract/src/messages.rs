@@ -266,3 +266,45 @@ impl VocabularyReply {
         }
     }
 }
+
+/// A timer (a duration) or a reminder (a text at a time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerKind {
+    Timer,
+    Reminder,
+}
+
+/// A timer or a reminder, as the mind keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimerItem {
+    pub id: u64,
+    pub kind: TimerKind,
+    /// A timer: what it is for, if the person said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A reminder: what to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub due: Timestamp,
+    /// The device it rings on, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<Device>,
+}
+
+/// All the timers and reminders waiting (`mind.timer.changed`), soonest first, published at
+/// each creation, cancellation and ring: a display shows them without asking the mind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Timers {
+    pub items: Vec<TimerItem>,
+}
+
+/// A timer or a reminder rings (`mind.timer.fired`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimerFired {
+    #[serde(flatten)]
+    pub item: TimerItem,
+    /// How late it rings, in seconds (after a stop of the mind).
+    #[serde(default)]
+    pub late_s: u64,
+}
