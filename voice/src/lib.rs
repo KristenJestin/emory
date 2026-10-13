@@ -8,6 +8,7 @@ pub mod cue;
 pub mod device;
 pub mod engine;
 pub mod gain;
+pub mod loudness;
 pub mod nats;
 pub mod queue;
 pub mod text;
@@ -46,6 +47,12 @@ fn voice_message(subject: &str) -> Option<VoiceMessage> {
 
 /// Runs the voice until the program stops (Ctrl-C or SIGTERM). Fails if the bus subscription ends.
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    if config.loudness.enabled && config.gain != 1.0 {
+        warn!(
+            gain = config.gain,
+            "[loudness] is enabled: gain is ignored, the target sets the level"
+        );
+    }
     let nats = nats::connect(&config).await?;
     let engine = engine::Engine::new(
         &config.engine_url,

@@ -96,6 +96,9 @@ est arrondie, jamais coupée. La courbe n'a pas de mémoire, donc rien ne claque
 deux morceaux. Avec un gain d'exactement 1, les octets passent tels quels (comportement
 d'avant).
 
+**Remplacé en partie** par l'étage de sonie, plus bas : quand `[loudness]` est activé, `gain` est
+ignoré. Il reste tel quel, octet pour octet, quand l'étage est éteint.
+
 **Mesuré le 2026-10-13** sur un bus à part, avec `voice` et Pocket réels (`voice-try`, cinq
 phrases de 1,6 à 5 s, une fois chacune par gain, rien de joué) : les pics sont de 0,29 à 0,37 à
 `gain = 1` et de 0,58 à 0,93 à `gain = 2` (aucun échantillon au-dessus de 0,976). Pocket n'est
@@ -103,6 +106,135 @@ pas déterministe : sur cinq autres phrases passées d'un trait, le pic allait d
 à 0,72 (`gain = 2`) et 0,96 (`gain = 3`). **Réglé à 2,0** dans `dev/voice.toml` ; `dev/voice-kyutai.toml`
 a aussi 2,0, sans mesure (le moteur Kyutai ne tournait pas), le limiteur gardant le son sous le
 maximum. **Jamais écouté** : le niveau perçu par rapport au ton à 0,1 reste à juger à l'oreille.
+
+## La sonie de la voix (2026-10-13)
+
+Kris a écouté la voix au casque avec `gain = 1`, 2, 3 puis 5. À 2 elle est propre mais encore
+nettement plus faible que la musique, les vidéos et les notifications ; à 3 et 5, « ça grésille ».
+Le gain ne pouvait pas régler cela : la parole d'un moteur a un **facteur de crête** élevé (des pics
+courts, un niveau moyen bas) alors que les autres sons sont masterisés fort, donc compressés. Pour
+égaler leur niveau moyen avec un simple gain, il faut des pics qui dépassent le maximum, et le
+limiteur sans mémoire de `gain.rs` les aplatit : c'est de la distorsion (mesurée : 3 % à `gain = 3`
+sur un sinus de 0,35, 20 % à `gain = 5`). Il manquait ce que fait tout master : une compression,
+un limiteur qui voit les pics venir, et un niveau cible.
+
+**Construit** (`voice/src/loudness.rs`, étage `[loudness]` de la configuration, éteint par défaut).
+Sur l'audio de **tout** moteur (Pocket et Kyutai), morceau par morceau, juste avant l'envoi au
+mouth. Le signal d'attente (ton, pulsation) n'y passe pas : il garde `[cue] volume`.
+
+1. **Une mesure du niveau de la parole** en LUFS : pondération K de la BS.1770 (en `f64`, pour
+   toute fréquence d'échantillonnage), blocs de 10 ms, une porte à -50 LUFS et une autre 20 LU
+   sous la parole entendue jusqu'ici (les pauses et les souffles ne comptent pas), mémoire qui
+   s'estompe en 4 s. Elle n'est crue qu'après 40 ms de parole : le premier bloc est souvent le
+   début doux d'une consonne. C'est une approximation en flux de la sonie intégrée ; mesurée sur
+   huit phrases de Pocket contre la BS.1770 complète (blocs de 400 ms), elle lit 1,5 dB de plus en
+   moyenne (de 0,8 à 3,2 : les pauses que la fenêtre de 400 ms moyenne), ce que l'étage retire. Les
+   chiffres de ce document sont ceux de la BS.1770 complète, vérifiée contre `ffmpeg -af ebur128`
+   (mêmes valeurs à 0,1 dB près sur les phrases brutes).
+2. **Un compresseur** qui travaille **par rapport à ce niveau** (seuil en dB au-dessus de la
+   parole, pas un niveau absolu : il suit le moteur et la cible). Détecteur de crête sur le canal
+   le plus fort, courbe à genou doux de 6 dB, rapport 3, attaque 5 ms, relâchement 80 ms, lissé en
+   dB : il baisse les syllabes fortes vers la moyenne, ce qui donne de la marge au gain.
+3. **Un gain de rattrapage** : l'écart entre la cible et le niveau de la parole compressée, lissé
+   (constante de temps de 5 ms au premier bloc crû, qui monte à 150 ms), entre -12 et +24 dB. Il
+   ne dépend que du signal avant lui (pas de boucle), et reste à 0 dB tant qu'il n'y a pas de
+   parole à mesurer : un souffle sous -50 LUFS n'est jamais amplifié.
+4. **Un limiteur à anticipation** (`lookahead_ms`, 5 ms par défaut) : le signal est retardé de
+   l'anticipation ; pour chaque échantillon on calcule le gain qui le garderait sous le plafond,
+   on prend le minimum de ces gains sur la fenêtre d'anticipation, un relâchement de 50 ms, puis
+   une moyenne mobile de la même longueur. Le gain est donc une rampe douce qui descend **avant**
+   le pic et n'est jamais au-dessus de ce qu'un échantillon de sa fenêtre demande : rien ne passe
+   le plafond (-1 dBFS par défaut) et rien n'est écrêté. Un écrêtage de sécurité reste en dernier
+   recours et est compté (`clipped`) ; il n'a servi dans aucun test ni aucune mesure.
+
+**L'état vit par phrase**, pas par tour : chaque phrase est une synthèse indépendante, avec son
+`Emory-End` et sa numérotation, et le moteur a ses propres écarts de niveau d'une phrase à l'autre
+(Pocket varie de 5 à 10 dB). L'étage est créé au premier son (le format est alors connu), traverse
+tous les morceaux de la phrase (le résultat est identique quel que soit le découpage, testé de 1
+échantillon à 5000), et le **dernier morceau** (celui qui porte `Emory-End`) reçoit aussi ce que
+l'anticipation retenait : rien n'est perdu, la phrase fait exactement la même durée. Une phrase
+coupée (`voice.stop`) ne publie rien, comme avant. Essayé puis retiré : passer le gain de rattrapage
+final d'une phrase à la suivante comme point de départ ; avec des écarts de 10 dB entre phrases il
+faisait déborder le début de la phrase suivante (limiteur jusqu'à 2,6 dB au lieu de 1,2) sans
+bénéfice mesuré sur l'attaque.
+
+**La relation avec `gain`** : quand `[loudness]` est activé, `gain` est **ignoré** (la cible
+fixe le niveau ; un gain avant un étage qui rattrape le niveau serait annulé) et `voice` le dit au
+démarrage s'il est différent de 1. Éteint (le défaut), `gain` marche exactement comme avant,
+octet pour octet.
+
+**Les clés** (toutes dans `[loudness]`, défauts qui ne changent rien tant que `enabled = false`) :
+
+| clé | défaut | plage | rôle |
+|---|---|---|---|
+| `enabled` | `false` | | allume l'étage |
+| `target` | -16 | -40 à -6 | sonie de la parole, en LUFS |
+| `ceiling` | -1 | -12 à -0,1 | dBFS que rien ne dépasse |
+| `lookahead_ms` | 5 | 1 à 20 | anticipation du limiteur, et retard de l'étage |
+| `ratio` | 3 | 1 à 20 | rapport du compresseur (1 : aucun) |
+| `threshold` | 3 | -20 à 20 | dB au-dessus de la parole où il commence |
+| `attack_ms` | 5 | 0,1 à 100 | |
+| `release_ms` | 80 | 1 à 2000 | |
+
+Une valeur hors plage, ou une cible à moins de 3 dB sous le plafond (la parole ne peut pas être
+aussi forte sans être aplatie), arrête le démarrage avec un message qui nomme la clé et la plage.
+
+**À propos du chiffre** : la BS.1770 compte un seul canal comme un seul canal. Une voix mono jouée
+sur deux écouteurs est 3 dB plus forte que ce que le LUFS lu dessus annonce ; pour la comparer à
+une musique stéréo à -14 LUFS, il faut donc viser environ -17 sur le mono. Le défaut (-16) et la
+valeur de `dev/` (-14) sont lus sur le flux tel qu'envoyé, en mono : -14 mono, joué sur deux
+écouteurs, équivaut à environ -11 en stéréo, plus fort que la musique à -14. C'est voulu pour
+rattraper les vidéos et les notifications, que Kris trouve plus fortes ; si c'est trop, -16 est
+le premier réglage à essayer.
+
+**Mesuré le 2026-10-13** sur huit phrases de Pocket (estelle, 1,5 à 5 s), brutes puis traitées
+par le même code que `voice` (`voice/examples/loudness-check.rs`, rien de joué) :
+
+| | LUFS moyen | écart entre phrases | pic maximal | échantillons au pic (max) |
+|---|---|---|---|---|
+| `gain = 1` | -23,3 | 10,8 LU | -7,3 dBFS | 2 |
+| `gain = 2` | -17,3 | 10,8 LU | -1,3 dBFS | 2 |
+| `gain = 3` | -13,8 | 10,8 LU | 0,0 dBFS | 2 |
+| `gain = 5` | -9,8 | 9,9 LU | 0,0 dBFS | 109 |
+| étage, cible -16 | -15,9 | 3,3 LU | -1,0 dBFS | 1 |
+| étage, cible -14 | -14,0 | 3,6 LU | -1,0 dBFS | 5 |
+
+Le gros de l'effet est le nivellement d'une phrase à l'autre ; l'écrasement dans la phrase est
+modeste (crête, pic moins sonie, de 13,5 dB en moyenne à 13,0 à -16 et 12,4 à -14), le compresseur
+étant réglé doux : plus fort, il tire les phrases courtes sous la cible. Le détail par phrase est
+dans le rapport de l'unité. À `gain = 2`, le réglage précédent, la
+parole est à -17,3 LUFS en moyenne ; le niveau « normal » des services de streaming est de -14 à
+-16 LUFS (c'est un chiffre de l'industrie, rien n'a été enregistré sur la sortie du PC), et les
+vidéos ou les notifications sont souvent masterisées plus fort. À -14, la voix est donc 3 dB
+au-dessus de l'ancien réglage, sans pic aplati. L'écart entre phrases passe de 10,8 à 3,3 LU : la
+dispersion restante vient surtout de la mesure en flux, qui s'écarte de 0,8 à 3,2 dB de la
+BS.1770 selon la phrase (les phrases courtes à pauses).
+
+**Distorsion** (même outil, `tones`) : THD = harmoniques 2 à 8 contre le fondamental.
+
+| signal | gain 3 + limiteur `tanh` | gain 3 écrêté | étage |
+|---|---|---|---|
+| sinus de 1 kHz à 0,35, régime établi | -30 dB (3 %) | | -82 dB |
+| rafale de 1 kHz 20 dB plus forte que ce qui précède, tenue au plafond | -10 dB | -10 dB | -69 dB |
+| même rafale à 200 Hz | -10 dB | -10 dB | -55 dB |
+| même rafale à 3 kHz | -15 dB | -15 dB | -80 dB |
+
+(Pour `gain = 5` sur le sinus : -14 dB.) Le pic de l'étage est exactement le plafond (0,8913), et
+le compteur d'écrêtage de sécurité reste à 0 sur tous les signaux, dont du bruit à pleine
+échelle et un clic de 30 dB. Le défaut restant, à basse fréquence, vient du détecteur de crête du
+compresseur dont le gain ondule à la fréquence du signal ; il est à -55 dB, loin du seuil audible.
+
+**Latence et calcul** : l'étage ajoute l'anticipation (5 ms) au contenu, pas au temps du premier
+son : le premier morceau part dès que le moteur envoie les 80 ms de son premier paquet, 5 ms plus
+court (les 5 ms manquantes reviennent au dernier morceau). Mesuré de bout en bout avec `voice` et
+Pocket réels (8 phrases par réglage, mon propre NATS) : `first_sound_ms` moins `engine_first_ms`
+(ce que `voice` ajoute) vaut 0 ms sans l'étage (16 phrases) et 0 ou 1 ms avec (16 phrases, 2 fois 1 ms). Le calcul
+coûte 1,9 ms par seconde d'audio (0,19 % du temps réel, un seul cœur, en `--release`) et 0,07 ms
+au plus pour le premier morceau de 60 ms.
+
+**Jamais écouté** : le niveau perçu au casque contre « les autres sons » est à juger à l'oreille,
+avec les fichiers d'essai de `.agent-relay/scratch/loudness/ecoute/` (avant, `gain` 2, 3 et 5,
+puis l'étage à -16, -14 et -12).
 
 ## L'interruption
 

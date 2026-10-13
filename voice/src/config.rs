@@ -16,6 +16,17 @@ use serde::{Deserialize, Serialize};
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
 /// # gain = 1.0                       # loudness of the voice, 0.1 to 8: 1 = as the engine says it
+///                                    # (ignored when [loudness] is enabled)
+///
+/// # [loudness]                       # compressor, look-ahead limiter and target level of the voice
+/// # enabled = false                  # off by default: the voice is sent as the engine says it
+/// # target = -16.0                   # LUFS the speech is brought to (-40 to -6)
+/// # ceiling = -1.0                   # dBFS nothing goes past (-12 to -0.1)
+/// # lookahead_ms = 5.0               # delay the limiter looks ahead (1 to 20)
+/// # ratio = 3.0                      # compression ratio (1 = none, up to 20)
+/// # threshold = 3.0                  # dB above the speech level where the compression starts
+/// # attack_ms = 5.0
+/// # release_ms = 80.0
 ///
 /// # [cue]                            # the waiting cue (tone, pulse), these are the defaults
 /// # volume = 0.3                     # peak of the tone, 0 to 1
@@ -75,6 +86,10 @@ pub struct Config {
     /// twice the amplitude (about +6 dB). What would go past full scale is eased, not clipped.
     #[serde(default = "default_gain")]
     pub gain: f32,
+    /// The loudness stage of the voice (compressor, look-ahead limiter, target level). When it is
+    /// enabled it sets the level and `gain` is ignored.
+    #[serde(default)]
+    pub loudness: LoudnessSettings,
 }
 
 /// The voice engines `voice` knows how to call.
@@ -147,6 +162,73 @@ impl Default for CueSettings {
 impl CueSettings {
     pub fn pulse_interval(&self) -> Duration {
         Duration::from_millis(self.pulse_interval_ms)
+    }
+}
+
+/// The loudness stage of the voice (`voice/src/loudness.rs`). Disabled by default: with
+/// `enabled = false` the audio is sent as the engine says it (or with `gain`).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoudnessSettings {
+    /// Turns the stage on. When it is on, `target` sets the level and `gain` is ignored.
+    pub enabled: bool,
+    /// The loudness the speech is brought to, in LUFS (K-weighted, gated, over the sentence so
+    /// far). Streaming services normalise to about -14 to -16.
+    pub target: f32,
+    /// What no sample goes past, in dBFS.
+    pub ceiling: f32,
+    /// How far ahead of a peak the limiter starts lowering the gain, in milliseconds. It is also
+    /// the delay the stage adds to the first sound.
+    pub lookahead_ms: f32,
+    /// Compression ratio above the threshold: 3 lets 3 dB over come out 1 dB over. 1 is none.
+    pub ratio: f32,
+    /// Where the compression starts, in dB above the speech level (not an absolute level, so it
+    /// follows the engine and the `target`).
+    pub threshold: f32,
+    /// How fast the compressor lowers the gain, in milliseconds.
+    pub attack_ms: f32,
+    /// How fast the compressor lets the gain come back, in milliseconds.
+    pub release_ms: f32,
+}
+
+impl Default for LoudnessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target: -16.0,
+            ceiling: -1.0,
+            lookahead_ms: 5.0,
+            ratio: 3.0,
+            threshold: 3.0,
+            attack_ms: 5.0,
+            release_ms: 80.0,
+        }
+    }
+}
+
+impl LoudnessSettings {
+    fn check(&self) -> anyhow::Result<()> {
+        let range = |name: &str, value: f32, low: f32, high: f32| {
+            anyhow::ensure!(
+                (low..=high).contains(&value),
+                "loudness.{name} must be between {low} and {high}"
+            );
+            Ok(())
+        };
+        range("target", self.target, -40.0, -6.0)?;
+        range("ceiling", self.ceiling, -12.0, -0.1)?;
+        range("lookahead_ms", self.lookahead_ms, 1.0, 20.0)?;
+        range("ratio", self.ratio, 1.0, 20.0)?;
+        range("threshold", self.threshold, -20.0, 20.0)?;
+        range("attack_ms", self.attack_ms, 0.1, 100.0)?;
+        range("release_ms", self.release_ms, 1.0, 2000.0)?;
+        anyhow::ensure!(
+            self.target + 3.0 <= self.ceiling,
+            "loudness.target ({}) must be at least 3 dB below loudness.ceiling ({}): speech cannot be that loud without being flattened",
+            self.target,
+            self.ceiling
+        );
+        Ok(())
     }
 }
 
@@ -227,6 +309,7 @@ impl std::str::FromStr for Config {
             (0.1..=8.0).contains(&config.gain),
             "gain must be between 0.1 and 8"
         );
+        config.loudness.check()?;
         anyhow::ensure!(
             (0.0..=1.0).contains(&config.cue.volume),
             "cue.volume must be between 0 and 1"
@@ -295,6 +378,105 @@ mod tests {
         ] {
             assert!(format!("{base}{bad}\n").parse::<Config>().is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_loudness_stage_is_off_by_default_and_its_keys_are_set_and_checked() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        let c: Config = base.parse().unwrap();
+        assert_eq!(c.loudness, super::LoudnessSettings::default());
+        assert!(!c.loudness.enabled);
+        assert_eq!((c.loudness.target, c.loudness.ceiling), (-16.0, -1.0));
+        let c: Config = format!(
+            "{base}gain = 2\n[loudness]\nenabled = true\ntarget = -14\nceiling = -2\nlookahead_ms = 8\nratio = 2.5\nthreshold = 0\nattack_ms = 3\nrelease_ms = 120\n"
+        )
+        .parse()
+        .unwrap();
+        assert_eq!(
+            c.loudness,
+            super::LoudnessSettings {
+                enabled: true,
+                target: -14.0,
+                ceiling: -2.0,
+                lookahead_ms: 8.0,
+                ratio: 2.5,
+                threshold: 0.0,
+                attack_ms: 3.0,
+                release_ms: 120.0,
+            }
+        );
+        assert_eq!(c.gain, 2.0, "the gain is kept");
+        // One key alone leaves the others at their defaults.
+        let c: Config = format!("{base}[loudness]\nenabled = true\n")
+            .parse()
+            .unwrap();
+        assert_eq!(
+            c.loudness,
+            super::LoudnessSettings {
+                enabled: true,
+                ..Default::default()
+            }
+        );
+        for ok in [
+            "ratio = 1",
+            "ratio = 20",
+            "target = -40",
+            "ceiling = -0.1",
+            "lookahead_ms = 20",
+        ] {
+            assert!(
+                format!("{base}[loudness]\n{ok}\n")
+                    .parse::<Config>()
+                    .is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "target = -5",
+            "target = -41",
+            "target = 0",
+            "ceiling = 0",
+            "ceiling = -13",
+            "ceiling = -20\ntarget = -18",
+            "target = -10\nceiling = -11",
+            "lookahead_ms = 0.5",
+            "lookahead_ms = 25",
+            "ratio = 0.5",
+            "ratio = 21",
+            "threshold = 25",
+            "attack_ms = 0",
+            "release_ms = 3000",
+            "release_ms = -1",
+            "target = nan",
+            "enabled = \"yes\"",
+            "nope = 1",
+        ] {
+            assert!(
+                format!("{base}[loudness]\n{bad}\n")
+                    .parse::<Config>()
+                    .is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_loudness_error_names_the_key_and_the_range() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        let message = |text: &str| {
+            format!(
+                "{:#}",
+                format!("{base}{text}").parse::<Config>().unwrap_err()
+            )
+        };
+        assert!(
+            message("[loudness]\nratio = 50\n").contains("loudness.ratio must be between 1 and 20")
+        );
+        let m = message("[loudness]\ntarget = -10\nceiling = -11\n");
+        assert!(
+            m.contains("loudness.target") && m.contains("loudness.ceiling") && m.contains("3 dB"),
+            "{m}"
+        );
     }
 
     #[test]
