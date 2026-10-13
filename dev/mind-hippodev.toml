@@ -1,0 +1,48 @@
+# The mind on the PC through ACP, on the development Hippocampe (test data): to try writing
+# without touching the real memory. Otherwise the same as dev/mind.toml.
+
+[llm]
+mode = "acp"
+command = "npx"
+args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
+model = "claude-haiku-5-5"
+thinking = "off"
+system_prompt = "mind/prompts/system.fr.md"
+
+[owner]
+name = "Kris"
+address = "un homme ; tu le tutoies"
+
+[hippocampe]
+url = "https://hippocampe.dev.krisnet.work/mcp"
+token_file = "~/.krisnet/grenier-dev.token"
+
+# While the answer is prepared the owner hears a short acknowledgement, a contextual phrase if the LLM
+# searches (spaced 800 ms after the end of the first one: its tool call comes about 2.5 s in), and
+# the soft pulse of the `tone` mode in the silences, until the first word.
+# To try the other kind: mode = "tone" (see mind/examples/mind.toml).
+[waiting]
+mode = "off"
+# Essayé le 2026-10-13, à remettre pour comparer (mode = "speech") :
+# source = "both"
+# speech_delay_ms = 100
+# phrases = "dev/waiting.fr.toml"
+# phrase_spacing_ms = 800
+# phrase_spacing_from = "end"
+# pulse_after_speech = true
+# pulse_delay_ms = 600
+
+# The web: Emory answers from Wikipedia (French first, then English) with `web_wikipedia`, and about
+# the weather with `web_weather` (Open-Meteo). No key. The search and the reading of a page come
+# later (specs/web.md).
+[web]
+enabled = true
+
+# The developer's place, by its name: the country after the comma, because « Brest » alone is the
+# one of Belarus for Open-Meteo.
+[web.weather]
+enabled = true
+place = "Brest, France"
+
+[web.wikipedia]
+enabled = true
