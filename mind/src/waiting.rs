@@ -677,7 +677,7 @@ silent = true
     async fn off_does_nothing_at_all() {
         let b = Bench::new(settings(Mode::Off, Source::Both), FILE);
         b.begin();
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         pass(5000).await;
         assert!(b.kinds().is_empty() && !b.waiter.is_waiting(&device()));
         let off = Waiter::off();
@@ -708,7 +708,7 @@ silent = true
         pass(5000).await;
         assert!(b.kinds().is_empty());
         // And a tool called after the answer started says nothing either.
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         assert!(b.kinds().is_empty());
     }
 
@@ -717,12 +717,12 @@ silent = true
         let b = Bench::new(settings(Mode::Speech, Source::Both), FILE);
         b.begin();
         pass(300).await;
-        b.tool("hippocampe_search", json!({"query": "Ali", "limit": 5}));
+        b.tool("hippocampe_search", json!({"query": "Atlas", "limit": 5}));
         assert_eq!(
             b.kinds(),
             [(
                 CueKind::Speech,
-                Some("Je regarde ce que j'ai sur Ali.".to_owned())
+                Some("Je regarde ce que j'ai sur Atlas.".to_owned())
             )]
         );
         // The phrase of the delay does not follow: one phrase for this wait.
@@ -764,7 +764,7 @@ silent = true
         );
         // A tool of the file that is silent, and a tool the file does not know.
         assert!(said("hippocampe_types", json!({})).is_empty());
-        let unknown = said("web_search", json!({"query": "Ali"}));
+        let unknown = said("web_search", json!({"query": "Atlas"}));
         assert!(["Je regarde.", "Je cherche.", "Voyons voir."].contains(&unknown[0].as_str()));
     }
 
@@ -774,13 +774,13 @@ silent = true
         b.begin();
         pass(900).await;
         assert_eq!(b.kinds().len(), 1, "the phrase of the delay");
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         assert_eq!(b.kinds().len(), 1, "too soon after the first one");
         pass(2500).await;
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         assert_eq!(b.kinds().len(), 2, "the second one, 2.6 s after the first");
         pass(3000).await;
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         pass(3000).await;
         assert_eq!(b.kinds().len(), 2, "never more than max_phrases");
     }
@@ -789,7 +789,7 @@ silent = true
     async fn the_source_chooses_between_the_delay_and_the_tool_call() {
         let b = Bench::new(settings(Mode::Speech, Source::Prewritten), FILE);
         b.begin();
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         assert!(b.kinds().is_empty(), "no phrase about the tool");
         pass(900).await;
         assert_eq!(b.kinds().len(), 1);
@@ -798,7 +798,7 @@ silent = true
         b.begin();
         pass(5000).await;
         assert!(b.kinds().is_empty(), "no phrase on the delay");
-        b.tool("hippocampe_search", json!({"query": "Ali"}));
+        b.tool("hippocampe_search", json!({"query": "Atlas"}));
         assert_eq!(b.kinds().len(), 1);
     }
 
@@ -810,12 +810,12 @@ silent = true
         b.waiter.called(
             Some(&other),
             "hippocampe_search",
-            json!({"query": "Ali"}).as_object(),
+            json!({"query": "Atlas"}).as_object(),
         );
         b.waiter.called(
             None,
             "hippocampe_search",
-            json!({"query": "Ali"}).as_object(),
+            json!({"query": "Atlas"}).as_object(),
         );
         assert!(b.kinds().is_empty());
     }
@@ -853,9 +853,9 @@ silent = true
     #[test]
     fn what_is_sayable_is_a_few_words_and_never_an_identifier() {
         for (value, said) in [
-            ("Ali", Some("Ali")),
+            ("Atlas", Some("Atlas")),
             ("  contrat internet ", Some("contrat internet")),
-            ("« Ali » ?", Some("Ali")),
+            ("« Atlas » ?", Some("Atlas")),
             (
                 "la perceuse prêtée à Marc",
                 Some("la perceuse prêtée à Marc"),

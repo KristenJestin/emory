@@ -270,15 +270,15 @@ async fn off_sends_no_cue() {
 #[tokio::test(start_paused = true)]
 async fn a_tool_call_makes_the_phrase_about_what_is_searched() {
     let mut b = bench(Mode::Speech, Source::Both);
-    b.ask("on avait décidé quoi pour Ali").await;
+    b.ask("on avait décidé quoi pour Atlas").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    b.tool("hippocampe_search", serde_json::json!({"query": "Ali"}));
+    b.tool("hippocampe_search", serde_json::json!({"query": "Atlas"}));
     settle().await;
     assert_eq!(
         b.out.all(),
         [Out::Cue(
             CueKind::Speech,
-            Some("Je regarde ce que j'ai sur Ali.".to_owned())
+            Some("Je regarde ce que j'ai sur Atlas.".to_owned())
         )]
     );
     // The answer comes: nothing more of the cue.

@@ -400,7 +400,7 @@ mod tests {
     async fn the_observer_is_told_of_each_call_with_its_arguments() {
         let calls = Arc::new(Calls::default());
         let tools = Tools::new(vec![Arc::new(Old)]).observed_by(calls.clone());
-        let arguments = serde_json::json!({"query": "Ali"}).as_object().cloned();
+        let arguments = serde_json::json!({"query": "Atlas"}).as_object().cloned();
         let key = ConversationKey("k".to_owned());
         tools
             .call_in("old_thing", arguments.clone(), Some(key.clone()))
