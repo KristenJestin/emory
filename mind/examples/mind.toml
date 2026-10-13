@@ -67,13 +67,22 @@ address = "une femme ; tu la tutoies"   # free text, in the language of the inst
 enabled = true
 timeout_ms = 2000   # how long to wait for the hearing's reply
 
-# The web (`web_wikipedia`: the summary of a Wikipedia article, French first). Every key has the
-# value shown; without this section the module is on with these values. No key, no account.
+# The web (`web_weather`: the weather; `web_wikipedia`: the summary of a Wikipedia article, French
+# first). Every key has the value shown; without this section the module is on with these values.
+# No key, no account.
 [web]
 enabled = true         # false takes every web tool away
 # user_agent = "Emory/0.1 (assistant vocal; contact: you@example.org)"
 #                      # sent to Wikimedia, which wants a way to reach the author: add a contact
 timeout_ms = 5000      # for one call to an API
+
+[web.weather]
+enabled = true
+place = ""             # your place, by its name (Open-Meteo finds it): "Lyon", and "Lyon, France" when
+#                      # a name is shared by cities of several countries. Empty: the LLM is given none
+# latitude = 45.75     # optional, both or none: they save the lookup of the name
+# longitude = 4.85
+cache_minutes = 10     # a forecast is kept this long (0: never)
 
 [web.wikipedia]
 enabled = true

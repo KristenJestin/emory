@@ -53,14 +53,19 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   default). The rule is held by `mind`, not left to the LLM; the proposals die with the
   conversation. `enabled = false` takes the two tools away.
 - **The web** (`src/web/`, `[web]`, `specs/web.md`): the module `web`, with one HTTP client kept
-  open for its tools. For now `web_wikipedia(query)`: searches the title on Wikipedia (French
+  open for its tools. `web_weather(place?, days?)`: the weather now and in the next days (1 to 7, 2 by
+  default) from Open-Meteo, for the place asked or the owner's (`[web.weather] place`, a name found
+  by Open-Meteo: `"Lyon, France"` when the name is shared by cities of several countries;
+  optionally `latitude` and `longitude`), in whole degrees, the sky in French words (the WMO codes
+  are in `prompts/weather.fr.toml`) and the days named; a forecast is kept `cache_minutes`.
+  `web_wikipedia(query)`: searches the title on Wikipedia (French
   first, then English, `[web.wikipedia] languages`), gives the summary of the first one without its
   pronunciation, cut to `max_chars`, or the other titles found when the page is a disambiguation
   page. Failures are said to the LLM in one sentence. No key, no account; `[web] user_agent` is
   where the owner puts a contact for Wikimedia. `enabled = false` takes the tools away. The logs
   give the host, the status, the size and the time of each request, never the question. The tests
   serve recorded answers (`tests/fixtures/web/`); `cargo test -p mind --test web real_wikipedia --
-  --ignored --nocapture` asks the real Wikipedia, by hand.
+  --ignored --nocapture` (or `real_open_meteo`) asks the real service, by hand.
 - **The memory**: one connection to Hippocampe kept open. Each sentence heard is searched as it is
   (top 5, given up beyond 300 ms); at the end of the turn, the title, summary and excerpt of the
   entries found go into the request, with what Hippocampe flags for the day (`briefing`) in the

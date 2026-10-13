@@ -1,6 +1,7 @@
 //! The web module through Emory's MCP server, and its HTTP client, against a server of the tests
-//! on the loopback that serves recorded answers of Wikipedia (`tests/fixtures/web/`). Nothing
-//! reaches the internet, except the test marked `#[ignore]`, run by hand.
+//! on the loopback that serves recorded answers of Wikipedia and Open-Meteo
+//! (`tests/fixtures/web/`). Nothing reaches the internet, except the tests marked `#[ignore]`, run
+//! by hand.
 
 use std::{
     net::SocketAddr,
@@ -29,6 +30,9 @@ use serde_json::{Value, json};
 
 const SEARCH_EIFFEL: &str = include_str!("fixtures/web/search-fr-tour-eiffel.json");
 const SUMMARY_EIFFEL: &str = include_str!("fixtures/web/summary-fr-tour-eiffel.json");
+const GEOCODE_BREST: &str = include_str!("fixtures/web/weather-geocode-brest.json");
+const GEOCODE_UNKNOWN: &str = include_str!("fixtures/web/weather-geocode-unknown.json");
+const FORECAST_BREST: &str = include_str!("fixtures/web/weather-forecast-brest.json");
 
 /// What the fake Wikipedia was asked: the path and query, and the headers that matter.
 #[derive(Default)]
@@ -37,8 +41,8 @@ struct Seen(Mutex<Vec<Asked>>);
 /// The address asked, the `User-Agent` and the `Accept` of a request.
 type Asked = (String, Option<String>, Option<String>);
 
-/// The fake Wikipedia: the Eiffel Tower, a search that never ends, an answer too heavy, a nonsense
-/// subject with nothing.
+/// The fake Wikipedia and Open-Meteo: the Eiffel Tower, a search that never ends, an answer too
+/// heavy, a nonsense subject with nothing; the weather of Brest, and a place nobody knows.
 async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response {
     let headers: &HeaderMap = request.headers();
     let header = |name| {
@@ -65,6 +69,16 @@ async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response 
                 .to_owned(),
         ),
         "/api/rest_v1/page/summary/Tour_Eiffel" => json(SUMMARY_EIFFEL.to_owned()),
+        "/v1/search" if uri.contains("name=Brest%2C+France") => json(GEOCODE_BREST.to_owned()),
+        "/v1/search" if uri.contains("name=lent") => {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            json(GEOCODE_BREST.to_owned())
+        }
+        "/v1/search" => json(GEOCODE_UNKNOWN.to_owned()),
+        "/v1/forecast" if uri.contains("latitude=48.39029&longitude=-4.48628&") => {
+            json(FORECAST_BREST.to_owned())
+        }
+        "/v1/forecast" => (StatusCode::BAD_REQUEST, "{\"error\":true}").into_response(),
         "/heavy" => json("x".repeat(3000)),
         _ => StatusCode::NOT_FOUND.into_response(),
     }
@@ -85,12 +99,14 @@ fn config(toml: &str) -> WebConfig {
     config
 }
 
-/// The module, asking the fake instead of Wikipedia.
+/// The module, asking the fake instead of Wikipedia and Open-Meteo.
 fn web_at(address: SocketAddr, config: &WebConfig) -> Web {
+    let origin = format!("http://{address}");
     Web::new(config)
         .unwrap()
         .unwrap()
-        .wikipedia_at(&format!("http://{address}"))
+        .wikipedia_at(&origin)
+        .weather_at(&origin, &origin)
 }
 
 fn said(result: &rmcp::model::CallToolResult) -> String {
@@ -116,11 +132,12 @@ async fn the_tool_reaches_the_llm_through_emorys_server_and_answers() {
         .await
         .unwrap();
 
-    // What the LLM is offered: one tool, a short description, one required argument.
+    // What the LLM is offered: the weather and Wikipedia, with short descriptions.
     let offered = client.list_all_tools().await.unwrap();
-    assert_eq!(offered.len(), 1);
-    let tool = &offered[0];
-    assert_eq!(tool.name, "web_wikipedia");
+    let mut names: Vec<_> = offered.iter().map(|t| t.name.to_string()).collect();
+    names.sort();
+    assert_eq!(names, ["web_weather", "web_wikipedia"]);
+    let tool = offered.iter().find(|t| t.name == "web_wikipedia").unwrap();
     let description = tool.description.as_deref().unwrap();
     assert!(description.contains("Wikipédia") && description.len() < 100);
     let schema = Value::Object((*tool.input_schema).clone());
@@ -161,7 +178,7 @@ async fn the_tool_reaches_the_llm_through_emorys_server_and_answers() {
     for (tool, arguments) in [
         ("web_wikipedia", json!({"query": "  "})),
         ("web_wikipedia", json!({})),
-        ("web_weather", json!({})),
+        ("web_search", json!({"query": "x"})),
     ] {
         let mut call = CallToolRequestParams::new(tool);
         call.arguments = arguments.as_object().cloned();
@@ -213,9 +230,151 @@ fn the_module_is_not_there_when_it_is_disabled() {
     assert!(
         Web::new(&config("[wikipedia]\nenabled = false"))
             .unwrap()
-            .is_none(),
+            .is_some(),
+        "the weather is left"
+    );
+    assert!(
+        Web::new(&config(
+            "[weather]\nenabled = false\n[wikipedia]\nenabled = false"
+        ))
+        .unwrap()
+        .is_none(),
         "no tool left"
     );
+}
+
+#[tokio::test]
+async fn the_weather_tool_reaches_the_llm_through_emorys_server_and_answers() {
+    let (address, seen) = serve_fake().await;
+    let web = web_at(
+        address,
+        &config("user_agent = \"Emory/test (contact)\"\n[weather]\nplace = \"Brest, France\""),
+    );
+    let server = tools::serve(Tools::new(vec![Arc::new(web)]), ([127, 0, 0, 1], 0).into())
+        .await
+        .unwrap();
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url.as_str())
+                .auth_header(server.key.clone()),
+        ))
+        .await
+        .unwrap();
+
+    // What the LLM is offered: a short description, two optional arguments.
+    let offered = client.list_all_tools().await.unwrap();
+    let tool = offered.iter().find(|t| t.name == "web_weather").unwrap();
+    let description = tool.description.as_deref().unwrap();
+    assert!(description.starts_with("La météo") && description.len() < 120);
+    let schema = Value::Object((*tool.input_schema).clone());
+    assert!(schema.get("required").is_none());
+    assert_eq!(schema["properties"]["place"]["type"], "string");
+    assert_eq!(schema["properties"]["days"]["maximum"], 7);
+
+    // No place: the default one, two days; the requests carry the User-Agent of the configuration.
+    let mut ask = CallToolRequestParams::new("web_weather");
+    ask.arguments = json!({}).as_object().cloned();
+    let result = client.call_tool(ask).await.unwrap();
+    assert_ne!(result.is_error, Some(true), "{}", said(&result));
+    let answer: Value = serde_json::from_str(&said(&result)).unwrap();
+    assert_eq!(answer["place"], "Brest");
+    assert_eq!(answer["now"]["sky"], "ciel dégagé");
+    assert_eq!(answer["days"][0]["day"], "aujourd'hui");
+    assert_eq!(answer["days"][1]["day"], "demain");
+    assert_eq!(answer["days"].as_array().unwrap().len(), 2);
+    let asked = seen.0.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(
+        asked[0]
+            .0
+            .starts_with("/v1/search?name=Brest%2C+France&count=1&language=fr")
+    );
+    assert!(
+        asked[1]
+            .0
+            .starts_with("/v1/forecast?latitude=48.39029&longitude=-4.48628&")
+    );
+    for (_, agent, accept) in &asked {
+        assert_eq!(agent.as_deref(), Some("Emory/test (contact)"));
+        assert_eq!(accept.as_deref(), Some("application/json"));
+    }
+
+    // Three days, the days passed as text; the same forecast is not asked again.
+    let mut ask = CallToolRequestParams::new("web_weather");
+    ask.arguments = json!({"days": "3"}).as_object().cloned();
+    let answer: Value = serde_json::from_str(&said(&client.call_tool(ask).await.unwrap())).unwrap();
+    assert_eq!(answer["days"][2]["day"], "jeudi");
+    assert_eq!(seen.0.lock().unwrap().len(), 2);
+
+    // A place nobody knows: a tool error, in one sentence.
+    let mut ask = CallToolRequestParams::new("web_weather");
+    ask.arguments = json!({"place": "zzqxvkj"}).as_object().cloned();
+    let result = client.call_tool(ask).await.unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(said(&result), "Lieu inconnu : « zzqxvkj ».");
+}
+
+#[tokio::test]
+async fn a_slow_or_broken_weather_service_is_an_error_in_time() {
+    let (address, _) = serve_fake().await;
+    let web = web_at(address, &config("timeout_ms = 300"));
+    let started = Instant::now();
+    let result = web
+        .call("weather", json!({"place": "lent"}).as_object().cloned())
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(said(&result), "La météo ne répond pas pour le moment.");
+
+    // A forecast service that refuses (400, here: coordinates it does not know).
+    let web = web_at(
+        address,
+        &config("[weather]\nplace = \"x\"\nlatitude = 1.0\nlongitude = 2.0"),
+    );
+    let result = web.call("weather", json!({}).as_object().cloned()).await;
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(said(&result), "La météo ne répond pas pour le moment.");
+
+    // No default place and none given.
+    let web = web_at(address, &config(""));
+    let result = web.call("weather", json!({}).as_object().cloned()).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        said(&result).contains("Aucun lieu par défaut"),
+        "{}",
+        said(&result)
+    );
+}
+
+/// By hand, against the real Open-Meteo (a handful of requests):
+/// `cargo test -p mind --test web real_open_meteo -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "reaches the real Open-Meteo"]
+async fn real_open_meteo() {
+    let web = Web::new(&config("[weather]\nplace = \"Brest, France\""))
+        .unwrap()
+        .unwrap();
+    // The default place (geocoding and forecast), the same again (kept: no request), a place
+    // asked with its country, then a nonsense word.
+    for arguments in [
+        json!({}),
+        json!({}),
+        json!({"place": "Lyon", "days": 3}),
+        json!({"place": "zzqxvkj"}),
+    ] {
+        let started = Instant::now();
+        let result = web.call("weather", arguments.as_object().cloned()).await;
+        println!(
+            "{arguments}: {} ms, error = {:?}\n  {}",
+            started.elapsed().as_millis(),
+            result.is_error,
+            said(&result)
+        );
+    }
 }
 
 /// By hand, against the real Wikipedia (a handful of requests):
