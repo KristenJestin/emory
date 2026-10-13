@@ -506,6 +506,25 @@ token_file = "~/t.token"
     }
 
     #[test]
+    fn the_shipped_configurations_are_valid() {
+        use crate::waiting::Mode;
+        let example: Config = include_str!("../examples/mind.toml").parse().unwrap();
+        assert_eq!(example.waiting.mode, Mode::Off);
+        // The example in each mode, with its commented keys switched on.
+        let speech = include_str!("../examples/mind.toml")
+            .replace("mode = \"off\"", "mode = \"speech\"")
+            .replace("# speech_delay_ms", "speech_delay_ms")
+            .replace("# source =", "source =")
+            .replace("# max_phrases", "max_phrases")
+            .replace("# phrases =", "phrases =");
+        let speech: Config = speech.parse().unwrap();
+        assert_eq!(speech.waiting.mode, Mode::Speech);
+        assert_eq!(speech.waiting.max_phrases, 2);
+        let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
+        assert_eq!(dev.waiting.mode, Mode::Tone);
+    }
+
+    #[test]
     fn only_letters_and_digits_count_as_words() {
         assert!(has_words("Je n'ai rien entendu."));
         assert!(has_words("2"));

@@ -344,6 +344,16 @@ mod tests {
     }
 
     #[test]
+    fn the_development_configurations_are_valid() {
+        for text in [
+            include_str!("../../dev/voice.toml"),
+            include_str!("../../dev/voice-kyutai.toml"),
+        ] {
+            text.parse::<Config>().unwrap();
+        }
+    }
+
+    #[test]
     fn tls_and_key_paths_are_read() {
         let c: Config = "nats_url = \"tls://x\"\nengine_url = \"http://e\"\nnats_ca = \"/ca.pem\"\nnats_nkey_seed_file = \"/s.nk\"\n"
             .parse()
