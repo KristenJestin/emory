@@ -39,3 +39,7 @@ path = "src/main.rs"
 [[bin]]
 name = "hearing-replay"
 path = "src/bin/replay.rs"
+
+[[bin]]
+name = "hearing-measure"
+path = "src/bin/measure.rs"

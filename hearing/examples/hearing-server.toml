@@ -1,0 +1,36 @@
+# Configuration of the hearing on a server with an NVIDIA GPU: all the AI computation runs on the
+# card, the CPU stays free for the rest of the machine (decided 2026-10-13, specs/hearing.md).
+# Same file as hearing.toml, with what changes for the GPU:
+#
+#   hearing/scripts/build-cuda.sh                      # the build with the `cuda` feature
+#   EMORY_FP32=1 hearing/scripts/download-models.sh    # adds the fp32 Parakeet (2.5 GB)
+#   hearing /etc/emory/hearing.toml
+#
+# A relative path in this file is read from the folder of this file.
+
+[nats]
+url = "nats://127.0.0.1:4222"
+# ca = "/etc/emory/ca.pem"
+# nkey = "/etc/emory/hearing.nk"
+
+[models]
+vad = "~/.cache/emory/models/silero_vad.onnx"
+# The folder of the full-precision model: encoder.onnx, decoder.onnx, joiner.onnx, tokens.txt, bpe.vocab.
+parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3"
+
+[transcription]
+provider = "cuda"
+# The GPU wants the full-precision weights: int8 stays on the CPU even when asked for the GPU.
+precision = "fp32"
+# No CPU fallback: if the card cannot be had (no driver, a CUDA library missing, no memory left),
+# `hearing` stops at start and says why, instead of running on the CPU without anyone knowing.
+# Set it to `true` to prefer a slow hearing to none (the log then says FALLING BACK TO THE CPU);
+# the fp32 model on the CPU is about 2.3 times slower than the int8 one.
+fallback_to_cpu = false
+threads = 4
+hotwords_score = 2.0
+
+# Silero is tiny: on the GPU it is about seven times slower than on the CPU (measured 2026-10-12),
+# a few milliseconds of CPU per second of audio. It stays on the CPU.
+[vad]
+provider = "cpu"

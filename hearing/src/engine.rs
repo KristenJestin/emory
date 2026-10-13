@@ -1,5 +1,5 @@
-//! The engines, through sherpa-onnx: Silero VAD to cut the sentences, Parakeet TDT 0.6B v3 (int8,
-//! or fp32 for a GPU) to transcribe them.
+//! The engines, through sherpa-onnx: Silero VAD to cut the sentences, Parakeet TDT 0.6B v3 (int8
+//! for the CPU, fp32 for a GPU) to transcribe them.
 //!
 //! The detector is light (12 ms of compute per second of audio on the bench): it runs where the
 //! audio arrives. The transcription is heavy: a thread of its own (see [`Transcriber`]), one
@@ -22,8 +22,9 @@ use tokio::sync::{oneshot, watch};
 use tracing::{debug, warn};
 
 use crate::{
-    config::{ModelsConfig, TranscriptionConfig, VadConfig},
+    config::{ModelsConfig, Precision, Provider, TranscriptionConfig, VadConfig},
     hotwords::{Decoding, Vocabulary},
+    placement,
 };
 
 const SAMPLE_RATE: i32 = 16_000;
@@ -72,6 +73,7 @@ impl Detector {
         };
         let vad = VoiceActivityDetector::create(&config, 30.0)
             .ok_or_else(|| anyhow!("Silero VAD did not start ({})", model.display()))?;
+        placement::verify(settings.provider)?;
         Ok(Self { vad })
     }
 
@@ -290,6 +292,17 @@ pub struct Transcriber {
     stopped: watch::Receiver<bool>,
     _closer: Arc<Closer>,
     takes_words: bool,
+    ready: Ready,
+}
+
+/// How Parakeet came up: where it really computes (the CPU if the fallback was allowed and
+/// taken), with which weights, and how long the load and the warm-up took.
+#[derive(Clone, Copy, Debug)]
+pub struct Ready {
+    pub provider: Provider,
+    pub precision: Precision,
+    pub load: Duration,
+    pub warm_up: Duration,
 }
 
 impl Transcriber {
@@ -301,8 +314,10 @@ impl Transcriber {
         settings: &TranscriptionConfig,
         vocabulary: Arc<Vocabulary>,
     ) -> Result<Self> {
-        settings.provider.check()?;
         let folder = models.parakeet.as_ref();
+        let precision = settings
+            .precision
+            .unwrap_or_else(|| available_precision(folder));
         let decoding = Decoding::settle(settings.decoding_method, &vocabulary.words().list)?;
         let takes_words = decoding.takes_words();
         // The words are given with each sentence (a stream with its own hotwords), not from a
@@ -313,43 +328,65 @@ impl Transcriber {
             (None, true) => Some(path_string(&folder.join("bpe.vocab"))?),
             (_, false) => None,
         };
-        let config = OfflineRecognizerConfig {
-            model_config: OfflineModelConfig {
-                transducer: OfflineTransducerModelConfig {
-                    encoder: Some(path_string(&model_file(folder, "encoder"))?),
-                    decoder: Some(path_string(&model_file(folder, "decoder"))?),
-                    joiner: Some(path_string(&model_file(folder, "joiner"))?),
-                },
-                tokens: Some(path_string(&folder.join("tokens.txt"))?),
-                num_threads: settings.threads.max(1),
-                provider: Some(settings.provider.name().to_owned()),
-                model_type: Some("nemo_transducer".to_owned()),
-                modeling_unit: takes_words.then(|| "bpe".to_owned()),
-                bpe_vocab,
-                ..OfflineModelConfig::default()
-            },
-            decoding_method: Some(decoding.method.name().to_owned()),
-            hotwords_score: settings.hotwords_score,
-            ..OfflineRecognizerConfig::default()
-        };
-        let started = Instant::now();
-        let recognizer = OfflineRecognizer::create(&config)
-            .ok_or_else(|| anyhow!("Parakeet did not start ({})", folder.display()))?;
-        let load = started.elapsed();
         let words = takes_words.then(|| vocabulary.clone());
-        let warm_up = Instant::now();
-        transcribe(
-            &recognizer,
-            words.as_deref(),
-            &vec![0.0; SAMPLE_RATE as usize],
+        let config = |provider: Provider| -> Result<OfflineRecognizerConfig> {
+            Ok(OfflineRecognizerConfig {
+                model_config: OfflineModelConfig {
+                    transducer: OfflineTransducerModelConfig {
+                        encoder: Some(path_string(&model_file(folder, "encoder", precision))?),
+                        decoder: Some(path_string(&model_file(folder, "decoder", precision))?),
+                        joiner: Some(path_string(&model_file(folder, "joiner", precision))?),
+                    },
+                    tokens: Some(path_string(&folder.join("tokens.txt"))?),
+                    num_threads: settings.threads.max(1),
+                    provider: Some(provider.name().to_owned()),
+                    model_type: Some("nemo_transducer".to_owned()),
+                    modeling_unit: takes_words.then(|| "bpe".to_owned()),
+                    bpe_vocab: bpe_vocab.clone(),
+                    ..OfflineModelConfig::default()
+                },
+                decoding_method: Some(decoding.method.name().to_owned()),
+                hotwords_score: settings.hotwords_score,
+                ..OfflineRecognizerConfig::default()
+            })
+        };
+        // Loading, checking the placement and warming up on a second of silence are one step: a
+        // GPU that fails at any of them is handled the same way (an error, or the CPU if allowed).
+        let ((recognizer, load, warm_up), provider) = placement::place(
+            "Parakeet",
+            settings.provider,
+            settings.fallback_to_cpu,
+            |provider| {
+                provider.check()?;
+                let config = config(provider)?;
+                let started = Instant::now();
+                let recognizer = OfflineRecognizer::create(&config)
+                    .ok_or_else(|| anyhow!("Parakeet did not start ({})", folder.display()))?;
+                let load = started.elapsed();
+                placement::verify(provider)?;
+                let warm_up = Instant::now();
+                transcribe(
+                    &recognizer,
+                    words.as_deref(),
+                    &vec![0.0; SAMPLE_RATE as usize],
+                )?;
+                Ok((recognizer, load, warm_up.elapsed()))
+            },
         )?;
+        let ready = Ready {
+            provider,
+            precision,
+            load,
+            warm_up,
+        };
         tracing::info!(
-            provider = settings.provider.name(),
+            provider = provider.name(),
+            precision = precision.name(),
             threads = settings.threads,
             decoding = decoding.method.name(),
             hotwords = vocabulary.words().list.len(),
             load_ms = load.as_millis() as u64,
-            warm_up_ms = warm_up.elapsed().as_millis() as u64,
+            warm_up_ms = warm_up.as_millis() as u64,
             "Parakeet ready"
         );
 
@@ -374,7 +411,13 @@ impl Transcriber {
             queue,
             stopped,
             takes_words,
+            ready,
         })
+    }
+
+    /// Where Parakeet computes and how long it took to come up.
+    pub fn ready(&self) -> Ready {
+        self.ready
     }
 
     /// Queues a sentence of the turn; the reply arrives when its turn has come. Never blocks: when
@@ -444,19 +487,24 @@ fn transcribe(
 
 /// A Parakeet model file: the int8 one when the folder has it, else the full-precision one (the
 /// int8 model gains nothing on a GPU, which wants the fp32 model: see `specs/hearing.md`).
-fn model_file(folder: &Path, name: &str) -> PathBuf {
-    let int8 = folder.join(format!("{name}.int8.onnx"));
-    if int8.exists() {
-        int8
+/// The weights a folder has when the configuration does not say: the int8 ones, else the fp32.
+fn available_precision(folder: &Path) -> Precision {
+    if folder.join("encoder.int8.onnx").exists() {
+        Precision::Int8
     } else {
-        folder.join(format!("{name}.onnx"))
+        Precision::Fp32
     }
+}
+
+/// `encoder.int8.onnx` or `encoder.onnx`, as the precision says.
+fn model_file(folder: &Path, name: &str, precision: Precision) -> PathBuf {
+    folder.join(format!("{name}{}.onnx", precision.suffix()))
 }
 
 fn path_string(path: &Path) -> Result<String> {
     if !path.exists() {
         anyhow::bail!(
-            "{} does not exist (see scripts/download-models.sh)",
+            "{} does not exist (see scripts/download-models.sh; EMORY_FP32=1 adds the fp32 model)",
             path.display()
         );
     }
@@ -474,14 +522,25 @@ mod tests {
     }
 
     #[test]
-    fn the_int8_model_is_preferred_and_the_full_one_is_the_fallback() {
+    fn the_precision_picks_the_files_of_the_folder() {
         let folder = std::env::temp_dir().join(format!("hearing-models-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        assert_eq!(model_file(&folder, "encoder"), folder.join("encoder.onnx"));
-        std::fs::write(folder.join("encoder.int8.onnx"), b"").unwrap();
+        // Only the full model: it is what the folder has, and what is asked for.
+        assert_eq!(available_precision(&folder), Precision::Fp32);
         assert_eq!(
-            model_file(&folder, "encoder"),
+            model_file(&folder, "encoder", Precision::Fp32),
+            folder.join("encoder.onnx")
+        );
+        // Both: the int8 one is the default, but an explicit fp32 gets the full files.
+        std::fs::write(folder.join("encoder.int8.onnx"), b"").unwrap();
+        assert_eq!(available_precision(&folder), Precision::Int8);
+        assert_eq!(
+            model_file(&folder, "encoder", Precision::Int8),
             folder.join("encoder.int8.onnx")
+        );
+        assert_eq!(
+            model_file(&folder, "joiner", Precision::Fp32),
+            folder.join("joiner.onnx")
         );
         std::fs::remove_dir_all(&folder).unwrap();
     }
@@ -543,9 +602,26 @@ mod tests {
         let config = OfflineRecognizerConfig {
             model_config: OfflineModelConfig {
                 transducer: OfflineTransducerModelConfig {
-                    encoder: Some(path_string(&model_file(&folder, "encoder")).unwrap()),
-                    decoder: Some(path_string(&model_file(&folder, "decoder")).unwrap()),
-                    joiner: Some(path_string(&model_file(&folder, "joiner")).unwrap()),
+                    encoder: Some(
+                        path_string(&model_file(
+                            &folder,
+                            "encoder",
+                            available_precision(&folder),
+                        ))
+                        .unwrap(),
+                    ),
+                    decoder: Some(
+                        path_string(&model_file(
+                            &folder,
+                            "decoder",
+                            available_precision(&folder),
+                        ))
+                        .unwrap(),
+                    ),
+                    joiner: Some(
+                        path_string(&model_file(&folder, "joiner", available_precision(&folder)))
+                            .unwrap(),
+                    ),
                 },
                 tokens: Some(path_string(&folder.join("tokens.txt")).unwrap()),
                 num_threads: 4,

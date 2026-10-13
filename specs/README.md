@@ -75,6 +75,15 @@ Décidé le 2026-10-11.
 | `voice` | la voix : synthétise les phrases et renvoie l'audio à la bouche |
 | un conteneur par moteur hors processus | voir « Les moteurs » |
 
+**Sur le serveur, tout le calcul d'IA tourne sur la carte graphique** (décidé le 2026-10-13 : une
+carte NVIDIA de 12 Go, à acheter ; le serveur est aujourd'hui un i5-14400 avec 32 Go, sans carte).
+Kyutai (la voix, environ 4,5 Go) et Parakeet (la transcription, fp32) y tournent ; le processeur du
+serveur est pour les films, la musique et le reste, et ne sert à Emory que de repli, qui se voit
+dans le journal et s'active par la configuration (voir [`hearing.md`](hearing.md)). Une seule
+exception, mesurée : Silero VAD, minuscule, reste sur le processeur. Sur le PC de développement de
+Kris, Emory n'utilise pas la carte en permanence : modèles int8 sur processeur, et la carte seulement
+pour des mesures qu'il autorise.
+
 **Sur chaque appareil, `emory-ear`, `emory-mouth` et `emory-hands`** (ceux dont l'appareil a
 besoin), branchés au bus.
 

@@ -9,7 +9,10 @@
 # it cannot disagree with it.
 #
 # With EMORY_FP32=1 it also downloads the full-precision Parakeet (2.5 GB, from Hugging Face), the
-# one a GPU wants (the int8 model gains nothing there): see hearing/README.md.
+# one a GPU wants (the int8 model gains nothing there): see hearing/README.md. It goes into its own
+# folder, with its bpe.vocab, and is used with `precision = "fp32"`. A download that stopped
+# starts its file again when the script is run again (a file goes to `.part` and is moved only
+# when complete).
 set -euo pipefail
 
 folder="${1:-$HOME/.cache/emory/models}"
@@ -52,7 +55,11 @@ if [[ "${EMORY_FP32:-0}" == "1" ]]; then
             mv "$folder/$full/$file.part" "$folder/$full/$file"
         fi
     done
-    awk '{ printf "%s\t%d\n", $1, -$2 }' "$folder/$full/tokens.txt" > "$folder/$full/bpe.vocab"
+    if [[ ! -s "$folder/$full/bpe.vocab" ]]; then
+        awk '{ printf "%s\t%d\n", $1, -$2 }' "$folder/$full/tokens.txt" > "$folder/$full/bpe.vocab"
+    fi
+    echo "Parakeet fp32 in $folder/$full:"
+    ls -1 "$folder/$full"
 fi
 
 echo "Models in $folder:"

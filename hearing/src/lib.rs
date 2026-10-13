@@ -10,6 +10,7 @@ pub mod corrections;
 pub mod engine;
 pub mod hotwords;
 pub mod level;
+pub mod placement;
 pub mod service;
 pub mod turns;
 pub mod vocabulary;

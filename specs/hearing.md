@@ -28,17 +28,19 @@ au format fixé plus bas, et n'importe quel esprit le lit.
 5. **Une voix n'est jamais un mot de passe.** Emory reconnaît Kris, mais une action sensible
    demande toujours autre chose que sa voix.
 6. **Emory ne gêne pas le reste du serveur.** Le serveur fait aussi du multimédia et d'autres
-   services. Sur le processeur, `hearing` tourne avec des limites strictes : quelques cœurs
-   réservés (par exemple les cœurs E de l'i5-14400), une priorité basse, et un plafond de mémoire
-   par cgroup. Le banc d'essai mesure l'effet sur les autres services. Le processeur n'est
-   qu'un début : la charge passe sur une carte graphique dès que possible.
+   services. **Décidé le 2026-10-13 : sur le serveur, tout le calcul d'IA tourne sur la carte
+   graphique** (voir « Tout le calcul sur la carte du serveur ») ; le processeur est pour les
+   films, la musique et le reste, et ne sert à Emory qu'en repli. Dans ce repli, `hearing` garde
+   des limites strictes : quelques cœurs réservés (par exemple les cœurs E de l'i5-14400), une
+   priorité basse, et un plafond de mémoire par cgroup. Le banc d'essai du 2026-10-11 a mesuré
+   l'effet sur les autres services.
 
 ## Matériel
 
 | Rôle | Machine | Ce qu'elle fait |
 |---|---|---|
 | **L'oreille** (`emory-ear`) | l'appareil (voir le [README](README.md)) : d'abord le PC de Kris avec son casque ; plus tard le Raspberry Pi 4 inutilisé ou une autre machine, avec un micro de pièce | Capte le son, rien d'autre, avec un module par déclencheur (`shortcut`, `button`, plus tard `continuous`). Envoie l'audio au serveur, sur le réseau local, avec le nom de l'appareil. |
-| **Le cerveau auditif** | le serveur (i5-14400, 32 Go, pas de carte graphique aujourd'hui) | Un seul centre pour toutes les oreilles : il reçoit leurs flux, transcrit et envoie les événements à l'esprit ; pour les oreilles de pièce, il fait en plus le mot de réveil, la fin de tour, la reconnaissance des voix, la mémoire tampon et le choix entre deux oreilles qui entendent la même phrase. |
+| **Le cerveau auditif** | le serveur (i5-14400, 32 Go, et une carte graphique NVIDIA de 12 Go à acheter, décidée le 2026-10-13 ; pas de carte graphique aujourd'hui) | Un seul centre pour toutes les oreilles : il reçoit leurs flux, transcrit et envoie les événements à l'esprit ; pour les oreilles de pièce, il fait en plus le mot de réveil, la fin de tour, la reconnaissance des voix, la mémoire tampon et le choix entre deux oreilles qui entendent la même phrase. |
 
 L'oreille et le serveur sont dans le même logement, et suivent Kris s'il déménage. Le serveur est
 relié en Wi-Fi : un flux de voix fait environ 256 kbit/s, ce qui ne pose aucun problème.
@@ -283,10 +285,11 @@ corrections, dans le binaire `hearing` par sherpa-onnx.**
 transcription tombe à 0,7 s. À essayer sur la vraie chaîne : laisser Parakeet déborder sur tous
 les cœurs, en priorité basse, pendant les rafales de transcription.
 
-**Pas de carte graphique pour la version 1** : `hearing` et `voice` tiennent sur les cœurs E
-sans gêner le reste du serveur (aucun temps de cœur P pris, aucun conteneur ralenti). Elle
-deviendra utile pour Whisper turbo, Kyutai TTS 1.6B ou un LLM local. Recherche du 2026-10-08 sur
-la carte (prix et cotes à revérifier avant d'acheter) :
+**Une carte graphique pour le serveur** (le 2026-10-11, `hearing` et `voice` tenaient sur les
+cœurs E sans gêner le reste du serveur, mais trop lentement ; Kris a décidé le 2026-10-12 puis le
+2026-10-13 que le serveur reçoit une carte de 12 Go et que tout le calcul d'IA y passe). Elle sert
+à Parakeet, à Kyutai TTS 1.6B, et peut-être plus tard à Whisper turbo ou à un LLM local.
+Recherche du 2026-10-08 sur la carte (prix et cotes à revérifier avant d'acheter) :
 
 - **Les contraintes.**
   - Le Jonsbo N6 accepte une carte de 275 mm au plus avec ses ventilateurs avant. Son épaisseur
@@ -441,8 +444,98 @@ carte de 12 Go du serveur, ou sur ce PC quand Kyutai sera déchargé (même banc
 enregistrements).
 
 **Décision pour le serveur** : ne pas compter sur l'int8 pour le GPU. Pour la carte de 12 Go,
-configurer le modèle fp32 (`encoder.onnx`, `decoder.onnx`, `joiner.onnx` au lieu des `.int8.onnx`)
-une fois sa mesure faite; en attendant, l'int8 sur CPU reste le défaut.
+le modèle fp32 (`encoder.onnx`, `decoder.onnx`, `joiner.onnx` au lieu des `.int8.onnx`) : voir
+« Tout le calcul sur la carte du serveur » ci-dessous (2026-10-13), qui remplace le « en attendant,
+l'int8 sur CPU reste le défaut » de cette section pour le serveur.
+
+## Tout le calcul sur la carte du serveur (2026-10-13)
+
+**Décision (Kris, 2026-10-13).** Sur le serveur, **tout le calcul d'IA tourne sur la carte
+graphique** (une 12 Go, à acheter) : Kyutai pour la voix (environ 4,5 Go, voir
+[`voice.md`](voice.md)) et Parakeet pour la transcription. Le processeur du serveur est pour les
+films, la musique et tout le reste, pas pour Emory : il ne sert qu'en repli, et un repli se voit
+(voir plus bas). Cela remplace « pas de carte graphique pour la version 1 » et « l'int8 sur CPU
+reste le défaut » pour le serveur. Une seule exception, choisie et mesurée : **Silero reste sur le
+processeur** (voir plus bas).
+
+**Sur le PC de Kris (développement), Emory n'utilise pas la carte en permanence** : il reste sur
+CPU, modèle int8, et `hearing/examples/hearing.toml` ne change pas. La carte du PC ne sert qu'aux
+mesures, une fois que Kris les a autorisées (il arrête lui-même voxtype, qui la tient pour sa
+dictée). Aucun chargement de modèle sur la carte n'a été fait pour préparer cette section.
+
+**Configurer `hearing` pour la carte** (exemple complet : `hearing/examples/hearing-server.toml`).
+
+```sh
+hearing/scripts/build-cuda.sh                      # compilation avec la feature `cuda`
+EMORY_FP32=1 hearing/scripts/download-models.sh    # ajoute Parakeet fp32 (2,5 Go) et son bpe.vocab
+```
+
+| Clé | Valeur pour le serveur | Défaut | Sens |
+|---|---|---|---|
+| `[models] parakeet` | le dossier du modèle fp32 | (obligatoire) | `encoder.onnx`, `decoder.onnx`, `joiner.onnx`, `tokens.txt`, `bpe.vocab` |
+| `[transcription] provider` | `"cuda"` | `"cpu"` | où Parakeet calcule |
+| `[transcription] precision` | `"fp32"` | absente | `"int8"` ou `"fp32"` ; absente, `hearing` prend les fichiers int8 du dossier s'il y en a, sinon les fp32 (comportement d'avant). Donnée, elle est suivie à la lettre : un fichier manquant est une erreur, jamais un autre modèle |
+| `[transcription] fallback_to_cpu` | `false` | `false` | voir « Le repli » |
+| `[vad] provider` | `"cpu"` | `"cpu"` | Silero |
+
+**Le repli : une erreur au démarrage par défaut, le CPU seulement si la configuration le demande.**
+Choix le plus simple et réversible, pour une raison : un serveur qui retombe sans bruit sur le
+processeur ralentit les films et la musique sans que personne le sache, et rend Parakeet 2,3
+fois plus lent en fp32. Donc `provider = "cuda"` sans carte utilisable (compilation sans la
+feature `cuda`, pilote ou bibliothèque CUDA ou cuDNN absente, carte sans assez de mémoire) arrête
+`hearing` au démarrage avec la cause. Avec `fallback_to_cpu = true`, `hearing` charge Parakeet sur
+le processeur et écrit un `warn` : « Parakeet: cuda is unavailable, FALLING BACK TO THE CPU », avec
+la cause ; la ligne `Parakeet ready` donne ensuite le `provider` réel et la `precision`. Les
+modèles fp32 sur CPU font 523 ms par phrase contre 205 ms pour l'int8 : qui veut un repli rapide
+configure l'int8 sur le CPU, pas ce mécanisme.
+- **Le placement est vérifié**, pas seulement demandé. Demander CUDA à onnxruntime ne garantit pas
+  qu'il l'a obtenu : selon la compilation, il peut continuer sur le CPU en ne laissant qu'une ligne
+  sur stderr. Après le chargement, `hearing` vérifie donc (Linux, `/proc/self/maps`) que la
+  bibliothèque `libonnxruntime_providers_cuda` est chargée dans le processus ; sinon c'est la même
+  panne qu'une carte absente (erreur, ou repli annoncé). **À confirmer à la mesure** : cette
+  vérification n'a jamais tourné avec une vraie carte (aucun chargement CUDA n'a été fait). Si elle
+  refuse à tort une carte qui marche, la mesure le montrera au premier essai, et c'est la
+  vérification qu'il faut corriger.
+- Un échec qui arriverait plus tard (mémoire de la carte prise par un autre programme en cours de
+  route) n'est pas un repli : il suit le chemin d'une erreur de transcription. Le repli ne joue
+  qu'au chargement et au réchauffage.
+- Sans effet sur Silero : `[vad] provider = "cuda"` sans carte est toujours une erreur.
+
+**Silero reste sur le processeur** (`[vad] provider = "cpu"`). Mesuré le 2026-10-12 : 3,6 ms de
+calcul par seconde d'audio sur le CPU contre 25 ms sur la carte (7 fois plus lent : le modèle est
+trop petit, il attend ses données), soit environ 0,4 % d'un cœur pour une oreille qui parle en
+continu. C'est l'exception à « tout sur la carte », et elle ne gêne pas le reste du serveur. La
+mesure ci-dessous la refait sur le serveur.
+
+**Le protocole de mesure (préparé le 2026-10-13, pas lancé).** `hearing/scripts/measure-gpu.sh`
+lance, pour chaque enregistrement donné (les 22 phrases de Kris et `fin-coupee` du 2026-10-12, lus
+sur place, jamais copiés ni envoyés), un processus par réglage, l'un après l'autre :
+
+| Parakeet | Décodage | Silero |
+|---|---|---|
+| int8 sur CPU | glouton ; faisceau + mots | CPU |
+| fp32 sur CPU | glouton ; faisceau + mots | CPU |
+| fp32 sur CUDA | glouton ; faisceau + mots | CPU (et une fois, sur CUDA, pour refaire la comparaison) |
+
+Par réglage, dans un tableau Markdown (`results.md`) : temps de chargement, de réchauffage, de
+chaque tour (le meilleur est la mesure qui tient sur une machine chargée), par phrase et pour la
+phrase la plus lente, temps CPU consommé pendant la transcription (en cœurs), VRAM du processus
+(`nvidia-smi`, échantillonnée toutes les 0,2 s) et de la carte, Silero en ms par seconde d'audio,
+et le nombre de phrases dont les mots diffèrent de l'int8 glouton sur CPU. Les textes des
+enregistrements restent dans le dossier de résultats de la machine, hors du dépôt. Elle ne se
+lance qu'avec `--owner-ok` (l'accord de Kris, la carte libérée) ; `--dry-run` montre le plan sans
+rien lancer et `--cpu-only` ne touche pas à la carte.
+
+**À mesurer** (rien de cela n'est connu) :
+- Parakeet fp32 sur CUDA : le temps par phrase, glouton et faisceau (but : bien sous les 205 ms
+  de l'int8 sur CPU), le chargement (le fp32 pèse 2,4 Go de poids), la **VRAM du processus**
+  (estimation 3 Go, non vérifiée ; 7,5 Go avec Kyutai pour 12 Go de carte).
+- Le temps CPU que Parakeet fp32 laisse encore sur le processeur pendant qu'il tourne sur la
+  carte (la part du coût que la carte ne prend pas), à comparer aux 93 % de l'int8 sur la carte.
+- Les phrases dont les mots changent entre int8 et fp32.
+- La vérification du placement CUDA ci-dessus, avec une vraie carte.
+- Le comportement de Silero sur la carte du serveur, refait pour confirmer le facteur 7.
+- Kyutai et Parakeet ensemble sur la carte de 12 Go (pas fait ici : un seul programme à la fois).
 
 ## Le dictionnaire (2026-10-13)
 
