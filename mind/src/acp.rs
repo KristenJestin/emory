@@ -3,7 +3,11 @@
 //!
 //! One connection for the life of `mind`, one session per conversation. The settings of a session
 //! (`_meta` of `session/new`) are those measured on 2026-10-11: our own system prompt, no tool of
-//! Claude Code's own, none of the user's settings or skills, only Emory's MCP server, no thinking.
+//! Claude Code's own, none of the user's settings or skills, only Emory's MCP server, no thinking
+//! unless the configuration asks for it.
+//!
+//! Fast mode is the session option `fast` of `claude-agent-acp` (offered only for the models
+//! that have it), set to `on` by `session/set_config_option` once the session is open.
 
 use std::{
     collections::HashMap,
@@ -17,9 +21,10 @@ use agent_client_protocol::{
         ProtocolVersion,
         v1::{
             CancelNotification, CloseSessionRequest, ContentBlock, HttpHeader, InitializeRequest,
-            McpServer, McpServerHttp, NewSessionRequest, PermissionOptionKind, PromptRequest,
-            RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-            SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent,
+            McpServer, McpServerHttp, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
+            PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+            RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOptionValue,
+            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, TextContent,
         },
     },
 };
@@ -30,6 +35,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     brain::{Brain, Event, SessionId},
+    config::Thinking,
     conversations::{self, ConversationKey},
 };
 
@@ -39,6 +45,9 @@ pub struct SessionSettings {
     pub system_prompt: String,
     pub model: String,
     pub effort: String,
+    pub thinking: Thinking,
+    /// Fast mode: the session option [`FAST_OPTION`] set to `on`.
+    pub fast: bool,
     pub workdir: PathBuf,
     /// Emory's MCP server, the only one the LLM gets.
     pub mcp_url: String,
@@ -70,7 +79,7 @@ impl SessionSettings {
                     "settingSources": [],
                     "skills": [],
                     "strictMcpConfig": true,
-                    "thinking": { "type": "disabled" },
+                    "thinking": self.thinking_meta(),
                 }
             }
         });
@@ -79,6 +88,42 @@ impl SessionSettings {
             _ => unreachable!(),
         }
     }
+
+    /// The thinking of the Agent SDK's options.
+    fn thinking_meta(&self) -> Value {
+        match self.thinking {
+            Thinking::Off => json!({ "type": "disabled" }),
+            Thinking::Adaptive => json!({ "type": "adaptive" }),
+            Thinking::Budget(n) => json!({ "type": "enabled", "budgetTokens": n }),
+        }
+    }
+}
+
+/// The session option of `claude-agent-acp` for fast mode, and its value when on.
+pub const FAST_OPTION: &str = "fast";
+const FAST_ON: &str = "on";
+
+/// Turns fast mode on in a session just opened, if the agent offers it.
+async fn fast_mode(cx: &ConnectionTo<Agent>, opened: &NewSessionResponse) -> anyhow::Result<()> {
+    let offered = opened
+        .config_options
+        .iter()
+        .flatten()
+        .any(|o| o.id.0.as_ref() == FAST_OPTION);
+    anyhow::ensure!(
+        offered,
+        "fast mode asked, but the agent offers no `{FAST_OPTION}` option for this model"
+    );
+    cx.send_request(SetSessionConfigOptionRequest::new(
+        opened.session_id.clone(),
+        FAST_OPTION,
+        SessionConfigOptionValue::value_id(FAST_ON),
+    ))
+    .block_task()
+    .await
+    .map_err(|e| anyhow!("ACP session/set_config_option {FAST_OPTION}: {e}"))?;
+    info!(session = %opened.session_id.0, "fast mode on");
+    Ok(())
 }
 
 /// The streams of the requests in progress, by session.
@@ -315,13 +360,20 @@ fn handle(
         Command::Open(conversation, reply) => {
             let cx = cx.clone();
             let request = settings.request(&conversation);
+            let fast = settings.fast;
             tokio::spawn(async move {
-                let result = cx
-                    .send_request(request)
-                    .block_task()
-                    .await
-                    .map(|r| SessionId(r.session_id.0.to_string()))
-                    .map_err(|e| anyhow!("ACP session/new: {e}"));
+                let result = async {
+                    let opened = cx
+                        .send_request(request)
+                        .block_task()
+                        .await
+                        .map_err(|e| anyhow!("ACP session/new: {e}"))?;
+                    if fast {
+                        fast_mode(&cx, &opened).await?;
+                    }
+                    Ok(SessionId(opened.session_id.0.to_string()))
+                }
+                .await;
                 let _ = reply.send(result);
             });
         }
@@ -422,6 +474,8 @@ mod tests {
             system_prompt: "Tu es Emory.".to_owned(),
             model: "claude-haiku-5-5".to_owned(),
             effort: "low".to_owned(),
+            thinking: Thinking::Off,
+            fast: false,
             workdir: "/tmp/emory".into(),
             mcp_url: "http://127.0.0.1:4321/mcp".to_owned(),
             mcp_key: "k".to_owned(),
@@ -447,6 +501,26 @@ mod tests {
         // The tools know which conversation calls them.
         assert_eq!(servers[0]["headers"][1]["name"], "emory-conversation");
         assert_eq!(servers[0]["headers"][1]["value"], "c-7");
+    }
+
+    #[test]
+    fn the_thinking_of_the_configuration_reaches_the_sdk() {
+        let mut settings = SessionSettings {
+            system_prompt: String::new(),
+            model: "m".to_owned(),
+            effort: "low".to_owned(),
+            thinking: Thinking::Adaptive,
+            fast: false,
+            workdir: "/tmp".into(),
+            mcp_url: String::new(),
+            mcp_key: String::new(),
+        };
+        assert_eq!(settings.thinking_meta(), json!({"type": "adaptive"}));
+        settings.thinking = Thinking::Budget(3000);
+        assert_eq!(
+            settings.thinking_meta(),
+            json!({"type": "enabled", "budgetTokens": 3000})
+        );
     }
 
     fn asked(tool_call: Value) -> RequestPermissionRequest {

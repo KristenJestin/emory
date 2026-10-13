@@ -11,13 +11,15 @@ use agent_client_protocol::{
     schema::v1::{
         AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
         ContentBlock, ContentChunk, InitializeRequest, InitializeResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, PromptResponse, SessionNotification, SessionUpdate,
-        StopReason, TextContent,
+        NewSessionResponse, PromptRequest, PromptResponse, SessionConfigOption,
+        SessionConfigSelectOption, SessionNotification, SessionUpdate,
+        SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, TextContent,
     },
 };
 use mind::{
-    acp::{AcpBrain, SessionSettings},
+    acp::{AcpBrain, FAST_OPTION, SessionSettings},
     brain::{Brain, Event},
+    config::Thinking,
     conversations::ConversationKey,
 };
 use serde_json::Value;
@@ -29,6 +31,10 @@ struct Seen {
     prompts: Mutex<Vec<String>>,
     closed: Mutex<Vec<String>>,
     cancelled: Notify,
+    /// Whether the sessions offer fast mode (as `claude-agent-acp` does for the models that
+    /// have it), and the options set.
+    offers_fast: bool,
+    set: Mutex<Vec<Value>>,
 }
 
 fn chunk(session: &str, text: &str) -> SessionNotification {
@@ -46,7 +52,8 @@ fn start_agent(seen: Arc<Seen>) -> Channel {
     let on_new = seen.clone();
     let on_prompt = seen.clone();
     let on_cancel = seen.clone();
-    let on_close = seen;
+    let on_close = seen.clone();
+    let on_set = seen;
     tokio::spawn(async move {
         let _ = Agent
             .builder()
@@ -64,7 +71,19 @@ fn start_agent(seen: Arc<Seen>) -> Channel {
                 async move |request: NewSessionRequest, responder, _cx| {
                     *on_new.new_session.lock().unwrap() =
                         Some(serde_json::to_value(&request).unwrap());
-                    responder.respond(NewSessionResponse::new("session-1"))
+                    let mut response = NewSessionResponse::new("session-1");
+                    if on_new.offers_fast {
+                        response = response.config_options(vec![SessionConfigOption::select(
+                            FAST_OPTION,
+                            "Fast mode",
+                            "off",
+                            vec![
+                                SessionConfigSelectOption::new("on", "On"),
+                                SessionConfigSelectOption::new("off", "Off"),
+                            ],
+                        )]);
+                    }
+                    responder.respond(response)
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -102,6 +121,17 @@ fn start_agent(seen: Arc<Seen>) -> Channel {
                 agent_client_protocol::on_receive_notification!(),
             )
             .on_receive_request(
+                async move |request: SetSessionConfigOptionRequest, responder, _cx| {
+                    on_set
+                        .set
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::to_value(&request).unwrap());
+                    responder.respond(SetSessionConfigOptionResponse::new(vec![]))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
                 async move |request: CloseSessionRequest, responder, _cx| {
                     on_close
                         .closed
@@ -123,6 +153,8 @@ fn settings() -> SessionSettings {
         system_prompt: "Tu es Emory.".to_owned(),
         model: "claude-haiku-5-5".to_owned(),
         effort: "low".to_owned(),
+        thinking: Thinking::Off,
+        fast: false,
         workdir: "/tmp".into(),
         mcp_url: "http://127.0.0.1:1/mcp".to_owned(),
         mcp_key: "key".to_owned(),
@@ -243,4 +275,45 @@ async fn closing_a_session_ends_its_request() {
         collect(&mut events).await[..],
         [Event::Done(Err(_))]
     ));
+}
+
+#[tokio::test]
+async fn fast_mode_is_set_on_the_session_when_the_agent_offers_it() {
+    let seen = Arc::new(Seen {
+        offers_fast: true,
+        ..Seen::default()
+    });
+    let mut fast = settings();
+    fast.fast = true;
+    fast.model = "claude-opus-5-5".to_owned();
+    let brain = AcpBrain::connect(start_agent(seen.clone()), fast.clone())
+        .await
+        .unwrap();
+    brain.open(&ConversationKey("c1".to_owned())).await.unwrap();
+    let set = seen.set.lock().unwrap().clone();
+    assert_eq!(
+        set,
+        [serde_json::json!({"sessionId": "session-1", "configId": "fast", "value": "on"})]
+    );
+
+    // Without fast mode asked, nothing is set.
+    let quiet = Arc::new(Seen {
+        offers_fast: true,
+        ..Seen::default()
+    });
+    let brain = AcpBrain::connect(start_agent(quiet.clone()), settings())
+        .await
+        .unwrap();
+    brain.open(&ConversationKey("c2".to_owned())).await.unwrap();
+    assert!(quiet.set.lock().unwrap().is_empty());
+
+    // Asked of an agent that does not offer it: the session fails to open, and says why.
+    let none = Arc::new(Seen::default());
+    let brain = AcpBrain::connect(start_agent(none), fast).await.unwrap();
+    let error = brain
+        .open(&ConversationKey("c3".to_owned()))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("fast"), "{error}");
 }
