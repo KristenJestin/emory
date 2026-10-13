@@ -1,0 +1,51 @@
+# Le lexique de prononciation de la voix d'Emory, en français.
+#
+# Un moteur de voix français lit « GitHub » comme « jithub » et « SSH » comme un mot. Avant la
+# synthèse, `voice` passe chaque phrase par ce lexique : il remplace des mots par une écriture que
+# le moteur lit bien. Ce fichier est celui livré avec le programme, utilisé quand la configuration
+# ne donne pas de fichier. Pour avoir le sien, le copier, le modifier, puis donner son chemin dans
+# `lexicon = "..."` de la configuration de `voice` (un chemin relatif part du dossier de ce fichier
+# de configuration ; un fichier donné remplace celui-ci, il ne s'y ajoute pas).
+#
+# Comment ajouter un mot : une ligne dans `[replace]`, le mot tel qu'il est écrit à gauche, comment
+# le dire à droite, écrit comme il se prononce en français :
+#
+#     GitHub = "guite-heub"
+#
+# - Le mot est cherché en entier (« Git » ne touche pas « GitHub »), en respectant les majuscules
+#   (`[replace]`) ou sans (`[replace_any_case]`). Le texte autour, ponctuation comprise, ne bouge pas.
+# - Le plus long gagne : « Wi-Fi 6 » avant « Wi-Fi ». Une entrée l'emporte sur la règle des sigles.
+# - Un mot qui n'est pas que des lettres s'écrit entre guillemets à gauche : "Wi-Fi", "C++".
+# - Un sigle (2 à 6 majuscules ou chiffres : SSH, MP3, 4G) qui n'a pas d'entrée est épelé avec les
+#   noms des lettres : SSH devient « èsse èsse ache ». Avec un « s » en plus (PCs), le « s » tombe.
+#   Pour qu'un sigle soit dit comme un mot, l'ajouter à `not_spelled` ; pour le dire autrement,
+#   lui donner une entrée.
+# - Un moteur ne lit pas toujours comme un autre : si une lettre sonne faux, `[letters]` change
+#   son nom (voir en bas).
+
+# Les sigles dits comme des mots, jamais épelés (ils gardent leur écriture, avec ou sans « s »).
+not_spelled = [
+  "NASA", "OVNI", "UNESCO", "OTAN", "ONU", "RAM", "LED", "LASER", "RADAR", "SIDA", "SMIC",
+  "OUI", "NON", "STOP", "SOS",
+]
+
+# Les mots remplacés, en respectant les majuscules et les minuscules.
+[replace]
+GitHub = "guite-heub"
+GitLab = "guite-labe"
+Docker = "docqueure"
+Linux = "linuxe"
+"Wi-Fi" = "ouifi"
+Bluetooth = "bloute-outhe"
+YouTube = "you-tioube"
+Google = "gougueule"
+iPhone = "aïe-faune"
+OK = "okay"
+
+# Les mots remplacés, quelle que soit l'écriture : « okay », « Okay » et « OKAY » donnent la même
+# chose.
+[replace_any_case]
+
+# Le nom des lettres et des chiffres pour l'épellation, à n'ajouter que pour en changer un :
+# [letters]
+# S = "èsse"

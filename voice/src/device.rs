@@ -229,6 +229,7 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     cx.engine.clone(),
                     cx.config.chunk_ms,
                     Gain::new(cx.config.gain),
+                    cx.config.text.clone(),
                     cx.own.clone(),
                     cancelled.clone(),
                 ));
@@ -331,6 +332,7 @@ async fn say(
     engine: Engine,
     chunk_ms: u32,
     gain: Gain,
+    lexicon: Arc<text::Lexicon>,
     inbox: Inbox,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -360,7 +362,7 @@ async fn say(
     let mut engine_first = None;
     let streamed = stream(
         &engine,
-        &text::clean(&text),
+        &text::clean(&text, &lexicon),
         chunk_ms,
         &mut sender,
         &mut chunker,

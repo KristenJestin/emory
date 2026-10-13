@@ -1,9 +1,11 @@
 //! The configuration: a TOML file given as argument.
 
-use std::{path::Path, path::PathBuf, time::Duration};
+use std::{path::Path, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+
+use crate::text::Lexicon;
 
 /// ```toml
 /// nats_url = "nats://127.0.0.1:4222"
@@ -16,6 +18,8 @@ use serde::{Deserialize, Serialize};
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
 /// # gain = 1.0                       # loudness of the voice, 0.1 to 8: 1 = as the engine says it
+/// # lexicon_enabled = true           # the pronunciation lexicon and the spelled acronyms
+/// # lexicon = "lexicon.fr.toml"      # its file; the built-in one without it (relative: from this file)
 ///
 /// # [cue]                            # the waiting cue (tone, pulse), these are the defaults
 /// # volume = 0.3                     # peak of the tone, 0 to 1
@@ -75,6 +79,17 @@ pub struct Config {
     /// twice the amplitude (about +6 dB). What would go past full scale is eased, not clipped.
     #[serde(default = "default_gain")]
     pub gain: f32,
+    /// The pronunciation stage (the lexicon and the spelled acronyms of `text.rs`) is on. `false`
+    /// leaves the words as the mind wrote them.
+    #[serde(default = "default_lexicon_enabled")]
+    pub lexicon_enabled: bool,
+    /// The lexicon file (`data/lexicon.fr.toml` is the format); the built-in lexicon without it. A
+    /// file given replaces the built-in one. `~/` stands for the home folder and a relative path is
+    /// read from the folder of the configuration file, as `hearing` does.
+    pub lexicon: Option<PathBuf>,
+    /// The lexicon, read when the configuration is: not a key of the file.
+    #[serde(skip)]
+    pub text: Arc<Lexicon>,
 }
 
 /// The voice engines `voice` knows how to call.
@@ -174,12 +189,41 @@ fn default_gain() -> f32 {
     1.0
 }
 
+fn default_lexicon_enabled() -> bool {
+    true
+}
+
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        text.parse()
-            .with_context(|| format!("configuration {}", path.display()))
+        let base = path.parent().unwrap_or(Path::new(""));
+        Self::parse_in(&text, base).with_context(|| format!("configuration {}", path.display()))
+    }
+
+    /// Parses a configuration whose relative paths start at `base`.
+    pub fn parse_in(s: &str, base: &Path) -> anyhow::Result<Self> {
+        let mut config = Self::parse(s)?;
+        config.text = Arc::new(config.read_lexicon(base)?);
+        Ok(config)
+    }
+
+    /// The lexicon of this configuration: off, the file given or the built-in one.
+    fn read_lexicon(&self, base: &Path) -> anyhow::Result<Lexicon> {
+        if !self.lexicon_enabled {
+            return Ok(Lexicon::disabled());
+        }
+        match &self.lexicon {
+            None => Lexicon::builtin(),
+            Some(path) => {
+                let home = std::env::var_os("HOME");
+                let path = match (path.strip_prefix("~"), home) {
+                    (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+                    _ => base.join(path),
+                };
+                Lexicon::read(&path).context("lexicon")
+            }
+        }
     }
 
     /// The voice given, or the one chosen for the engine.
@@ -205,7 +249,16 @@ impl Config {
 
 impl std::str::FromStr for Config {
     type Err = anyhow::Error;
+    /// A configuration whose relative paths start at the working directory; [`Config::load`] reads
+    /// them from the folder of the file.
     fn from_str(s: &str) -> anyhow::Result<Self> {
+        Self::parse_in(s, Path::new(""))
+    }
+}
+
+impl Config {
+    /// The keys, checked; the lexicon is not read yet (its `text` is the stage off).
+    fn parse(s: &str) -> anyhow::Result<Self> {
         let config: Config = toml::from_str(s)?;
         anyhow::ensure!(
             (10..=500).contains(&config.chunk_ms),
@@ -380,11 +433,108 @@ mod tests {
 
     #[test]
     fn the_development_configurations_are_valid() {
-        for text in [
-            include_str!("../../dev/voice.toml"),
-            include_str!("../../dev/voice-kyutai.toml"),
+        // Read as the program reads them: the lexicon file is found from their folder.
+        for name in ["voice.toml", "voice-kyutai.toml"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../dev")
+                .join(name);
+            let c = Config::load(&path).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            assert!(c.text.is_enabled(), "{name}: the stage is on");
+        }
+    }
+
+    #[test]
+    fn the_lexicon_stage_is_on_with_the_built_in_lexicon_by_default() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        let c: Config = base.parse().unwrap();
+        assert!(c.lexicon_enabled && c.lexicon.is_none());
+        assert!(c.text.is_enabled());
+        assert_eq!(c.text.apply("SSH"), "èsse èsse ache");
+        assert_eq!(c.text.len(), crate::text::Lexicon::builtin().unwrap().len());
+    }
+
+    #[test]
+    fn the_lexicon_stage_can_be_switched_off() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        // Off: the file is not even read.
+        let c: Config = format!("{base}lexicon_enabled = false\nlexicon = \"/nonexistent.toml\"\n")
+            .parse()
+            .unwrap();
+        assert!(!c.text.is_enabled());
+        assert_eq!(c.text.apply("SSH GitHub"), "SSH GitHub");
+        assert!(
+            format!("{base}lexicon_enabled = \"no\"\n")
+                .parse::<Config>()
+                .is_err()
+        );
+    }
+
+    /// A folder of the system's temporary one, removed with the test.
+    struct Folder(std::path::PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("voice-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_lexicon_file_replaces_the_built_in_one_and_is_found_from_the_configuration() {
+        let folder = Folder::new("lexicon-file");
+        std::fs::write(
+            folder.0.join("words.toml"),
+            "[replace]\nGitHub = \"guite\"\n",
+        )
+        .unwrap();
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        // Relative: from the folder given (the one of the configuration file).
+        let c = Config::parse_in(&format!("{base}lexicon = \"words.toml\"\n"), &folder.0).unwrap();
+        assert_eq!(c.text.len(), 1);
+        assert_eq!(c.text.apply("GitHub Docker"), "guite Docker");
+        // Absolute.
+        let absolute = format!("{base}lexicon = {:?}\n", folder.0.join("words.toml"));
+        let c = Config::parse_in(&absolute, std::path::Path::new("/elsewhere")).unwrap();
+        assert_eq!(c.text.apply("GitHub"), "guite");
+        // `Config::load` does the same from the path of the configuration.
+        std::fs::write(
+            folder.0.join("voice.toml"),
+            format!("{base}lexicon = \"words.toml\"\n"),
+        )
+        .unwrap();
+        let c = Config::load(&folder.0.join("voice.toml")).unwrap();
+        assert_eq!(c.text.apply("GitHub"), "guite");
+    }
+
+    #[test]
+    fn a_bad_lexicon_stops_the_start_with_a_message_that_says_why() {
+        let folder = Folder::new("lexicon-bad");
+        std::fs::write(folder.0.join("bad.toml"), "[replace]\nGitHub = 3\n").unwrap();
+        std::fs::write(
+            folder.0.join("empty-word.toml"),
+            "[replace]\nGitHub = \" \"\n",
+        )
+        .unwrap();
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        for (file, hint) in [
+            ("missing.toml", "missing.toml"),
+            ("bad.toml", "expected a string"),
+            ("empty-word.toml", "written form is empty"),
         ] {
-            text.parse::<Config>().unwrap();
+            let error =
+                Config::parse_in(&format!("{base}lexicon = \"{file}\"\n"), &folder.0).unwrap_err();
+            let error = format!("{error:#}");
+            assert!(
+                error.contains(hint) && error.contains(file),
+                "{file}: {error}"
+            );
         }
     }
 
