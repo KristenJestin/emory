@@ -145,7 +145,7 @@ bornes ; le dossier est créé s'il manque.
 
 ## L'ordre de construction
 
-1. **T1. Le module `time` sans parole** : `[data]` et `[time]`, le fichier (écriture atomique,
+1. **T1. Le module `time` sans parole** (**construit le 2026-10-13**, voir « Ce qui a été décidé en construisant T1 ») : `[data]` et `[time]`, le fichier (écriture atomique,
    relecture, fichier cassé), les quatre outils, les durées et échéances en mots, le fuseau.
    Vérifié : tests unitaires avec une horloge simulée et un dossier temporaire ; relecture après un
    « redémarrage » simulé ; un rappel `at` à travers un changement d'heure.
@@ -154,6 +154,71 @@ bornes ; le dossier est créé s'il manque.
    démarrage, `mind.timer.changed` et `mind.timer.fired`. Vérifié : temps en pause de tokio, faux
    bus enregistré : la phrase part à l'échéance, attend la fin d'une réponse, se répète puis
    s'arrête ; un essai en vrai d'un minuteur d'une minute par Kris.
+
+## Ce qui a été décidé en construisant T1 (2026-10-13)
+
+Le code est dans `mind/src/time/` (`mod.rs` les outils, `store.rs` le fichier, `words.rs` les mots,
+`zone.rs` le fuseau, `config.rs` `[data]` et `[time]`). Les choix que la spec laissait ouverts,
+pris au plus simple et réversible :
+
+- **Fuseau** : une seule dépendance nouvelle, `jiff` (déjà dans `Cargo.lock`), pour nommer un
+  fuseau (`Europe/Paris`) et connaître son décalage à un instant donné ; `chrono` seul ne sait pas.
+  `timezone` vide : le fuseau du système (`TZ`, sinon `/etc/localtime`). Un fuseau inconnu est
+  refusé au démarrage, avec le nom de la clé. (`tempfile` en plus, en dépendance de test
+  seulement : déjà compilé pour `ear`.)
+- **Changement d'heure** : un rappel `at` est une heure du mur dans le fuseau. Une heure qui
+  n'existe pas (le saut de 02:00 à 03:00) est décalée d'autant (02:30 devient 03:30) et la réponse
+  le dit au LLM ; une heure qui existe deux fois (le retour de 03:00 à 02:00) est la première. Un
+  minuteur dure ce qui a été demandé, changement d'heure ou non (c'est un écart en secondes). Le
+  fichier garde le décalage de l'échéance elle-même (`+01:00` ou `+02:00`), pas celui du jour où
+  le rappel a été posé.
+- **`[data] dir`** : par défaut `$XDG_STATE_HOME/emory/mind`, sinon `~/.local/state/emory/mind`
+  (l'exemple de la spec). `[time] store` peut désigner un autre fichier. `dev/mind.toml` prend
+  `~/.local/state/emory/mind-dev` : hors du dépôt, et distinct du dossier d'un `mind` de production
+  qui tournerait sur le même PC.
+- **Les clés de T2** (`default_device`, `chime`, `repeat`, `repeat_after_s`, `timer_done`,
+  `timer_done_unlabeled`, `reminder`) sont déjà lues et vérifiées (bornes, gabarits : le `{…}`
+  voulu, et lui seul) ; rien ne les utilise avant T2. `late_limit_hours` est borné de 1 à 168.
+- **Les outils** : `seconds` va de 1 à 86 400 ; `in_seconds` de 1 à 31 536 000 (un an) ; `at`
+  accepte `AAAA-MM-JJTHH:MM`, avec des secondes, ou un instant avec son décalage (`…+02:00`, `…Z`).
+  Un `label` de plus de 40 caractères ou un `text` de plus de 200 est **refusé** avec la raison,
+  pas coupé (couper un rappel en change le sens). Ni `at` ni `in_seconds`, ou les deux : refusé.
+  Un nombre sans fraction écrit en décimal (`600.0`) est accepté. Les erreurs sont des phrases
+  françaises, que le LLM lit.
+- **Ce que disent les résultats** : « Minuteur 1 (pâtes) : dix minutes, échéance à dix-neuf
+  heures dix. », « Rappel 2 : échéance demain à neuf heures. ». Ils ne promettent pas de
+  sonnerie : avant T2, rien ne sonne, et les descriptions des outils n'en parlent pas.
+- **`time_list`** rend un objet JSON `{"items": [...]}`, du plus proche au plus lointain, avec
+  `id`, `kind`, `label` ou `text`, `due` (heure locale `AAAA-MM-JJTHH:MM:SS`), `remaining` et
+  `device` quand il est connu ; sans rien : « Aucun minuteur ni rappel en cours. ». Ce qui est
+  échu n'y figure plus (avant T2 rien ne le fait sonner : T2 le prend au fichier). `remaining` est
+  une durée en mots jusqu'à six heures (« huit minutes et douze secondes » ; arrondie à la minute
+  à partir de dix minutes, à l'heure à partir d'un jour), puis le moment (« demain à neuf
+  heures », « lundi à midi », « le vingt octobre à dix heures »). Les heures sont dites sur 24 h
+  (« dix-neuf heures douze ») : une voix lit mal « 19:12 ».
+- **`max_active`** compte ce qui n'est pas encore échu.
+- **Le fichier** : `timers.json` comme dans la spec ; `next_id` ne redescend jamais (un numéro
+  n'est pas réutilisé, même après un redémarrage). Écrit à côté (`timers.json.tmp`, droits `0600`),
+  `fsync`, renommé, puis `fsync` du dossier. Une écriture qui échoue ne change rien en mémoire et
+  le LLM l'apprend. Un fichier est « cassé », et renommé `timers.json.broken-AAAAMMJJTHHMMSSZ`
+  (un `-2` si le nom existe), non seulement s'il n'est pas du JSON, mais s'il est d'une autre
+  version, si deux éléments ont le même numéro, un numéro au-delà de `next_id`, ou un rappel sans
+  texte : le contenu reste intact pour le réparer à la main.
+- **Le retard au démarrage** : T1 jette déjà, en le journalisant (`warn`, sans le texte), ce qui
+  est échu depuis plus de `late_limit_hours` (`Store::discard_late`). Ce qui l'est depuis moins
+  reste dans le fichier : c'est ce que T2 dira « Avec du retard : », avec `created`, `due`,
+  `seconds` et `device` pour décider.
+- **L'appareil** : `Conversations::open_on(device)` et `Conversations::device(clé)` sont là, et le
+  module range l'appareil de la conversation dans l'élément (sinon `default_device`, sinon rien).
+  **Mais `mind.rs` appelle encore `conversations.open()`** (ligne 421, dans `Mind::open`) : T1 n'y
+  a pas touché, pour rester hors de la boucle de tours que construit E1. Tant que cette ligne n'est
+  pas devenue `conversations.open_on(device.clone())`, les éléments n'ont que `default_device`.
+  À faire dans T2.
+- **Les phrases d'attente** : `time_timer`, `time_reminder`, `time_list` et `time_cancel` sont
+  `silent` dans `mind/prompts/waiting.fr.toml` et `dev/waiting.fr.toml` : ils répondent aussitôt,
+  une phrase d'attente ne ferait que gêner la réponse.
+- **Les journaux** disent l'`id`, le type, l'échéance et l'appareil, jamais le texte ni le libellé
+  (un test le vérifie).
 
 ## Questions ouvertes
 

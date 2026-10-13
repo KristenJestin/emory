@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use contract::TurnId;
+use contract::{Device, TurnId};
 
 /// The header in which the LLM's MCP connection carries the key of its conversation.
 pub const HEADER: &str = "emory-conversation";
@@ -31,23 +31,46 @@ impl std::fmt::Display for ConversationKey {
     }
 }
 
+/// What is known of an open conversation.
+#[derive(Clone, Debug, Default)]
+struct Open {
+    /// The user's last turn, if any yet.
+    turn: Option<TurnId>,
+    /// The device it takes place on, when the mind said.
+    device: Option<Device>,
+}
+
 /// The open conversations and the user's last turn in each. Cheap to clone, shared by the mind
 /// (which opens, advances and closes them) and the tools (which read them).
 #[derive(Clone, Default)]
-pub struct Conversations(Arc<Mutex<HashMap<ConversationKey, Option<TurnId>>>>);
+pub struct Conversations(Arc<Mutex<HashMap<ConversationKey, Open>>>);
 
 impl Conversations {
     /// A new conversation, before any turn.
     pub fn open(&self) -> ConversationKey {
         let key = ConversationKey::draw();
-        self.lock().insert(key.clone(), None);
+        self.lock().insert(key.clone(), Open::default());
+        key
+    }
+
+    /// A new conversation on a device, before any turn: the tools that act where the user is (a
+    /// timer rings on the device it was set on) find it with [`Self::device`].
+    pub fn open_on(&self, device: Device) -> ConversationKey {
+        let key = ConversationKey::draw();
+        self.lock().insert(
+            key.clone(),
+            Open {
+                turn: None,
+                device: Some(device),
+            },
+        );
         key
     }
 
     /// The user has spoken: `turn` is the conversation's turn from now on.
     pub fn spoke(&self, key: &ConversationKey, turn: TurnId) {
-        if let Some(current) = self.lock().get_mut(key) {
-            *current = Some(turn);
+        if let Some(open) = self.lock().get_mut(key) {
+            open.turn = Some(turn);
         }
     }
 
@@ -58,14 +81,19 @@ impl Conversations {
 
     /// `None` if the conversation is not open; else the user's last turn, if any yet.
     pub fn turn(&self, key: &ConversationKey) -> Option<Option<TurnId>> {
-        self.lock().get(key).copied()
+        self.lock().get(key).map(|open| open.turn)
+    }
+
+    /// The device of the conversation, if it is open and was opened with one.
+    pub fn device(&self, key: &ConversationKey) -> Option<Device> {
+        self.lock().get(key).and_then(|open| open.device.clone())
     }
 
     pub fn is_open(&self, key: &ConversationKey) -> bool {
         self.lock().contains_key(key)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ConversationKey, Option<TurnId>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ConversationKey, Open>> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -93,5 +121,17 @@ mod tests {
         conversations.spoke(&key, first);
         assert!(!conversations.is_open(&key));
         assert_ne!(conversations.open(), conversations.open());
+    }
+
+    #[test]
+    fn a_conversation_knows_its_device_when_opened_with_one() {
+        let conversations = Conversations::default();
+        let office = Device::new("office").unwrap();
+        let on = conversations.open_on(office.clone());
+        assert_eq!(conversations.device(&on), Some(office));
+        assert_eq!(conversations.turn(&on), Some(None));
+        assert_eq!(conversations.device(&conversations.open()), None);
+        conversations.close(&on);
+        assert_eq!(conversations.device(&on), None);
     }
 }

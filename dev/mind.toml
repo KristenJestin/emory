@@ -47,3 +47,14 @@ place = "Brest, France"
 
 [web.wikipedia]
 enabled = true
+
+# Les minuteurs et rappels (specs/time.md) : gardés dans le dossier de données, relus après un
+# redémarrage. Le dossier est celui de l'état de l'utilisateur (XDG_STATE_HOME), avec un nom à lui
+# (« mind-dev ») pour ne pas se mêler à un `mind` de production sur le même PC ; il est hors du
+# dépôt, donc hors de git. Rien ne sonne encore (T2).
+[data]
+dir = "~/.local/state/emory/mind-dev"
+
+[time]
+enabled = true
+timezone = "Europe/Paris"

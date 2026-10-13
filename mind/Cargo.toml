@@ -14,9 +14,11 @@ subtle = "2"
 agent-client-protocol = { version = "3.3", features = ["process"] }
 anyhow = "1"
 async-nats = "0.50"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures-util = "0.3"
+# The time zones of the time module (a zone by name, the daylight-saving changes); the system's tzdb.
+jiff = "0.2"
 # The LLM through a provider's API (`llm.mode = "api"`); 0.7 has no final release yet.
 genai = "=0.7.0-rc.4"
 # The web module's HTTP client: the version and the TLS stack that `rmcp` and `genai` already bring.
@@ -31,3 +33,6 @@ uuid = { version = "1", features = ["v4"] }
 [[bin]]
 name = "mind"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
