@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
             let answer = answer.context("the answer never came")?;
             let after = cues().filter(|c| c.seq > answer.seq).count();
             ensure!(after == 0, "{after} cue chunk(s) after the answer");
-            let last = cues().last().unwrap();
+            let last = cues().next_back().unwrap();
             println!(
                 "\nlast pulse {:.0} ms before the first sound of the answer",
                 (answer.at - last.at).as_secs_f64() * 1e3
