@@ -1,3 +1,6 @@
+# A starting point for the vocabulary, to copy to ~/.local/share/emory/hotwords.txt (the hearing
+# reads it there, and appends the words the mind adds once the user said yes).
+#
 # The vocabulary: names that Parakeet gets wrong because they are not French words. One per line,
 # `#` starts a comment. With at least one word, the beam search replaces the greedy one (about a
 # fifth to a half more compute per sentence, see specs/hearing.md); an empty file keeps the
@@ -7,8 +10,3 @@
 # pulled out of sentences that do not mean it. A form the model hears too far from the name (« Et
 # Mori » for Emory) is not rescued by this list: that is the corrections table's job.
 Emory
-Hippocampe
-Omarchy
-Dokploy
-KrisNet
-Navidrome

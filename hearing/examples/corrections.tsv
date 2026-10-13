@@ -1,11 +1,9 @@
+# A starting point for the corrections, to copy to ~/.local/share/emory/corrections.tsv.
 # pattern (regular expression, whole words, case-insensitive)<TAB>replacement
 # The rules apply in order. Only correct forms that are not French words.
-hippocamp|hypocamp|hipocampe|hypocampe	Hippocampe
 # « les mains d'Emory » heard as « les mains des Maury »: the name and its « d' » come back.
 des maury	d'Emory
 et maury|emori	Emory
-dockploy|docploy|dock ploy	Dokploy
-omarchi|omarche	Omarchy
 # « Emory » at the start of a sentence heard as « A Mira » or « Amira »: only when the name is
 # called (a comma follows) or is the whole sentence. Mira and Amira are first names, so nothing is
 # touched in the middle of a sentence. Delete these two lines if you know someone called Amira.

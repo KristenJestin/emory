@@ -28,7 +28,16 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   « Je n'ai rien entendu. ») with `voice.say` and `last`, to the device of the turn.
 - **Emory's MCP server** is served by `mind` itself, on the loopback, with a key drawn at
   start-up and given only to the adapter; it is the only MCP server the LLM gets. Its tools are
-  modules (`src/tools.rs`): for now Hippocampe's tools, relayed as `hippocampe_<name>`.
+  modules (`src/tools.rs`): Hippocampe's tools, relayed as `hippocampe_<name>`, and the
+  dictionary. Each conversation draws a key that its session gives the server in the
+  `emory-conversation` header, so a tool knows which conversation calls it and the user's last
+  turn in it (`src/conversations.rs`).
+- **The dictionary** (`src/dictionary.rs`, `[dictionary]`): `dictionary_propose(word, heard_as?)`
+  notes a word in the conversation and tells the LLM to ask the user; `dictionary_add(word)` is
+  accepted only for a word proposed in an earlier turn of the same conversation (the user has
+  spoken since), then asks the hearing on `hearing.vocabulary.add` (`timeout_ms`, 2 s by
+  default). The rule is held by `mind`, not left to the LLM; the proposals die with the
+  conversation. `enabled = false` takes the two tools away.
 - **The memory**: one connection to Hippocampe kept open. Each sentence heard is searched as it is
   (top 5, given up beyond 300 ms); at the end of the turn, the title, summary and excerpt of the
   entries found go into the request, with what Hippocampe flags for the day (`briefing`) in the

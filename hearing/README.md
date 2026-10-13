@@ -42,13 +42,15 @@ lost on the way.
 
 ## Vocabulary (hotwords)
 
-Parakeet writes the names it does not know as it hears them (« A Mira » for Emory, « Omarchi »,
-« ChrisNet »). `examples/hotwords.txt` lists names (one per line, `#` for comments) that it favours
-when it hesitates:
+Parakeet writes the names it does not know as it hears them (« A Mira » for Emory, a product name
+cut in two). The vocabulary lists names (one per line, `#` for comments) that it favours when it
+hesitates. It is the user's own data, outside the repository: `hotwords.txt` in the data folder
+(`$XDG_DATA_HOME/emory`, so `~/.local/share/emory` by default; on the server, a volume), or the
+path given in the configuration. `examples/hotwords.txt` is a starting point to copy there.
 
 ```toml
 [transcription]
-hotwords = "hotwords.txt"
+# hotwords = "~/.local/share/emory/hotwords.txt"   # the default
 hotwords_score = 2.0        # how much a name is favoured; 3 and more invents words
 # decoding_method = "modified_beam_search"   # see below
 ```
@@ -56,12 +58,19 @@ hotwords_score = 2.0        # how much a name is favoured; 3 and more invents wo
 - With at least one word, the search is `modified_beam_search`; with an absent or empty file, it
   stays `greedy_search`, which is faster. `decoding_method` forces one or the other
   (`greedy_search` with hotwords is refused).
+- **The mind adds words while the hearing runs** (`hearing.vocabulary.add`, a request with a
+  reply, see `specs/contract.md`), once the user has said yes. The word is appended to the file
+  (once: a word already there, in any case, is a success with nothing written; what was heard
+  instead goes on a comment line above it) and used from the next sentence, without a restart:
+  the words go to sherpa-onnx with each sentence, which costs about 0.1 ms for 10 words. With the
+  greedy search (empty vocabulary at start), the word is written and counts from the next start.
 - The words need the model's `bpe.vocab`, which the model does not ship:
   `scripts/download-models.sh` writes it into the Parakeet folder (`bpe_vocab` points elsewhere).
 - Only names that are not words of the language: a French word in the list is pulled into
   sentences that do not mean it. A form too far from the name (« Et Mori ») is for the corrections
-  table, whose `examples/corrections.tsv` also reads « A Mira, » at the start of a sentence as
-  « Emory, ».
+  table, `corrections.tsv` in the same data folder (`examples/corrections.tsv` to start, which
+  also reads « A Mira, » at the start of a sentence as « Emory, »). A table given in the
+  configuration must exist; the default one may be absent.
 - The measures (what it fixes, what it costs) are in `specs/hearing.md`.
 
 ## Run on an NVIDIA GPU (CUDA)

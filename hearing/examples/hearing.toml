@@ -18,11 +18,18 @@ threads = 4
 # Where Parakeet computes: "cpu" (default) or "cuda" (an NVIDIA GPU, needs the CUDA build:
 # scripts/build-cuda.sh). See "Run on an NVIDIA GPU" in the README before using it.
 # provider = "cuda"
-corrections = "corrections.tsv"
-# The vocabulary (names Parakeet gets wrong): the beam search replaces the greedy one, for about a
-# fifth to a half more compute per sentence. Remove the line, or empty the file, for the greedy
-# search. Needs the bpe.vocab that scripts/download-models.sh writes.
-hotwords = "hotwords.txt"
+# The user's own words live outside the repository, in the data folder ($XDG_DATA_HOME/emory,
+# ~/.local/share/emory by default; on the server, a volume): the vocabulary (hotwords.txt) and the
+# corrections table (corrections.tsv). The files of this folder are starting points to copy there.
+# Give other paths here if needed (a given corrections table must exist; the vocabulary file is
+# created at the first word the mind adds).
+# corrections = "~/.local/share/emory/corrections.tsv"
+# The vocabulary (names Parakeet gets wrong): with words in it, the beam search replaces the greedy
+# one, for about a fifth to a half more compute per sentence; an empty file keeps the greedy search
+# (and a word added then counts from the next start). The words the mind adds (once the user said
+# yes) are appended to it and used from the next sentence. Needs the bpe.vocab that
+# scripts/download-models.sh writes.
+# hotwords = "~/.local/share/emory/hotwords.txt"
 hotwords_score = 2.0
 
 # Silero VAD settings; the values given are those of the test bench.
