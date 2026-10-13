@@ -1,6 +1,6 @@
 # Le contrat
 
-Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13. `voice.cue` ajouté le 2026-10-13.
+Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13. `voice.cue` ajouté le 2026-10-13. Proposés le 2026-10-13 (brouillon, à relire avec Kris) : les actions dont le nom porte un point et `confirm`, `timeout_ms` dans l'annonce, `mind.event.<source>`, `mind.timer.changed` et `mind.timer.fired`.
 
 Le contrat est la seule chose que les programmes d'Emory partagent : les sujets du bus et le format
 de chaque message. Il vit dans `contract/`, une crate Rust sans réseau (des types `serde`, des
@@ -64,15 +64,18 @@ Les en-têtes d'un message audio :
 | `voice.cue` | `mind` | `voice` | `Cue` |
 | `voice.<nom>.speaking` | `voice` | `emory-hands` de l'appareil | `Speaking` |
 | `hands.<nom>.announce` | `emory-hands` | `mind` | `Announce` |
-| `hands.<nom>.<action>` | `mind` | `emory-hands` | demande avec réponse |
+| `hands.<nom>.<module>.<action>` | `mind` | `emory-hands` | demande avec réponse `ActionReply` |
+| `mind.event.<source>` | un programme déclaré (jamais un organe) | `mind` | `Event`, en publication ou demande avec réponse `EventReply` |
+| `mind.timer.changed` | `mind` | personne aujourd'hui (un écran plus tard) | `Timers` |
+| `mind.timer.fired` | `mind` | personne aujourd'hui | `TimerFired` |
 | `announce.request` | `mind` | `emory-ear`, `emory-mouth`, `emory-hands` | vide |
 
 Dans le code, les sujets et les abonnements viennent de `contract::subjects` :
 `subjects::button(&device)`, `subjects::ear_audio`, `subjects::ear_announce`,
 `subjects::mouth_audio`, `subjects::mouth_announce`, `subjects::hands_announce`,
 `subjects::speaking`, `subjects::action`, les constantes `SENTENCE`, `TURN`, `VOCABULARY_ADD`, `SAY`, `STOP`, `CUE`,
-`ANNOUNCE_REQUEST`, et les abonnements à tous les appareils `ALL_BUTTONS`, `ALL_EAR_AUDIO`,
-`ALL_EAR_ANNOUNCES`, `ALL_MOUTH_ANNOUNCES`, `ALL_HANDS_ANNOUNCES`. `device_of_subject` retrouve
+`ANNOUNCE_REQUEST`, `TIMER_CHANGED`, `TIMER_FIRED`, `subjects::event(&source)`, et les abonnements à tous les appareils `ALL_BUTTONS`, `ALL_EAR_AUDIO`,
+`ALL_EAR_ANNOUNCES`, `ALL_MOUTH_ANNOUNCES`, `ALL_HANDS_ANNOUNCES`, `ALL_EVENTS` (`mind.event.*`, proposé le 2026-10-13). `device_of_subject` retrouve
 l'appareil d'un sujet qui commence par `ear`, `mouth`, `hands` ou `voice`.
 
 ### `Button`
@@ -192,6 +195,16 @@ qu'elle fait, et `emory-hands` en fait ce qu'il veut. Seul `mind` publie sur `ha
 }
 ```
 
+Proposé le 2026-10-13 (voir [`hands.md`](hands.md)) : une action peut porter `confirm` (facultatif,
+`false` par défaut : `mind` ne l'envoie qu'après le oui de l'utilisateur) et `timeout_ms`
+(facultatif : le temps que l'action peut prendre ; `mind` attend ce temps plus 500 ms, et 2 s
+sans lui) :
+
+```json
+{ "name": "commands.suspend", "description": "Met le PC en veille.", "arguments": {},
+  "confirm": true, "timeout_ms": 5000 }
+```
+
 `program` vaut `ear`, `mouth` ou `hands`. Au démarrage, et en réponse à `announce.request` que
 `mind` envoie au sien : un esprit qui redémarre retrouve ainsi tout ce qui tourne. `arguments` est
 un schéma JSON ; `mind` en fait les outils du LLM, et seulement ceux-là. `emory-ear` et
@@ -200,14 +213,19 @@ un schéma JSON ; `mind` en fait les outils du LLM, et seulement ceux-là. `emor
 ### Les actions de `emory-hands`
 
 Une action est une demande avec réponse NATS sur `hands.<nom>.<action>` (`hands.office.mpris.pause`),
-avec les arguments en JSON. La réponse :
+avec les arguments en JSON. Le nom d'une action est `<module>.<action>`, chaque partie en
+`[a-z0-9_]` (`commands.music_play`, 32 caractères au plus pour l'action) : le sujet a donc un
+élément de plus que l'appareil, et `emory-hands` s'abonne à `hands.<nom>.>` (précisé le
+2026-10-13). La réponse (`ActionReply`) :
 
 ```json
 { "ok": true, "result": { "title": "One More Time", "artist": "Daft Punk" } }
 { "ok": false, "error": "aucun lecteur ouvert" }
 ```
 
-`mind` attend 2 s au plus (`ACTION_TIMEOUT`) ; un appareil éteint ne répond pas, et Emory le dit simplement.
+`mind` attend 2 s au plus (`ACTION_TIMEOUT`), ou le `timeout_ms` de l'action plus 500 ms quand
+l'annonce le donne ; un appareil éteint ne répond pas, et Emory le dit simplement. Un argument
+refusé par `emory-hands` donne `ok: false` avec une `error` qui nomme l'argument.
 
 ### `VocabularyAdd` et `VocabularyReply`
 
@@ -229,8 +247,48 @@ sur `hearing.vocabulary.add`. `mind` ne l'envoie qu'une fois que l'utilisateur a
 - `error` : pourquoi le mot est refusé (vide, plus de 40 caractères, saut de ligne, `/`, `:`, `#`,
   pas de lettre…). `mind` attend 2 s au plus (`[dictionary] timeout_ms`).
 
+### `Event` et `EventReply`
+
+Proposé le 2026-10-13. L'entrée interne : un programme déclaré réveille `mind`, jamais la voix
+(voir [`events.md`](events.md)). Publié sur `mind.event.<source>`, où `<source>` suit la règle des
+noms d'appareil ; seule la clé de cette source peut y publier.
+
+```json
+{ "id": "01K…", "kind": "say", "text": "La sauvegarde de cette nuit a échoué.", "device": "office" }
+{ "id": "01K…", "kind": "task", "text": "Le déploiement est fini. Regarde…", "quiet": false, "expires_in_s": 600 }
+{ "ok": true, "queued": true }
+{ "ok": false, "queued": false, "error": "source non déclarée" }
+```
+
+- `id` (obligatoire) : un ULID de l'émetteur ; un `id` déjà vu dans les 10 minutes est ignoré
+  (réponse `ok: true`, `queued: false`).
+- `kind` : `say` (dire `text` tel quel, 500 caractères au plus) ou `task` (une consigne pour le LLM,
+  2 000 caractères au plus).
+- `device`, `quiet` (`task` seulement), `expires_in_s` (600 par défaut, 86 400 au plus) : facultatifs.
+- La réponse n'est envoyée que pour une demande ; `queued` dit que l'événement attend d'être dit,
+  pas qu'il l'est.
+
+### `Timers` et `TimerFired`
+
+Proposé le 2026-10-13 (voir [`time.md`](time.md)). L'état des minuteurs et rappels, publié par
+`mind` à chaque changement, pour un affichage :
+
+```json
+{ "items": [ { "id": 3, "kind": "timer", "label": "pâtes", "due": "2026-10-13T19:12:11+02:00",
+               "device": "office" },
+             { "id": 4, "kind": "reminder", "text": "appeler le garage",
+               "due": "2026-10-14T09:00:00+02:00", "device": "office" } ] }
+{ "id": 3, "kind": "timer", "label": "pâtes", "due": "2026-10-13T19:12:11+02:00", "device": "office",
+  "late_s": 0 }
+```
+
+`kind` vaut `timer` ou `reminder` ; `label` et `text` sont facultatifs ; `late_s` dit le retard
+d'une sonnerie (après un redémarrage de `mind`).
+
 ## Hors du contrat
 
 Le verrouillage du bus (TLS, une nkey par programme et par appareil, les droits par sujet) se
 règle dans la configuration de NATS, pas dans la crate. Les droits suivent la colonne « Qui
-publie » du tableau des sujets.
+publie » du tableau des sujets. Pour l'entrée interne : chaque source a sa clé, qui ne publie que
+sur `mind.event.<source>` (et reçoit sa réponse) ; `mind` s'abonne à `mind.event.*` sans pouvoir y
+publier ; aucun organe n'y a de droit.
