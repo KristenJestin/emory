@@ -228,9 +228,10 @@ max_redirects = 5
 [web.weather]
 enabled = true
 place = ""                     # vide : le LLM doit donner un lieu ; sinon le lieu par défaut
+                               # (une ville, "Brest, France" quand le nom est partagé entre pays)
 # latitude = 45.75             # facultatifs : évitent le géocodage du lieu par défaut
 # longitude = 4.85
-cache_minutes = 10
+cache_minutes = 10             # 0 : pas de cache
 
 [web.wikipedia]
 enabled = true
@@ -267,8 +268,11 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
    langue suivante). Vérifié : tests sur des réponses enregistrées (le résumé de `Tour_Eiffel`,
    une homonymie, un 404, le repli sur l'anglais), aucun appel réseau dans les tests ; un essai à
    la main (voir « Ce qui a été décidé en construisant W1 »).
-2. **W2. La météo** : `web_weather`, géocodage, table des codes OMM, cache. Vérifié : tests sur
-   des réponses enregistrées, les noms de jours, un lieu inconnu.
+2. **W2. La météo** : **construit le 2026-10-13** (branche `web-weather`). `web_weather`,
+   géocodage, table des codes OMM, cache. Vérifié : tests sur des réponses enregistrées (une
+   prévision de 7 jours, les noms de jours, un lieu inconnu, le lieu par défaut, la table des codes,
+   la configuration), aucun appel réseau dans les tests ; un essai à la main (voir « Ce qui a été
+   décidé en construisant W2 »).
 3. **W3. La recherche** : le trait `SearchProvider`, DuckDuckGo, les trois cas de panne, la pause,
    le cache, `examples/web-check.rs`. Vérifié : pages enregistrées (résultats, captcha, page sans
    résultat, page sans `result__a`), décodage de `uddg`, publicités retirées.
@@ -320,11 +324,62 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
   recherche dans les deux éditions). Les réponses enregistrées (`mind/tests/fixtures/web/`) sont
   celles de Wikipédia ; le 404 du résumé est `{"status":404,"type":"Internal error"}`.
 
+## Ce qui a été décidé en construisant W2 (2026-10-13)
+
+- **« Brest » seul est la Brest de Biélorussie** pour Open-Meteo (mesuré : `count=1` classe par
+  population, 344 000 contre 145 000 pour Brest dans le Finistère). Le géocodage accepte pourtant
+  une ville suivie d'un pays ou d'une région (`name=Brest, France` donne Brest 29, mesuré), donc le
+  lieu par défaut de `dev/mind.toml` est **`"Brest, France"`**, toujours un nom seul, sans
+  coordonnées et sans clé de plus. La description de l'argument `place` le dit au LLM
+  (« une ville, suivie du pays si le nom est ambigu »). Le filtre `countryCode` d'Open-Meteo existe
+  aussi ; il n'est pas utilisé : une clé de plus pour un cas que le nom qualifié règle.
+- **`country` dans le résultat seulement pour un lieu demandé**, pas pour le lieu par défaut :
+  l'utilisateur connaît son pays, mais un « Brest » dit à voix haute peut être une autre ville, et le
+  LLM peut le signaler. `place` est le nom trouvé par le géocodage (« Brest »), ou celui de la
+  configuration quand les coordonnées sont données ; sans nom ni lieu, la clé est absente.
+- **Une seule requête de prévision par lieu, sur 7 jours** (`forecast_days=7`), quel que soit le
+  `days` demandé : le résultat est coupé à `days` à la lecture, donc « demain » puis « la semaine »
+  ne font qu'un appel. Le cache est tenu par coordonnées (arrondies au dix-millième de degré),
+  `cache_minutes` (10 par défaut, 0 pour aucun cache), 100 prévisions au plus. Les lieux trouvés
+  (100 au plus, sans expiration, clé = le nom en minuscules) ne repartent pas non plus.
+- **Le jour est « aujourd'hui » d'après la date du lieu** (l'heure de l'observation `current.time`,
+  fuseau `auto`), jamais l'horloge de la machine : une prévision pour Tokyo nomme ses jours à
+  l'heure de Tokyo. Ensuite « demain », puis le nom du jour (le septième jour n'a jamais le nom
+  d'aujourd'hui). Limite connue : une prévision gardée dans le cache à minuit garde ses noms
+  pendant `cache_minutes` au plus.
+- **Ce que reçoit le LLM** : `place`, `country` (lieu demandé), `now` (`temperature`, `feels_like`,
+  `sky`, `wind_kmh`, `rain_mm` seulement s'il pleut), `days` (`day`, `sky`, `min`, `max`,
+  `rain_chance`, `rain_mm` seulement à partir d'un millimètre). Températures, vent et probabilité à
+  l'entier près (`-0,4` donne `0`) ; millimètres au dixième. Une valeur absente de la réponse
+  d'Open-Meteo est absente du résultat, jamais inventée ; un code OMM inconnu donne « temps
+  indéterminé ».
+- **`days`** est lu avec indulgence (un nombre, un nombre écrit en texte, un décimal arrondi) et
+  ramené entre 1 et 7 au lieu d'être refusé : « sur dix jours » donne sept jours sans aller-retour
+  avec le LLM. Absent ou illisible : 2.
+- **Les mots sont dans `mind/prompts/weather.fr.toml`**, intégré au programme (les 28 codes OMM que
+  donne Open-Meteo, « aujourd'hui », « demain », les sept jours). Ils ne sont pas réglables par la
+  configuration pour l'instant (comme le fichier de consignes, pas comme les phrases d'attente) ;
+  le géocodage demande `language=fr` pour que le pays soit dit en français.
+- **Sans lieu par défaut**, la description de l'outil ne promet pas « chez l'utilisateur » (« La météo
+  d'un lieu, maintenant et les jours qui viennent. ») et un appel sans `place` donne : « Aucun lieu
+  par défaut : demande à l'utilisateur pour quel lieu. » Un lieu introuvable : « Lieu inconnu :
+  « x ». » ; un service qui ne répond pas, répond autre chose que 200 ou une page qui n'est pas du
+  JSON : « La météo ne répond pas pour le moment. » ou « …a répondu quelque chose
+  d'incompréhensible. ». Les journaux disent l'hôte, le code, la taille et la durée (ceux de
+  `Http`), et « from the cache » ; jamais le lieu.
+- **Les phrases d'attente de `web_weather`** (« Je regarde la météo à {}. », puis des phrases sans
+  lieu) sont dans le fichier livré et celui de `dev/` ; `web_search` et `web_read` restent à W5.
+- **Mesuré à la main le 2026-10-13** (10 requêtes en tout, y compris les 5 de l'enregistrement et
+  d'un essai de qualificatif) : le lieu par défaut (géocodage et prévision) en 305 ms, la même
+  question ensuite en 0 ms (cache), un lieu demandé (Lyon, 3 jours) en 68 ms, un lieu inconnu en
+  34 ms. Les réponses enregistrées sont dans `mind/tests/fixtures/web/weather-*.json`.
+
 ## Questions ouvertes
 
 1. Le lieu par défaut de la météo : lequel mettre dans `dev/mind.toml` ? Recommandation : la ville
    de Kris, par son nom seulement (le géocodage fait le reste), sans coordonnées précises.
-   **Décidé le 2026-10-13 avec Kris : Brest, par son nom.**
+   **Décidé le 2026-10-13 avec Kris : Brest, par son nom** ; en construisant W2, il a fallu
+   écrire `"Brest, France"` (voir plus haut : « Brest » seul est la ville de Biélorussie).
 2. Le `User-Agent` de navigateur pour DuckDuckGo : c'est se faire passer pour un navigateur.
    Recommandation : l'accepter, c'est le prix d'une recherche sans clé ; le jour où la page casse
    trop souvent, passer à un autre fournisseur plutôt que de ruser davantage.
