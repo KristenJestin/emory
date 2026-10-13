@@ -40,16 +40,23 @@ struct Open {
     device: Option<Device>,
 }
 
+#[derive(Default)]
+struct Inner {
+    open: HashMap<ConversationKey, Open>,
+    /// The device of the user's last turn, in any conversation.
+    last_device: Option<Device>,
+}
+
 /// The open conversations and the user's last turn in each. Cheap to clone, shared by the mind
 /// (which opens, advances and closes them) and the tools (which read them).
 #[derive(Clone, Default)]
-pub struct Conversations(Arc<Mutex<HashMap<ConversationKey, Open>>>);
+pub struct Conversations(Arc<Mutex<Inner>>);
 
 impl Conversations {
     /// A new conversation, before any turn.
     pub fn open(&self) -> ConversationKey {
         let key = ConversationKey::draw();
-        self.lock().insert(key.clone(), Open::default());
+        self.lock().open.insert(key.clone(), Open::default());
         key
     }
 
@@ -57,7 +64,7 @@ impl Conversations {
     /// timer rings on the device it was set on) find it with [`Self::device`].
     pub fn open_on(&self, device: Device) -> ConversationKey {
         let key = ConversationKey::draw();
-        self.lock().insert(
+        self.lock().open.insert(
             key.clone(),
             Open {
                 turn: None,
@@ -69,31 +76,43 @@ impl Conversations {
 
     /// The user has spoken: `turn` is the conversation's turn from now on.
     pub fn spoke(&self, key: &ConversationKey, turn: TurnId) {
-        if let Some(open) = self.lock().get_mut(key) {
+        let mut inner = self.lock();
+        if let Some(open) = inner.open.get_mut(key) {
             open.turn = Some(turn);
+            if let Some(device) = open.device.clone() {
+                inner.last_device = Some(device);
+            }
         }
     }
 
     /// The conversation is over: what the tools kept for it goes with it.
     pub fn close(&self, key: &ConversationKey) {
-        self.lock().remove(key);
+        self.lock().open.remove(key);
     }
 
     /// `None` if the conversation is not open; else the user's last turn, if any yet.
     pub fn turn(&self, key: &ConversationKey) -> Option<Option<TurnId>> {
-        self.lock().get(key).map(|open| open.turn)
+        self.lock().open.get(key).map(|open| open.turn)
     }
 
     /// The device of the conversation, if it is open and was opened with one.
     pub fn device(&self, key: &ConversationKey) -> Option<Device> {
-        self.lock().get(key).and_then(|open| open.device.clone())
+        self.lock()
+            .open
+            .get(key)
+            .and_then(|open| open.device.clone())
+    }
+
+    /// The device the user last spoke on, if any since the start.
+    pub fn last_device(&self) -> Option<Device> {
+        self.lock().last_device.clone()
     }
 
     pub fn is_open(&self, key: &ConversationKey) -> bool {
-        self.lock().contains_key(key)
+        self.lock().open.contains_key(key)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ConversationKey, Open>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -131,7 +150,14 @@ mod tests {
         assert_eq!(conversations.device(&on), Some(office));
         assert_eq!(conversations.turn(&on), Some(None));
         assert_eq!(conversations.device(&conversations.open()), None);
+        assert_eq!(conversations.last_device(), None);
+        conversations.spoke(&on, TurnId::new());
         conversations.close(&on);
         assert_eq!(conversations.device(&on), None);
+        // The last device spoken on outlives its conversation.
+        assert_eq!(
+            conversations.last_device(),
+            Some(Device::new("office").unwrap())
+        );
     }
 }
