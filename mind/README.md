@@ -50,3 +50,8 @@ dependencies that would log the messages themselves (the ACP client, MCP, the HT
 
 Tests: `cargo test -p mind`, with a fake LLM, a fake ACP agent and a fake Hippocampe; none of them
 reaches the real Hippocampe or spends a request.
+
+The talker bench (`examples/talker-bench.rs`, with `dev/talker-bench.toml`) sends the same request
+straight to the Anthropic API with `genai`, running the tools in-process, and records the times and
+the cost of each answer; `examples/acp-probe.rs` plays turns on a bus of its own to time today's
+path. Neither changes how `mind` answers. Results: `specs/mind.md`.

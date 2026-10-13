@@ -27,3 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 [[bin]]
 name = "mind"
 path = "src/main.rs"
+
+[dev-dependencies]
+# Only for the talker bench (`examples/talker-bench.rs`): `mind` itself does not call the API.
+genai = "0.7.0-rc.4"
