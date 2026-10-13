@@ -66,6 +66,14 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   give the host, the status, the size and the time of each request, never the question. The tests
   serve recorded answers (`tests/fixtures/web/`); `cargo test -p mind --test web real_wikipedia --
   --ignored --nocapture` (or `real_open_meteo`) asks the real service, by hand.
+- **The time** (`src/time/`, `[data]`, `[time]`, `specs/time.md`): the module `time`.
+  `time_timer(seconds, label?)` (1 s to 24 h), `time_reminder(text, at | in_seconds)` (`at` is a local
+  time `AAAA-MM-JJTHH:MM` in `[time] timezone`, up to a year ahead), `time_list()`,
+  `time_cancel(id)`. They are kept in `timers.json` in `[data] dir` (written beside, then renamed:
+  never half written; read again at start; a file that cannot be read is put aside as
+  `timers.json.broken-<date>` and `mind` starts without timers). Durations and due times are said
+  in French words. Nothing rings yet (the next unit). The logs give the id, the kind, the due time
+  and the device, never the label or the text.
 - **The memory**: one connection to Hippocampe kept open. Each sentence heard is searched as it is
   (top 5, given up beyond 300 ms); at the end of the turn, the title, summary and excerpt of the
   entries found go into the request, with what Hippocampe flags for the day (`briefing`) in the

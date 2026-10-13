@@ -89,6 +89,29 @@ enabled = true
 languages = ["fr", "en"]   # tried in this order: the next one is asked when the previous has nothing
 max_chars = 1200           # the longest summary given to the LLM
 
+# Where `mind` keeps what must outlive it (the timers today). Created if missing; in a container,
+# a volume.
+[data]
+# dir = "~/.local/state/emory/mind"   # the default: $XDG_STATE_HOME/emory/mind
+
+# The timers and reminders (`time_timer`, `time_reminder`, `time_list`, `time_cancel`), kept in
+# `<data.dir>/timers.json` and read again after a restart. Every key has the value shown; without
+# this section the module is on with these values. The ringing (the keys marked T2) comes in the
+# next unit: they are read and checked today, and used then.
+[time]
+enabled = true
+# store = "/path/to/timers.json"   # default: timers.json in data.dir
+timezone = ""                      # "Europe/Paris"; empty: the system's zone (TZ)
+# default_device = "office"        # T2: rings here when the timer has no device
+max_active = 50                    # timers and reminders waiting at once
+chime = true                       # T2: a short tone before the phrase
+repeat = 1                         # T2: said again this many times (0 to 5) if nobody pressed
+repeat_after_s = 60                # T2: seconds before it is said again (10 to 600)
+late_limit_hours = 12              # what came due during a longer stop is dropped at start
+timer_done = "Le minuteur {label} est fini."                # T2
+timer_done_unlabeled = "Le minuteur de {duration} est fini."  # T2, {duration} in words
+reminder = "Rappel : {text}."                               # T2
+
 # What the owner hears while the answer is prepared (1 to 2 s without a tool, 3 to 5 s when the LLM
 # reads the memory). One of three modes; the sounds themselves are drawn by the voice (`[cue]` in
 # its configuration: volume, shape of the tone, time between pulses).

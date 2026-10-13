@@ -18,6 +18,7 @@ pub mod mind;
 pub mod prompt;
 pub mod request;
 pub mod sentences;
+pub mod time;
 pub mod tools;
 pub mod waiting;
 pub mod web;
@@ -146,6 +147,9 @@ pub async fn run(config: Config) -> Result<()> {
     }
     if let Some(web) = web::Web::new(&config.web)? {
         modules.push(Arc::new(web));
+    }
+    if let Some(time) = time::Time::new(&config.time, &config.data, conversations.clone())? {
+        modules.push(Arc::new(time));
     }
     let brain = Backend::start(
         &config.llm,

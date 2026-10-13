@@ -55,6 +55,12 @@ pub struct Config {
     /// The web tools (`web_weather`, `web_wikipedia`…). On by default.
     #[serde(default)]
     pub web: crate::web::WebConfig,
+    /// Where `mind` keeps what must outlive it.
+    #[serde(default)]
+    pub data: crate::time::DataConfig,
+    /// The timers and reminders (`time_timer`, `time_reminder`…). On by default.
+    #[serde(default)]
+    pub time: crate::time::TimeConfig,
 }
 
 /// The person Emory serves. Both fields fill the placeholders of the instructions
@@ -634,6 +640,8 @@ impl std::str::FromStr for Config {
         );
         config.waiting.check()?;
         config.web.check()?;
+        config.data.check()?;
+        config.time.check()?;
         anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
@@ -860,6 +868,8 @@ token_file = "~/t.token"
         let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
         assert!(dev.web.enabled && dev.web.wikipedia.enabled && dev.web.weather.enabled);
         assert!(!dev.web.weather.place.is_empty());
+        assert!(dev.time.enabled && !dev.time.timezone.is_empty());
+        assert!(dev.data.dir().unwrap().ends_with("emory/mind-dev"));
         // (its phrases file is relative to the root of the repository: only the values are checked)
         assert!(dev.waiting.check().is_ok());
     }
@@ -881,6 +891,36 @@ token_file = "~/t.token"
             ("[web.wikipedia]\nmax_chars = 1", "web.wikipedia.max_chars"),
             ("[web]\nvolume = 3", "volume"),
             ("[web.weathr]\nplace = \"x\"", "weathr"),
+        ] {
+            let error = format!(
+                "{:#}",
+                format!("{MINIMAL}\n{bad}\n").parse::<Config>().unwrap_err()
+            );
+            assert!(error.contains(key), "{bad}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_time_module_is_on_by_default_and_its_sections_are_checked() {
+        let c: Config = MINIMAL.parse().unwrap();
+        assert!(c.time.enabled && c.time.timezone.is_empty() && c.data.dir.is_none());
+        assert_eq!(c.time.max_active, 50);
+        let c: Config = format!(
+            "{MINIMAL}\n[data]\ndir = \"/var/lib/emory\"\n[time]\nenabled = false\ntimezone = \"Europe/Paris\"\n"
+        )
+        .parse()
+        .unwrap();
+        assert!(!c.time.enabled);
+        assert_eq!(c.data.dir().unwrap(), PathBuf::from("/var/lib/emory"));
+        for (bad, key) in [
+            ("[time]\ntimezone = \"Mars/Olympus\"", "time.timezone"),
+            ("[time]\nmax_active = 0", "time.max_active"),
+            ("[time]\nrepeat = 9", "time.repeat"),
+            ("[time]\nreminder = \"Rappel.\"", "time.reminder"),
+            ("[data]\ndir = \"\"", "data.dir"),
+            ("[data]\nfolder = \"x\"", "folder"),
+            ("[time]\nvolume = 3", "volume"),
+            ("[timer]\nenabled = true", "timer"),
         ] {
             let error = format!(
                 "{:#}",

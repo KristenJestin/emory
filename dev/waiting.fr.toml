@@ -120,3 +120,16 @@ plain = [
   "Je regarde sur Wikipédia.",
   "Je cherche sur Wikipédia.",
 ]
+
+# Les minuteurs et rappels : posés, listés, annulés en un instant, la réponse suit aussitôt.
+[tools.time_timer]
+silent = true
+
+[tools.time_reminder]
+silent = true
+
+[tools.time_list]
+silent = true
+
+[tools.time_cancel]
+silent = true
