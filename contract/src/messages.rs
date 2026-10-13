@@ -112,6 +112,31 @@ pub struct Say {
     pub last: bool,
 }
 
+/// A sound that tells the owner Emory heard while the answer is prepared (`voice.cue`). It is not
+/// part of the answer: the voice plays it before the first sentence, and the first sentence of the
+/// turn ends it (a [`Stop`] too).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cue {
+    pub turn: TurnId,
+    pub device: Device,
+    pub kind: CueKind,
+    /// The phrase to say, for [`CueKind::Speech`] only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// What a [`Cue`] asks the voice to play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CueKind {
+    /// The short tone of two rising notes: the turn is heard.
+    Tone,
+    /// A soft pulse, repeated until the answer starts (or the turn is stopped).
+    Pulse,
+    /// A short phrase, said like a sentence of the answer (`text`).
+    Speech,
+}
+
 /// Throws away everything the voice has not said yet for this turn (`voice.stop`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stop {

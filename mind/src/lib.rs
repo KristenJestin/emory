@@ -16,6 +16,7 @@ pub mod prompt;
 pub mod request;
 pub mod sentences;
 pub mod tools;
+pub mod waiting;
 
 use std::{sync::Arc, time::Duration};
 
@@ -122,6 +123,8 @@ pub async fn run(config: Config) -> Result<()> {
     let client = bus::connect(&config.nats, "mind", true).await?;
     info!(url = %config.nats.url, "connected to the bus");
     let conversations = Conversations::default();
+    let waiter = config.waiting.waiter()?;
+    info!(mode = ?waiter.mode(), "waiting cue");
     let mut modules: Vec<Arc<dyn tools::Module>> = vec![Arc::new(HippocampeTools::new(
         hippocampe.clone(),
         config.hippocampe.tools.clone(),
@@ -136,7 +139,11 @@ pub async fn run(config: Config) -> Result<()> {
             conversations.clone(),
         )));
     }
-    let server = tools::serve(Tools::new(modules), config.tools.bind).await?;
+    let server = tools::serve(
+        Tools::new(modules).observed_by(Arc::new(waiter.clone())),
+        config.tools.bind,
+    )
+    .await?;
 
     let workdir = match &config.llm.workdir {
         Some(dir) => dir.0.clone(),
@@ -174,7 +181,8 @@ pub async fn run(config: Config) -> Result<()> {
             nothing_heard: config.conversation.nothing_heard.clone(),
         },
     )
-    .with_conversations(conversations);
+    .with_conversations(conversations)
+    .with_waiter(waiter);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut shutdown = std::pin::pin!(shutdown_signal());

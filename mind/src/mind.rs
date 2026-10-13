@@ -31,7 +31,7 @@ use std::{
     time::Duration,
 };
 
-use contract::{Button, Device, Say, Sentence, State, Stop, Turn, TurnId};
+use contract::{Button, Cue, Device, Say, Sentence, State, Stop, Turn, TurnId};
 use futures_util::{
     FutureExt,
     future::{BoxFuture, Shared, join_all},
@@ -50,6 +50,7 @@ use crate::{
     memory::{Found, Memory},
     request,
     sentences::Splitter,
+    waiting::Waiter,
 };
 
 /// Said when the LLM cannot be reached, or gave nothing: the owner pressed and waits for something.
@@ -67,6 +68,11 @@ const HEADS_UP_WAIT: Duration = Duration::from_secs(2);
 pub trait Outbox: Send + Sync + 'static {
     fn say(&self, say: Say) -> impl Future<Output = anyhow::Result<()>> + Send;
     fn stop(&self, stop: Stop) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// A waiting cue for the voice. By default it goes nowhere.
+    fn cue(&self, cue: Cue) -> impl Future<Output = anyhow::Result<()>> + Send {
+        let _ = cue;
+        async { Ok(()) }
+    }
 }
 
 /// What the mind hears, in the order of the bus.
@@ -227,6 +233,7 @@ impl DeviceState {
 enum Message {
     Say(Say),
     Stop(Stop),
+    Cue(Cue),
 }
 
 /// The messages to the voice, published in the order they were queued, by a task of their own.
@@ -249,6 +256,11 @@ impl Mailbox {
                             warn!("publishing voice.stop: {e:#}");
                         }
                     }
+                    Message::Cue(cue) => {
+                        if let Err(e) = out.cue(cue).await {
+                            warn!("publishing voice.cue: {e:#}");
+                        }
+                    }
                 }
             }
         });
@@ -267,6 +279,7 @@ pub struct Mind<B, M> {
     settings: Settings,
     devices: HashMap<Device, DeviceState>,
     conversations: Conversations,
+    waiter: Waiter,
 }
 
 impl<B: Brain, M: Memory> Mind<B, M> {
@@ -279,7 +292,17 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             settings,
             devices: HashMap::new(),
             conversations: Conversations::default(),
+            waiter: Waiter::off(),
         }
+    }
+
+    /// Plays the waiting cue of `waiter` while the answers are prepared: its cues leave with the
+    /// sentences, in order. Give the same waiter to the tools, which tell it of each call.
+    pub fn with_waiter(mut self, waiter: Waiter) -> Self {
+        let mail = self.mail.clone();
+        waiter.connect(Arc::new(move |cue| mail.send(Message::Cue(cue))));
+        self.waiter = waiter;
+        self
     }
 
     /// Shares the open conversations with the tools.
@@ -342,6 +365,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let Some(answer) = state.answer.take() else {
             return;
         };
+        self.waiter.cancel(device);
         // Stopped first, under the lock the request is sent with: either the request went
         // before, and its cancel follows it to the agent, or it never goes.
         let prompted = {
@@ -490,12 +514,15 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let memory = self.memory.clone();
         let mail = self.mail.clone();
         let conversations = self.conversations.clone();
+        let waiter = self.waiter.clone();
         let state = self.state(&device);
         let Some(conversation) = state.conversation.as_mut() else {
             return;
         };
         // The user has spoken: what a tool waited for in an earlier turn may go now.
         conversations.spoke(&conversation.key, turn.turn);
+        // The turn is closed and heard: the owner is told while the answer is prepared.
+        waiter.begin(&device, turn.turn, conversation.key.clone());
         let gate = Arc::new(Gate::default());
         let (done, running) = Running::new();
         let job = Job {
@@ -511,6 +538,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             previous: conversation.previous.take(),
             gate: gate.clone(),
             received,
+            waiter,
             _done: done,
         };
         conversation.previous = Some(Previous {
@@ -538,6 +566,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             index: 0,
             last_sent: false,
             received: Instant::now(),
+            waiter: self.waiter.clone(),
         };
         sayer.publish(self.settings.nothing_heard.clone(), true);
         // No task: the answer is already over, but the voice may still be saying it.
@@ -621,6 +650,7 @@ struct Job<B, M> {
     previous: Option<Previous>,
     gate: Arc<Gate>,
     received: Instant,
+    waiter: Waiter,
     /// Dropped when the answer ends: the next request may go.
     _done: watch::Sender<()>,
 }
@@ -680,6 +710,7 @@ impl<B: Brain, M: Memory> Job<B, M> {
             index: 0,
             last_sent: false,
             received: self.received,
+            waiter: self.waiter.clone(),
         };
         let opened = match opening.await {
             Ok(opened) => opened,
@@ -777,6 +808,7 @@ struct Sayer {
     index: u32,
     last_sent: bool,
     received: Instant,
+    waiter: Waiter,
 }
 
 impl Sayer {
@@ -788,6 +820,10 @@ impl Sayer {
             let gate = self.gate.lock();
             if gate.stopped {
                 return;
+            }
+            if self.index == 0 {
+                // Before the sentence is queued, so that no cue is queued after it.
+                self.waiter.answer_started(&self.device, self.turn);
             }
             self.mail.send(Message::Say(Say {
                 turn: self.turn,

@@ -12,13 +12,64 @@ l'appareil qui a entendu Kris ; `emory-mouth`, sur l'appareil, joue ce flux.
    revient. Aucun service de synthèse dans le cloud en version 1.
 2. **En flux, phrase par phrase.** La bouche commence à parler dès que l'esprit a écrit sa
    première phrase. Le but : le premier son moins de 0,2 s après la réception d'une phrase.
-3. **Pas de phrase d'attente.** Emory ne dit jamais « je regarde » pour faire patienter. Il répond
+3. **Pas de phrase d'attente du LLM.** Le LLM ne dit jamais « je regarde » pour faire patienter
+   (le signal d'attente du 2026-10-13, plus bas, est autre chose : c'est le code qui le joue, choisi
+   et borné, et il se coupe dès que la réponse commence). Le LLM répond
    avec ce qu'il sait ; quand un travail lancé en parallèle aboutit, l'esprit jette les phrases
    pas encore dites et la bouche enchaîne au bord de la phrase en cours (« … ah, je l'ai : »),
    jamais au milieu d'un mot. Ce qui est dit en attendant doit être utile, pas du remplissage.
 4. **Le moteur est un adaptateur.** Changer de moteur (passer sur la carte graphique, ou au cloud
    un jour) ne touche ni à `mind` ni à `emory-mouth`.
 5. **Emory ne gêne pas le reste du serveur**, avec les mêmes limites que `hearing`.
+
+## Le signal d'attente (2026-10-13)
+
+Construit le 2026-10-13 : un son, ou une phrase courte, pendant que `mind` prépare sa réponse (1 à
+2 s sans outil, 3 à 5 s quand le LLM lit la mémoire). `mind` décide quand (voir
+[`mind.md`](mind.md), « Le signal d'attente ») et envoie un `Cue` sur `voice.cue` ; `voice` fabrique
+et joue le son, par le chemin de la voix, donc `emory-mouth` n'a rien à savoir de nouveau.
+
+**Les sons sont dessinés par le code** (`voice/src/cue.rs`), sans fichier audio : des sinus sous
+une enveloppe (attaque de 6 ms, chute exponentielle, un faible second harmonique), à 24 kHz,
+comme les moteurs.
+
+- **Le ton** : deux notes montantes (660 puis 880 Hz, 130 et 190 ms, 25 ms entre elles, 0,34 s
+  en tout). Quatre formes au choix dans `[cue] tone` : `rising` (défaut), `bright` (plus aiguë et
+  plus courte), `warm` (plus grave, plus ronde), `single` (une seule note).
+- **La pulsation** : une note douce de 523 Hz, 160 ms, en cloche, à 0,45 fois le volume du ton.
+  `voice` la renvoie toutes les `pulse_interval_ms` (1,6 s) tant que la réponse n'a pas commencé,
+  et s'arrête seule au bout de 30 s si `mind` disparaît.
+- **La phrase** passe par le moteur comme une phrase de la réponse, avec le numéro de phrase
+  `u32::MAX`.
+- Le volume (`[cue] volume`, de 0 à 1, 0,3 par défaut) est le pic du ton, en fraction du maximum.
+
+**La file** (`voice/src/queue.rs`) tient le signal : il n'a qu'un écrivain à la fois sur la
+numérotation des morceaux (`Emory-Seq`), donc un son n'est jamais émis pendant qu'une phrase est
+synthétisée. Règles :
+
+- un `Cue` ne démarre rien pour un tour déjà arrêté ou remplacé, ni **après la première phrase de
+  la réponse** (alors la pulsation s'arrête, les phrases d'attente pas encore commencées sont
+  jetées) ;
+- une pulsation n'est pas un flux en temps réel : un son d'un coup, répété par l'échéance de la
+  file. Le plus tard qu'elle puisse gêner la première parole est donc la fin de la pulsation déjà
+  envoyée (160 ms), et rien n'est à couper ;
+- **la réponse qui arrive pendant une phrase d'attente la suit** (décidé le 2026-10-13). Si le son
+  de la phrase est déjà parti, elle va jusqu'au bout et la réponse enchaîne derrière (le tampon
+  de `emory-mouth` joue dans l'ordre) : couper au milieu d'un mot sonne cassé, et ce que ça coûte
+  est au plus une seconde de parole. Si aucun son n'en est parti (elle attend le moteur), elle est
+  coupée : personne n'a rien entendu, la réponse passe tout de suite ;
+- deux phrases d'attente d'un même tour passent l'une après l'autre ; un `Stop` coupe tout.
+
+**Mesuré le 2026-10-13** sur un bus à part (voice et Pocket réels, `voice/examples/cue-check.rs`,
+rien de joué) : le ton part 6 ms après le `Cue` ; une pulsation toutes les 1,6 s ; la réponse
+envoyée à 4,5 s fait son premier son à 4,8 s et aucune pulsation ne la suit (la dernière était à
+3,7 s) ; avec une phrase d'attente (premier son de la phrase à 0,3 s) et la réponse envoyée à
+0,9 s, la phrase est entière puis la réponse, numérotation sans trou ; après un `Stop`, plus aucune
+pulsation. Jamais écouté.
+
+**Une limite** : après une phrase d'attente, `Speaking` `end` part au bout du délai de grâce
+(700 ms) si la réponse n'est pas encore là, puis `start` à nouveau : la musique peut remonter
+un instant entre les deux. Un ton ou une pulsation ne baisse pas la musique.
 
 ## L'interruption
 

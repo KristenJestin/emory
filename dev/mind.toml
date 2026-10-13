@@ -13,3 +13,8 @@ address = "un homme ; tu le tutoies"
 [hippocampe]
 url = "https://wiki.krisnet.work/mcp"
 token_file = "~/.krisnet/hippocampe-prod-readonly.token"
+
+# While the answer is prepared the owner hears a tone, then a soft pulse if it takes long.
+# To try the other kind, a short spoken phrase: mode = "speech" (see mind/examples/mind.toml).
+[waiting]
+mode = "tone"
