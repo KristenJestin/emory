@@ -97,4 +97,25 @@ mod tests {
         let text = render(shipped, &OwnerConfig::default());
         assert!(text.contains(DEFAULT_OWNER));
     }
+
+    #[test]
+    fn the_shipped_prompt_gives_the_rules_of_writing_to_the_memory() {
+        let text = render(
+            include_str!("../prompts/system.fr.md"),
+            &OwnerConfig::default(),
+        );
+        // Only on request, search first, where the words come from, and how to find and undo.
+        for rule in [
+            "te demande de noter",
+            "Cherche d'abord",
+            "`extracted`",
+            "`said_by`",
+            "`inferred`",
+            "`by` valant `emory`",
+            "`since`",
+            "archive la fiche",
+        ] {
+            assert!(text.contains(rule), "the prompt no longer says: {rule}");
+        }
+    }
 }
