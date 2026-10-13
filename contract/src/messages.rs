@@ -200,7 +200,7 @@ impl ActionReply {
 /// reply ([`VocabularyReply`]). The mind sends it only once the user has confirmed the word.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VocabularyAdd {
-    /// The word or name, written as it should come out (`Hemera`).
+    /// The word or name, written as it should come out (`Grafana`).
     pub word: String,
     /// What the transcription gave instead, when it is known (`et mera`): kept beside the word.
     #[serde(default, skip_serializing_if = "Option::is_none")]

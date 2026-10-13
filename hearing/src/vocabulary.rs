@@ -27,9 +27,7 @@ pub fn answer(vocabulary: &Vocabulary, takes_words: bool, payload: &[u8]) -> Voc
                 "word added to the vocabulary"
             );
             if !takes_words && added == Added::New {
-                warn!(
-                    "the greedy search takes no words: the word counts from the next start"
-                );
+                warn!("the greedy search takes no words: the word counts from the next start");
             }
             VocabularyReply::success(added == Added::Known, takes_words)
         }

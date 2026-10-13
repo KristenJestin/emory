@@ -115,9 +115,9 @@ fn action_replies() {
 
 #[test]
 fn vocabulary() {
-    let add: VocabularyAdd = round_trip(json!({ "word": "Hemera", "heard_as": "et mera" }));
-    assert_eq!(add.heard_as.as_deref(), Some("et mera"));
-    let bare: VocabularyAdd = round_trip(json!({ "word": "Hemera" }));
+    let add: VocabularyAdd = round_trip(json!({ "word": "Grafana", "heard_as": "gras fana" }));
+    assert_eq!(add.heard_as.as_deref(), Some("gras fana"));
+    let bare: VocabularyAdd = round_trip(json!({ "word": "Grafana" }));
     assert_eq!(bare.heard_as, None);
     let added: VocabularyReply = round_trip(json!({ "ok": true, "known": false, "in_use": true }));
     assert_eq!(added, VocabularyReply::success(false, true));

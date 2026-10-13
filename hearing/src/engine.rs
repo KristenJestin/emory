@@ -560,7 +560,10 @@ mod tests {
         };
         let started = Instant::now();
         let recognizer = OfflineRecognizer::create(&config).unwrap();
-        eprintln!("recognizer load (what a reload would cost): {:?}", started.elapsed());
+        eprintln!(
+            "recognizer load (what a reload would cost): {:?}",
+            started.elapsed()
+        );
         const ROUNDS: u32 = 200;
         let time = |words: &str| {
             let started = Instant::now();
@@ -575,12 +578,23 @@ mod tests {
             started.elapsed() / ROUNDS
         };
         let names = [
-            "Emory", "Grafana", "Nextcloud", "Syncthing", "Jellyfin", "Traefik", "Proxmox",
-            "Kubernetes", "Gare du Nord", "Saint-Ouen",
+            "Emory",
+            "Grafana",
+            "Nextcloud",
+            "Syncthing",
+            "Jellyfin",
+            "Traefik",
+            "Proxmox",
+            "Kubernetes",
+            "Gare du Nord",
+            "Saint-Ouen",
         ];
         eprintln!("stream without words: {:?}", time(""));
         for count in [1, 5, 10] {
-            eprintln!("stream with {count} words: {:?}", time(&names[..count].join("/")));
+            eprintln!(
+                "stream with {count} words: {:?}",
+                time(&names[..count].join("/"))
+            );
         }
         let fifty: Vec<String> = (0..50).map(|i| format!("{} {i}", names[i % 10])).collect();
         eprintln!("stream with 50 words: {:?}", time(&fifty.join("/")));
