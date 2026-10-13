@@ -107,6 +107,9 @@ optional = true
 description = "Lecture aléatoire."
 ```
 
+`name`, `description` et `argv` sont obligatoires ; toutes les autres clés ont la valeur par
+défaut écrite en commentaire, ou plus bas. `fields` absent garde tout ; `arguments` absent, aucune.
+
 **Les arguments.** Quatre types, chacun avec sa `description` (pour le LLM) et `optional` (par
 défaut `false`) :
 

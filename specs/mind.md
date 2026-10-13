@@ -789,7 +789,7 @@ voix (jamais d'empreinte ni de son).
 consignes à elle (`mind/prompts/background.fr.md`). Deux modes :
 
 - `inbox` (**à commencer par lui**) : chaque chose à garder part dans la boîte d'arrivée
-  d'Hippocampe (`inbox_add`) comme une proposition ; Kris accepte ou jette. Rien n'entre dans les
+  d'Hippocampe (`inbox_add`, relayé pour cette session seulement) comme une proposition ; Kris accepte ou jette. Rien n'entre dans les
   fiches sans lui. Raison : on ne sait pas encore ce que le LLM jugera bon à garder, et une boîte
   pleine de bruit se voit sans abîmer la mémoire.
 - `write` : les fiches sont écrites directement, `inferred` sauf ce que l'utilisateur a dit mot
