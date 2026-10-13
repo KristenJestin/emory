@@ -2,7 +2,8 @@
 
 The hearing of Emory, version 1: the button ear's server side (`specs/hearing.md`). From the audio
 of the ears (`ear.*.audio`) to the sentences (`hearing.sentence`) and the whole turn
-(`hearing.turn`), with Silero VAD and Parakeet TDT 0.6B v3 int8 (sherpa-onnx, inside the binary).
+(`hearing.turn`), with Silero VAD and Parakeet TDT 0.6B v3 (sherpa-onnx, inside the binary): int8 on
+the CPU, fp32 on an NVIDIA GPU (the server's setup, see "Run on an NVIDIA GPU").
 
 ```sh
 hearing/scripts/download-models.sh               # models in ~/.cache/emory/models/
@@ -95,29 +96,75 @@ cuDNN 9 (`libcudnn.so.9`), all found by the dynamic linker (on Arch: the `cuda` 
 packages; `ldconfig -p | grep -E 'cudnn|cudart|cublas|curand'` must list them). Checked with CUDA
 13.3 and cuDNN 9.25 on an RTX 3070 Ti, driver 610.
 
-Then, in the configuration:
+Then, in the configuration (the whole server setup is `examples/hearing-server.toml`):
 
 ```toml
+[models]
+parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3"   # the fp32 folder
 [transcription]
-provider = "cuda"      # "cpu" by default
+provider = "cuda"          # "cpu" by default
+precision = "fp32"         # "int8" or "fp32"; absent: the int8 files of the folder if any, else fp32
+fallback_to_cpu = false    # the default, see below
 [vad]
-provider = "cpu"       # Silero stays here (see below)
+provider = "cpu"           # Silero stays here (see below)
 ```
 
-`provider = "cuda"` with a CPU build is a start-up error (not a silent fall back to the CPU). The
-`Parakeet ready` line at `info` says the provider, the load time and the warm-up time.
+**On the server all the AI computation runs on the GPU** (decided 2026-10-13): the CPU belongs to
+the other services, and serves Emory only as a fallback. **On a development PC it stays on the CPU
+with the int8 model** (`examples/hearing.toml`), and the GPU is used only for measures.
+
+### When CUDA cannot be had
+
+- `provider = "cuda"` with a CPU build, or with a missing driver, CUDA or cuDNN library, or no free
+  memory on the card, is an **error at start** that says why. This is the default, on purpose: a
+  server that falls back to the CPU in silence slows down everything else on the machine and
+  nobody knows.
+- `fallback_to_cpu = true` loads Parakeet on the CPU instead, and logs a `warn` line, `Parakeet:
+  cuda is unavailable, FALLING BACK TO THE CPU`, with the cause; `Parakeet ready` then gives the real
+  `provider`. The fp32 model on the CPU is 2.3 times slower than the int8 one (523 ms against 205
+  ms a sentence); for a quick CPU, configure int8 on the CPU, not this.
+- After the load, `hearing` checks that onnxruntime really loaded its CUDA provider
+  (`libonnxruntime_providers_cuda` in the process, Linux only): asking for CUDA does not guarantee
+  getting it. This check has not yet run on a real card (see `specs/hearing.md`, "à mesurer").
+- `precision` is followed to the letter when given: a missing file is an error naming the file,
+  never another model.
+
+### The fp32 model
+
+`EMORY_FP32=1 hearing/scripts/download-models.sh` adds the full-precision Parakeet beside the int8
+one (2.5 GB from Hugging Face; run it again after an interrupted download). It goes into
+`~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3`, with its `bpe.vocab`: the files
+`encoder.onnx`, `encoder.weights` (must stay beside the encoder), `decoder.onnx`, `joiner.onnx` and
+`tokens.txt`.
+
+### Measuring CPU against GPU
+
+`scripts/measure-gpu.sh` measures, for recorded sentences, int8 CPU, fp32 CPU and fp32 CUDA (greedy
+and beam + the vocabulary), and Silero on the CPU against CUDA: times (load, warm-up, per sentence),
+CPU used, VRAM of the process, differences in the words. It builds a Markdown table.
+
+```sh
+hearing/scripts/build-cuda.sh                        # also builds hearing-measure
+hearing/scripts/measure-gpu.sh --dry-run a.wav       # the plan, nothing runs
+hearing/scripts/measure-gpu.sh --cpu-only a.wav      # the CPU rows only, no GPU
+hearing/scripts/measure-gpu.sh --owner-ok a.wav b.wav   # all of it: uses the GPU
+```
+
+`--owner-ok` is for when the owner has agreed and freed the card (on the development PC, stopped
+voxtype); the script refuses to start if voxtype runs or the card has less than 4500 MiB free. The
+recordings are read in place (16 kHz mono 16-bit) and never leave the machine; the results folder
+(`~/.local/state/emory/measure-gpu/<date>` by default) holds their texts, so it stays out of the
+repository. `hearing-measure run|table` is the program behind it (one setting per process).
 
 Which model, which unit (measured on 2026-10-12, see `specs/hearing.md`):
 
 - **Parakeet int8 on the GPU gains nothing**: onnxruntime keeps the quantized operations on the CPU
   (the CPU time used stays at 93 % of a CPU run) and the speed is the same, or lower with the
-  hotwords. The GPU wants the full-precision model: `EMORY_FP32=1 scripts/download-models.sh` puts
-  it in `~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3` (2.5 GB, with its
-  `bpe.vocab`); `parakeet` points to that folder. The program takes `encoder.int8.onnx` when the
-  folder has it, else `encoder.onnx` (same for the decoder and the joiner).
+  hotwords. The GPU wants the full-precision model (above). **The fp32 model on the GPU has not
+  been measured yet**: that is what `measure-gpu.sh` is for.
 - **Silero stays on the CPU** (`[vad] provider = "cpu"`, the default): on the GPU it is 7 times
-  slower.
+  slower (25 ms of compute per second of audio against 3.6).
 - The GPU memory is shared with the other models of the machine: the int8 model holds about
-  0.75 GB, the fp32 one needs more than 2.4 GB for its weights alone.
+  0.75 GB, the fp32 one needs more than 2.4 GB for its weights alone (about 3 GB, to be measured).
 - The words are not identical to the CPU's: a few words per twenty sentences change with the
   quantized operations, neither better nor worse.

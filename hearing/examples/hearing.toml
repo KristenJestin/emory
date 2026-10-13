@@ -16,8 +16,12 @@ parakeet = "~/.cache/emory/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 [transcription]
 threads = 4
 # Where Parakeet computes: "cpu" (default) or "cuda" (an NVIDIA GPU, needs the CUDA build:
-# scripts/build-cuda.sh). See "Run on an NVIDIA GPU" in the README before using it.
+# scripts/build-cuda.sh). This file is the development PC's: CPU, int8. The server's setup (CUDA,
+# the fp32 model, no silent fallback to the CPU) is examples/hearing-server.toml; see "Run on an
+# NVIDIA GPU" in the README.
 # provider = "cuda"
+# precision = "fp32"           # "int8" or "fp32"; absent: the int8 files of the folder, else fp32
+# fallback_to_cpu = true       # with "cuda": load on the CPU, with a warning, if the card fails
 # The user's own words live outside the repository, in the data folder ($XDG_DATA_HOME/emory,
 # ~/.local/share/emory by default; on the server, a volume): the vocabulary (hotwords.txt) and the
 # corrections table (corrections.tsv). The files of this folder are starting points to copy there.
