@@ -44,6 +44,21 @@ pub struct Config {
     pub hippocampe: HippocampeConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// Who Emory talks to. Absent: the instructions name nobody.
+    #[serde(default)]
+    pub owner: OwnerConfig,
+}
+
+/// The person Emory serves. Both fields fill the placeholders of the instructions
+/// (`{owner}` and `{address}`, see [`crate::prompt`]); nothing about the owner is in the code.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerConfig {
+    /// The name the owner goes by. Without it, the instructions say « la personne qui te parle ».
+    pub name: Option<String>,
+    /// How to speak to the owner, free text in the language of the instructions (« un homme ;
+    /// tu le tutoies »). Without it, the instructions only say to use « tu ».
+    pub address: Option<String>,
 }
 
 /// The connection to the bus. Development uses neither `ca` nor `nkey`; the locked-down server
@@ -141,7 +156,7 @@ impl ConversationConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HippocampeConfig {
-    /// The MCP endpoint (`https://wiki.krisnet.work/mcp`).
+    /// The MCP endpoint (`https://hippocampe.example/mcp`).
     pub url: String,
     /// The file that holds the key. Read when the connection opens, never logged.
     pub token_file: ConfigPath,
@@ -249,6 +264,15 @@ impl std::str::FromStr for Config {
             (100..=120_000).contains(&config.hippocampe.tool_timeout_ms),
             "hippocampe.tool_timeout_ms must be between 100 and 120000"
         );
+        for (key, value) in [
+            ("owner.name", &config.owner.name),
+            ("owner.address", &config.owner.address),
+        ] {
+            anyhow::ensure!(
+                value.as_deref().is_none_or(|v| !v.trim().is_empty()),
+                "{key} must not be blank (leave it out instead)"
+            );
+        }
         anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
@@ -285,6 +309,33 @@ token_file = "~/t.token"
         assert_eq!(c.hippocampe.tool_timeout(), Duration::from_secs(10));
         assert!(c.hippocampe.tools.contains(&"search".to_owned()));
         assert!(c.tools.bind.ip().is_loopback());
+        assert!(c.owner.name.is_none() && c.owner.address.is_none());
+    }
+
+    #[test]
+    fn the_owner_section_gives_a_name_and_how_to_address_them() {
+        let c: Config = format!(
+            "{MINIMAL}\n[owner]\nname = \"Alex\"\naddress = \"une femme ; tu la tutoies\"\n"
+        )
+        .parse()
+        .unwrap();
+        assert_eq!(c.owner.name.as_deref(), Some("Alex"));
+        assert_eq!(
+            c.owner.address.as_deref(),
+            Some("une femme ; tu la tutoies")
+        );
+        let c: Config = format!("{MINIMAL}\n[owner]\nname = \"Alex\"\n")
+            .parse()
+            .unwrap();
+        assert!(c.owner.address.is_none());
+        for bad in ["name = \" \"", "address = \"\"", "nick = \"x\""] {
+            assert!(
+                format!("{MINIMAL}\n[owner]\n{bad}\n")
+                    .parse::<Config>()
+                    .is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

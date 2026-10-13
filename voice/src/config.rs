@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// # nats_nkey_seed_file = "/etc/emory/voice.nk"   # the seed of the voice's key (nkey)
 /// # engine = "pocket"                # or "kyutai"
 /// engine_url = "http://127.0.0.1:8000"
-/// voice = "estelle"                  # by default, estelle for Pocket, Kris's voice for Kyutai
+/// voice = "estelle"                  # by default, estelle for Pocket, another one for Kyutai
 /// # engine_idle_timeout = 5          # seconds without a packet from the engine
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
@@ -76,16 +76,16 @@ pub enum EngineKind {
 
 /// The voice of Pocket chosen on 2026-10-11.
 pub const POCKET_VOICE: &str = "estelle";
-/// The voice of Kyutai TTS 1.6B chosen by Kris on 2026-10-12, in `kyutai/tts-voices`.
+/// The voice of Kyutai TTS 1.6B chosen on 2026-10-12, in `kyutai/tts-voices`.
 pub const KYUTAI_VOICE: &str = "cml-tts/fr/5476_3103_000072-0001.wav";
 
-/// How Kyutai TTS 1.6B says a sentence. The defaults are the ones Kris chose on 2026-10-12 (see
+/// How Kyutai TTS 1.6B says a sentence. The defaults are the ones chosen on 2026-10-12 (see
 /// `specs/voice.md`).
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct KyutaiSettings {
     /// Added to the odds of a pause between two words: negative speaks faster. -3 is about a
-    /// quarter faster than 0, which Kris found slow.
+    /// quarter faster than 0, which was found slow.
     pub padding_bonus: f32,
     /// At most this many pauses in a row.
     pub max_padding: u32,
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn kyutai_gets_kris_s_voice_and_settings() {
+    fn kyutai_gets_its_default_voice_and_settings() {
         let base = "nats_url = \"a\"\nengine_url = \"b\"\nengine = \"kyutai\"\n";
         let c: Config = base.parse().unwrap();
         assert_eq!(c.engine, super::EngineKind::Kyutai);

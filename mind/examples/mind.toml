@@ -25,15 +25,21 @@ nothing_heard = "Je n'ai rien entendu."
 
 # The long-term memory, by MCP. The key is read from its file when the connection opens.
 [hippocampe]
-url = "https://wiki.krisnet.work/mcp"
+url = "https://hippocampe.example/mcp"
 token_file = "/etc/emory/hippocampe.token"
-# The search made on each sentence while Kris speaks: how many entries, and when to give up.
+# The search made on each sentence while the owner speaks: how many entries, and when to give up.
 search_limit = 5
 search_timeout_ms = 300
 # Hippocampe's tools offered to the LLM (as `hippocampe_<name>`), when the key allows them.
 tools = ["search", "read", "write", "link", "types"]
 # How long a tool call of the LLM may wait for Hippocampe.
 tool_timeout_ms = 10000
+
+# Who Emory talks to. The instructions (`prompts/system.fr.md`) are a template filled from here
+# (`{owner}` and `{address}`); without this section they name nobody and only say to use « tu ».
+[owner]
+name = "Alex"                        # without it: « la personne qui te parle »
+address = "une femme ; tu la tutoies"   # free text, in the language of the instructions
 
 # Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
 [tools]

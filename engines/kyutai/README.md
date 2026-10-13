@@ -1,14 +1,14 @@
 # Kyutai TTS 1.6B, the voice engine on the graphics card
 
 Kyutai TTS 1.6B (`kyutai/tts-1.6b-en_fr`, CC-BY-4.0) through the Python `moshi` package (0.2.13),
-behind `serve.py`, a small HTTP server of ours. The voice is the one Kris chose on 2026-10-12,
+behind `serve.py`, a small HTTP server of ours. The voice is the one chosen on 2026-10-12,
 `cml-tts/fr/5476_3103_000072-0001.wav` from `kyutai/tts-voices`, with `padding_bonus = -3`.
 
 The API, the same shape as Pocket's so that `voice` handles both the same way:
 
 - `GET /health`: 200 once the model is loaded and warm;
 - `POST /tts` with a JSON object `{"text", "voice"?, "padding_bonus"?, "max_padding"?, "temp"?,
-  "cfg_coef"?}` (the defaults are Kris's settings): a mono 16-bit WAV at 24 kHz, streamed frame by
+  "cfg_coef"?}` (the defaults are the chosen settings): a mono 16-bit WAV at 24 kHz, streamed frame by
   frame (80 ms) as it is computed. A bad request is a 400 with `{"error"}`.
 
 One sentence at a time. Closing the connection stops the computation at the next step (about
@@ -31,7 +31,7 @@ The settings of a sentence come with each request, from the configuration of `vo
 Kyutai's server (`moshi-server`, in Rust) runs this model through the same Python code: its TTS
 module embeds `moshi` with pyo3, and only Mimi runs in Rust. Using it means building it with
 `--features cuda` (candle and its CUDA kernels) and also providing that Python environment. It
-exposes everything Kris's voice needs (voice, `padding_bonus`, `max_padding`, `temp`,
+exposes everything the chosen voice needs (voice, `padding_bonus`, `max_padding`, `temp`,
 `cfg_coef`) and takes the text word by word over a websocket, with batching for several
 clients. For one sentence at a time, `serve.py` gives the same streaming with one dependency.
 
@@ -60,5 +60,5 @@ cache. The process holds about 4.5 GB of video memory.
 
 ```
 curl -s http://127.0.0.1:8001/tts -H 'content-type: application/json' \
-  -d '{"text": "Bonjour Kris."}' -o hello.wav
+  -d '{"text": "Bonjour."}' -o hello.wav
 ```

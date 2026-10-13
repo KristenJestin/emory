@@ -217,11 +217,11 @@ mod tests {
     #[test]
     fn tilde_is_expanded() {
         assert_eq!(
-            expand("~/a/b", Some("/home/kris".into())),
-            PathBuf::from("/home/kris/a/b")
+            expand("~/a/b", Some("/home/user".into())),
+            PathBuf::from("/home/user/a/b")
         );
         assert_eq!(
-            expand("/etc/x", Some("/home/kris".into())),
+            expand("/etc/x", Some("/home/user".into())),
             PathBuf::from("/etc/x")
         );
     }

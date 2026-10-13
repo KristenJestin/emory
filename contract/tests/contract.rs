@@ -48,7 +48,7 @@ fn full_turn_of_hearing_md() {
         "turn": TURN, "device": "office", "start": AT, "end": AT,
         "text": "Emory, rappelle-moi ce qu'on avait décidé pour la musique",
         "wake": "word",
-        "speaker": { "voice": "kris", "person": "kris", "origin": "known", "confidence": 0.5 },
+        "speaker": { "voice": "alex", "person": "alex", "origin": "known", "confidence": 0.5 },
         "transcription_confidence": 0.25,
         "context": [{ "start": AT, "voice": "voix-7", "person": null, "text": "…" }]
     }));

@@ -15,7 +15,7 @@ mod tests {
 
     #[test]
     fn collapses_whitespace() {
-        assert_eq!(clean("  Bonjour \n  Kris\t! "), "Bonjour Kris !");
+        assert_eq!(clean("  Bonjour \n  Léa\t! "), "Bonjour Léa !");
     }
 
     #[test]

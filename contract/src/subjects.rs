@@ -3,7 +3,7 @@
 
 use crate::{Device, device::valid_token};
 
-/// The sentences transcribed while Kris is speaking ([`crate::Sentence`]).
+/// The sentences transcribed while the owner is speaking ([`crate::Sentence`]).
 pub const SENTENCE: &str = "hearing.sentence";
 /// The whole turn, transcribed at the second press ([`crate::Turn`]).
 pub const TURN: &str = "hearing.turn";

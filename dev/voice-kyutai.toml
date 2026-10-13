@@ -1,5 +1,5 @@
 # The voice with Kyutai TTS 1.6B on the graphics card (engines/kyutai/run-native.sh, port 8001).
-# Pocket (voice.toml) stays the development voice: this one is for trying the voice chosen by Kris.
+# Pocket (voice.toml) stays the development voice: this one is for trying the voice chosen by the developer.
 nats_url = "nats://127.0.0.1:4222"
 engine = "kyutai"
 engine_url = "http://127.0.0.1:8001"

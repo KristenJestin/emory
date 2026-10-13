@@ -1,6 +1,7 @@
 //! The text of a request to the LLM: the day and the time, what the memory flags for the moment
-//! (first request of a conversation only: the session keeps it), the entries found while Kris was
-//! speaking, then what Kris said.
+//! (first request of a conversation only: the session keeps it), the entries found while the owner
+//! was speaking, then what was said. The markers name nobody: the owner's name would cost tokens in
+//! every request and add nothing (the instructions say who it is).
 
 use std::fmt::Write;
 
@@ -22,7 +23,7 @@ pub fn build(now: Timestamp, heads_up: Option<&str>, found: &[Found], said: &str
         );
     }
     if !found.is_empty() {
-        text.push_str("[Fiches trouvées dans la mémoire pendant que Kris parlait]\n");
+        text.push_str("[Fiches trouvées pendant qu'on te parlait]\n");
         for f in found.iter().take(MAX_FOUND) {
             let _ = write!(text, "- {} ({}, {}", f.title, f.kind, f.slug);
             if let Some(date) = &f.date {
@@ -39,7 +40,7 @@ pub fn build(now: Timestamp, heads_up: Option<&str>, found: &[Found], said: &str
         }
         text.push('\n');
     }
-    let _ = write!(text, "[Kris dit]\n{said}");
+    let _ = write!(text, "[On te dit]\n{said}");
     text
 }
 
@@ -105,10 +106,10 @@ mod tests {
     }
 
     #[test]
-    fn a_request_without_memory_is_the_moment_and_what_kris_said() {
+    fn a_request_without_memory_is_the_moment_and_what_was_said() {
         assert_eq!(
             build(at(), None, &[], "bonjour"),
-            "[Maintenant] lundi 12 octobre 2026, 14:05\n\n[Kris dit]\nbonjour"
+            "[Maintenant] lundi 12 octobre 2026, 14:05\n\n[On te dit]\nbonjour"
         );
     }
 
@@ -122,9 +123,9 @@ mod tests {
             text,
             "[Maintenant] lundi 12 octobre 2026, 14:05\n\n\
              [Ce que la mémoire signale pour aujourd'hui]\n{\"upcoming\":[]}\n\n\
-             [Fiches trouvées dans la mémoire pendant que Kris parlait]\n\
+             [Fiches trouvées pendant qu'on te parlait]\n\
              - Titre musique (decision, musique, le 2026-09-02) : Résumé. Extrait : le salon\n\n\
-             [Kris dit]\net la musique ?"
+             [On te dit]\net la musique ?"
         );
     }
 
