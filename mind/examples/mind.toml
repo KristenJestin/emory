@@ -100,21 +100,21 @@ max_chars = 1200           # the longest summary given to the LLM
 
 # The timers and reminders (`time_timer`, `time_reminder`, `time_list`, `time_cancel`), kept in
 # `<data.dir>/timers.json` and read again after a restart. Every key has the value shown; without
-# this section the module is on with these values. The ringing (the keys marked T2) comes in the
-# next unit: they are read and checked today, and used then.
+# this section the module is on with these values. At the due time Emory says the phrase on the
+# device the timer was set on, after a tone, and again if nobody pressed there.
 [time]
 enabled = true
 # store = "/path/to/timers.json"   # default: timers.json in data.dir
 timezone = ""                      # "Europe/Paris"; empty: the system's zone (TZ)
-# default_device = "office"        # T2: rings here when the timer has no device
+# default_device = "office"        # rings here when the timer has no device (default: where the owner last spoke)
 max_active = 50                    # timers and reminders waiting at once
-chime = true                       # T2: a short tone before the phrase
-repeat = 1                         # T2: said again this many times (0 to 5) if nobody pressed
-repeat_after_s = 60                # T2: seconds before it is said again (10 to 600)
-late_limit_hours = 12              # what came due during a longer stop is dropped at start
-timer_done = "Le minuteur {label} est fini."                # T2
-timer_done_unlabeled = "Le minuteur de {duration} est fini."  # T2, {duration} in words
-reminder = "Rappel : {text}."                               # T2
+chime = true                       # a short tone before the phrase
+repeat = 1                         # said again this many times (0 to 5) if nobody pressed
+repeat_after_s = 60                # seconds before it is said again (10 to 600)
+late_limit_hours = 12              # missed during a stop: said late up to this, dropped beyond
+timer_done = "Le minuteur {label} est fini."
+timer_done_unlabeled = "Le minuteur de {duration} est fini."  # {duration} in words
+reminder = "Rappel : {text}."
 
 # What the owner hears while the answer is prepared (1 to 2 s without a tool, 3 to 5 s when the LLM
 # reads the memory). One of three modes; the sounds themselves are drawn by the voice (`[cue]` in

@@ -132,6 +132,9 @@ pub async fn run(config: Config) -> Result<()> {
     let client = bus::connect(&config.nats, "mind", true).await?;
     info!(url = %config.nats.url, "connected to the bus");
     let conversations = Conversations::default();
+    // What makes Emory speak on her own: the timers here, the internal entry later
+    // (`specs/events.md`, E2).
+    let (speaker, mut speeches) = speech::channel();
     let waiter = config.waiting.waiter()?;
     info!(mode = ?waiter.mode(), "waiting cue");
     let mut modules: Vec<Arc<dyn tools::Module>> = vec![Arc::new(HippocampeTools::new(
@@ -152,6 +155,12 @@ pub async fn run(config: Config) -> Result<()> {
         modules.push(Arc::new(web));
     }
     if let Some(time) = time::Time::new(&config.time, &config.data, conversations.clone())? {
+        let ringer = time.ringer(
+            &config.time,
+            speaker.clone(),
+            Arc::new(bus::Bus(client.clone())),
+        );
+        tokio::spawn(ringer.run());
         modules.push(Arc::new(time));
     }
     let brain = Backend::start(
@@ -166,9 +175,7 @@ pub async fn run(config: Config) -> Result<()> {
     let mut buttons = client.subscribe(subjects::ALL_BUTTONS).await?;
 
     let brain = Arc::new(brain);
-    // Handed to the timers (`specs/time.md`, T2) and the internal entry (`specs/events.md`, E2),
-    // which make Emory speak on her own; nothing does yet.
-    let (_speaker, mut speeches) = speech::channel();
+    drop(speaker);
     let mut mind = Mind::new(
         brain.clone(),
         Arc::new(hippocampe),

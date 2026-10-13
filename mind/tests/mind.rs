@@ -1302,3 +1302,511 @@ async fn what_she_said_is_forgotten_after_half_an_hour() {
     let (_, prompt) = b.ask("office", &["bonjour"]).await;
     assert!(!prompt.text.contains("[Tu as dit de toi-même]"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_followed_speech_is_told_when_said_then_of_the_next_press() {
+    use mind::speech::Heard;
+    let mut b = bench(FakeMemory::default());
+    let id = new_turn();
+    b.mind.handle(press("office", id)).await;
+    let (said, mut follow) = Speech::new(device("office"), OWN, Origin::Timer).followed();
+    b.mind.handle(Input::Speak(said)).await;
+    // Pressed before it is said: not a press after it.
+    b.mind.handle(release("office", id)).await;
+    b.mind.handle(turn("office", id, "")).await;
+    b.after(Duration::from_secs(1)).await;
+    assert!(follow.try_recv().is_err(), "said over the answer");
+    b.after(Duration::from_secs(5)).await;
+    assert_eq!(follow.try_recv(), Ok(Heard::Said));
+    assert!(follow.try_recv().is_err());
+    b.mind.handle(press("office", new_turn())).await;
+    assert_eq!(follow.try_recv(), Ok(Heard::Pressed));
+    // Nothing more comes.
+    assert!(follow.recv().await.is_none());
+
+    // One never said is told so.
+    b.mind.handle(press("salon", new_turn())).await;
+    let (dropped, mut follow) = Speech::new(device("salon"), OWN, Origin::Timer)
+        .expires_in(Duration::from_secs(10))
+        .followed();
+    b.mind.handle(Input::Speak(dropped)).await;
+    b.after(Duration::from_secs(11)).await;
+    assert_eq!(follow.try_recv(), Ok(Heard::Dropped));
+}
+
+// The timers and reminders ringing (`specs/time.md`, T2): the module, its ringer and the mind,
+// wired as in `mind::run`, the clock paused. The time of the module follows tokio's.
+
+mod ring {
+    use super::*;
+    use contract::{TimerFired, TimerKind, Timers};
+    use mind::{
+        speech::{self, Speeches},
+        time::{Time, TimeConfig, TokioClock, ring::Board, store::Kind},
+        tools::Module,
+    };
+    use serde_json::json;
+
+    // A Tuesday evening: 19:00 in Paris.
+    const EVENING: &str = "2026-10-13T17:00:00Z";
+    const PASTA: &str = "Le minuteur pâtes est fini.";
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Posted {
+        Changed(Timers),
+        Fired(TimerFired),
+    }
+
+    #[derive(Default)]
+    struct FakeBoard(Mutex<Vec<Posted>>);
+
+    impl Board for FakeBoard {
+        async fn changed(&self, timers: Timers) {
+            self.0.lock().unwrap().push(Posted::Changed(timers));
+        }
+
+        async fn fired(&self, fired: TimerFired) {
+            self.0.lock().unwrap().push(Posted::Fired(fired));
+        }
+    }
+
+    impl FakeBoard {
+        fn posted(&self) -> Vec<Posted> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn fired(&self) -> Vec<TimerFired> {
+            self.posted()
+                .into_iter()
+                .filter_map(|p| match p {
+                    Posted::Fired(f) => Some(f),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// How many items each `mind.timer.changed` listed, in order.
+        fn changes(&self) -> Vec<usize> {
+            self.posted()
+                .into_iter()
+                .filter_map(|p| match p {
+                    Posted::Changed(t) => Some(t.items.len()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    struct Ring {
+        b: Bench,
+        time: Arc<Time>,
+        speeches: Speeches,
+        board: Arc<FakeBoard>,
+        dir: tempfile::TempDir,
+    }
+
+    fn config() -> TimeConfig {
+        TimeConfig {
+            timezone: "Europe/Paris".to_owned(),
+            ..TimeConfig::default()
+        }
+    }
+
+    /// The module and its ringer, started at `origin` (the wall clock) on a file of `dir`.
+    fn start(b: Bench, dir: tempfile::TempDir, origin: &str, config: TimeConfig) -> Ring {
+        let time = Arc::new(
+            Time::with_clock(
+                &config,
+                &dir.path().join("timers.json"),
+                Arc::new(TokioClock::new(origin.parse().unwrap())),
+                b.conversations.clone(),
+            )
+            .unwrap(),
+        );
+        let (speaker, speeches) = speech::channel();
+        let board = Arc::new(FakeBoard::default());
+        tokio::spawn(time.ringer(&config, speaker, board.clone()).run());
+        Ring {
+            b,
+            time,
+            speeches,
+            board,
+            dir,
+        }
+    }
+
+    fn ring(config: TimeConfig) -> Ring {
+        start(
+            bench(FakeMemory::default()),
+            tempfile::tempdir().unwrap(),
+            EVENING,
+            config,
+        )
+    }
+
+    impl Ring {
+        /// Lets the time pass as the run loop of `mind` would: the speeches asked go to the mind,
+        /// which looks at its waiting ones every 250 ms.
+        async fn run_for(&mut self, wait: Duration) {
+            let end = tokio::time::Instant::now() + wait;
+            loop {
+                settle().await;
+                while let Ok(speech) = self.speeches.try_recv() {
+                    self.b.mind.handle(Input::Speak(speech)).await;
+                }
+                self.b.mind.handle(Input::Tick).await;
+                settle().await;
+                let now = tokio::time::Instant::now();
+                if now >= end {
+                    return;
+                }
+                tokio::time::sleep((end - now).min(Duration::from_millis(250))).await;
+            }
+        }
+
+        /// Sets a timer through the tool, in a conversation (or none).
+        async fn timer(&self, seconds: u64, label: Option<&str>, key: Option<ConversationKey>) {
+            let mut arguments = json!({ "seconds": seconds });
+            if let Some(label) = label {
+                arguments["label"] = json!(label);
+            }
+            let result = self
+                .time
+                .call_in("timer", arguments.as_object().cloned(), key)
+                .await;
+            assert_ne!(result.is_error, Some(true), "{result:?}");
+        }
+
+        /// A whole exchange on a device, answered: its conversation is the mind's last one.
+        async fn exchange(&mut self, name: &str) -> ConversationKey {
+            let (_, prompt) = self.b.ask(name, &["mets un minuteur"]).await;
+            prompt.events.send(text("C'est parti.")).unwrap();
+            prompt.events.send(done()).unwrap();
+            settle().await;
+            self.b.brain.keys.lock().unwrap().last().unwrap().clone()
+        }
+
+        /// The phrases said, with their device.
+        fn said(&self, phrase: &str) -> Vec<String> {
+            self.b
+                .out
+                .says()
+                .into_iter()
+                .filter(|(_, _, text, _)| text == phrase)
+                .map(|(device, ..)| device)
+                .collect()
+        }
+
+        fn file(&self) -> String {
+            std::fs::read_to_string(self.dir.path().join("timers.json")).unwrap_or_default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_phrase_leaves_at_the_due_time_on_the_device_it_was_set_on() {
+        let mut r = ring(config());
+        // Set in a conversation of the office: the mind opens it on its device.
+        let key = r.exchange("office").await;
+        r.run_for(Duration::from_secs(5)).await;
+        r.timer(60, Some("pâtes"), Some(key)).await;
+        assert!(r.file().contains("\"device\": \"office\""), "{}", r.file());
+        r.run_for(Duration::from_secs(59)).await;
+        assert!(r.said(PASTA).is_empty(), "said before its time");
+        assert!(r.board.fired().is_empty());
+        r.run_for(Duration::from_secs(2)).await;
+        assert_eq!(r.said(PASTA), ["office"]);
+        // The tone first, in the turn of the phrase.
+        let all = r.b.out.all();
+        let at = all
+            .iter()
+            .position(|o| matches!(o, Out::Say(s) if s.text == PASTA))
+            .unwrap();
+        let Out::Say(say) = &all[at] else {
+            unreachable!()
+        };
+        assert!(
+            matches!(&all[at - 1], Out::Cue(c) if c.kind == CueKind::Tone && c.turn == say.turn),
+            "{all:?}"
+        );
+        // On the bus: fired, the list before, with it, and empty once it is said.
+        let fired = r.board.fired();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].item.kind, TimerKind::Timer);
+        assert_eq!(fired[0].item.label.as_deref(), Some("pâtes"));
+        assert_eq!(fired[0].item.device, Some(device("office")));
+        // Set five seconds (and the few milliseconds the test lets pass) after 19:00.
+        let due = fired[0].item.due.to_rfc3339();
+        assert!(due.starts_with("2026-10-13T19:01:05"), "{due}");
+        assert_eq!(fired[0].late_s, 0);
+        assert_eq!(r.board.changes(), [0, 1, 0]);
+        // Out of the file.
+        assert!(!r.file().contains("\"timer\""), "{}", r.file());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn it_waits_for_the_end_of_an_answer() {
+        let mut r = ring(config());
+        r.timer(
+            30,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(20)).await;
+        let (_, prompt) = r.b.ask("office", &["raconte"]).await;
+        prompt.events.send(text("Il était une fois.")).unwrap();
+        r.run_for(Duration::from_secs(30)).await;
+        assert!(r.said(PASTA).is_empty(), "said over the answer");
+        // It rang at its time all the same.
+        assert_eq!(r.board.fired().len(), 1);
+        prompt.events.send(done()).unwrap();
+        r.run_for(Duration::from_secs(5)).await;
+        assert_eq!(r.said(PASTA), ["office"]);
+        let says = r.b.out.says();
+        let answer = says.iter().position(|s| s.2 == "Il était une fois.");
+        let phrase = says.iter().position(|s| s.2 == PASTA);
+        assert!(answer < phrase, "{says:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn it_is_said_again_once_when_nobody_presses_then_stops() {
+        let mut r = ring(config());
+        r.timer(
+            10,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(15)).await;
+        assert_eq!(r.said(PASTA).len(), 1);
+        r.run_for(Duration::from_secs(55)).await;
+        assert_eq!(r.said(PASTA).len(), 1, "said again too soon");
+        r.run_for(Duration::from_secs(10)).await;
+        assert_eq!(r.said(PASTA).len(), 2);
+        // `repeat = 1`: no third time; it rang once on the bus.
+        r.run_for(Duration::from_secs(600)).await;
+        assert_eq!(r.said(PASTA).len(), 2);
+        assert_eq!(r.board.fired().len(), 1);
+        // Each time in a turn of its own, after its tone.
+        let tones =
+            r.b.out
+                .all()
+                .iter()
+                .filter(|o| matches!(o, Out::Cue(c) if c.kind == CueKind::Tone))
+                .count();
+        assert_eq!(tones, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_repetitions_follow_the_configuration() {
+        let mut r = ring(TimeConfig {
+            repeat: 2,
+            repeat_after_s: 20,
+            chime: false,
+            ..config()
+        });
+        r.timer(
+            10,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(200)).await;
+        assert_eq!(r.said(PASTA).len(), 3);
+        assert!(!r.b.out.all().iter().any(|o| matches!(o, Out::Cue(_))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_press_on_the_device_stops_the_repetition() {
+        let mut r = ring(config());
+        r.timer(
+            10,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(15)).await;
+        assert_eq!(r.said(PASTA).len(), 1);
+        // The owner presses to say something else; a press elsewhere would not count.
+        r.b.mind.handle(press("salon", new_turn())).await;
+        r.run_for(Duration::from_secs(10)).await;
+        let id = new_turn();
+        r.b.mind.handle(press("office", id)).await;
+        r.b.mind.handle(release("office", id)).await;
+        r.b.mind.handle(turn("office", id, "")).await;
+        r.run_for(Duration::from_secs(300)).await;
+        assert_eq!(r.said(PASTA).len(), 1, "said again after a press");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_press_elsewhere_does_not_stop_it() {
+        let mut r = ring(config());
+        r.timer(
+            10,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(15)).await;
+        let id = new_turn();
+        r.b.mind.handle(press("salon", id)).await;
+        r.b.mind.handle(release("salon", id)).await;
+        r.run_for(Duration::from_secs(120)).await;
+        assert_eq!(r.said(PASTA), ["office", "office"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_came_due_during_a_stop_is_said_late_at_start_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = start(bench(FakeMemory::default()), dir, EVENING, config());
+        first
+            .timer(
+                60,
+                Some("pâtes"),
+                Some(first.b.conversations.open_on(device("office"))),
+            )
+            .await;
+        // `mind` stops before it rings, and starts again three hours later.
+        let Ring { dir, .. } = first;
+        let mut r = start(
+            bench(FakeMemory::default()),
+            dir,
+            "2026-10-13T20:00:00Z",
+            config(),
+        );
+        r.run_for(Duration::from_secs(1)).await;
+        assert_eq!(
+            r.said("Avec du retard : le minuteur pâtes est fini."),
+            ["office"]
+        );
+        let fired = r.board.fired();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].late_s, 3 * 3600 - 60);
+        assert_eq!(r.board.changes(), [1, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_minute_late_is_not_late() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = start(bench(FakeMemory::default()), dir, EVENING, config());
+        first
+            .timer(
+                60,
+                Some("pâtes"),
+                Some(first.b.conversations.open_on(device("office"))),
+            )
+            .await;
+        let Ring { dir, .. } = first;
+        let mut r = start(
+            bench(FakeMemory::default()),
+            dir,
+            "2026-10-13T17:01:30Z",
+            config(),
+        );
+        r.run_for(Duration::from_secs(1)).await;
+        assert_eq!(r.said(PASTA), ["office"]);
+        assert_eq!(r.board.fired()[0].late_s, 30);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_is_later_than_the_limit_is_dropped_not_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = start(bench(FakeMemory::default()), dir, EVENING, config());
+        first
+            .timer(
+                60,
+                Some("pâtes"),
+                Some(first.b.conversations.open_on(device("office"))),
+            )
+            .await;
+        let Ring { dir, .. } = first;
+        // Thirteen hours: past the twelve of `late_limit_hours`.
+        let mut r = start(
+            bench(FakeMemory::default()),
+            dir,
+            "2026-10-14T06:00:00Z",
+            config(),
+        );
+        r.run_for(Duration::from_secs(120)).await;
+        assert!(r.b.out.all().is_empty(), "{:?}", r.b.out.all());
+        assert!(r.board.fired().is_empty());
+        assert_eq!(r.board.changes(), [0]);
+        assert!(!r.file().contains("\"timer\""), "{}", r.file());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_its_device_it_rings_on_the_default_then_where_the_owner_last_spoke() {
+        let mut r = ring(TimeConfig {
+            default_device: Some("kitchen".to_owned()),
+            ..config()
+        });
+        r.timer(10, Some("pâtes"), None).await;
+        r.run_for(Duration::from_secs(15)).await;
+        assert_eq!(r.said(PASTA), ["kitchen"]);
+
+        let mut r = ring(config());
+        r.exchange("salon").await;
+        r.timer(10, Some("pâtes"), None).await;
+        r.run_for(Duration::from_secs(15)).await;
+        assert_eq!(r.said(PASTA), ["salon"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reminder_says_its_text_and_a_timer_without_label_its_length() {
+        let mut r = ring(config());
+        let office = r.b.conversations.open_on(device("office"));
+        r.timer(90, None, Some(office.clone())).await;
+        let result = r
+            .time
+            .call_in(
+                "reminder",
+                json!({"text": "sortir le linge", "in_seconds": 120})
+                    .as_object()
+                    .cloned(),
+                Some(office),
+            )
+            .await;
+        assert_ne!(result.is_error, Some(true));
+        r.run_for(Duration::from_secs(125)).await;
+        assert_eq!(
+            r.said("Le minuteur de une minute et trente secondes est fini."),
+            ["office"]
+        );
+        assert_eq!(r.said("Rappel : sortir le linge."), ["office"]);
+        let fired = r.board.fired();
+        assert_eq!(fired[1].item.kind, TimerKind::Reminder);
+        assert_eq!(fired[1].item.text.as_deref(), Some("sortir le linge"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_timer_never_rings() {
+        let mut r = ring(config());
+        // The ringer starts and publishes the empty list.
+        settle().await;
+        r.timer(
+            30,
+            Some("pâtes"),
+            Some(r.b.conversations.open_on(device("office"))),
+        )
+        .await;
+        r.run_for(Duration::from_secs(10)).await;
+        let result = r
+            .time
+            .call_in("cancel", json!({"id": 1}).as_object().cloned(), None)
+            .await;
+        assert_ne!(result.is_error, Some(true));
+        r.run_for(Duration::from_secs(60)).await;
+        assert!(r.said(PASTA).is_empty());
+        assert!(r.board.fired().is_empty());
+        assert_eq!(r.board.changes(), [0, 1, 0]);
+    }
+
+    #[test]
+    fn the_store_kinds_are_the_bus_kinds() {
+        // The file says `timer` and `reminder`, like the contract.
+        assert_eq!(
+            serde_json::to_value(Kind::Reminder).unwrap(),
+            serde_json::to_value(TimerKind::Reminder).unwrap()
+        );
+    }
+}
