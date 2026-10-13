@@ -1296,5 +1296,8 @@ silent = true
         let wikipedia = &phrases.tools["web_wikipedia"];
         assert_eq!(wikipedia.argument.as_deref(), Some("query"));
         assert!(!wikipedia.phrases.is_empty() && !wikipedia.plain.is_empty());
+        let weather = &phrases.tools["web_weather"];
+        assert_eq!(weather.argument.as_deref(), Some("place"));
+        assert!(!weather.phrases.is_empty() && !weather.plain.is_empty());
     }
 }

@@ -1,12 +1,13 @@
 //! The web: a module of Emory's MCP server (`web_<tool>`), for what the owner asks about the
-//! world (`specs/web.md`). In this version, Wikipedia (`web_wikipedia`); the weather, the search
-//! and the reading of a page come as tools of the same module.
+//! world (`specs/web.md`). In this version, the weather (`web_weather`) and Wikipedia
+//! (`web_wikipedia`); the search and the reading of a page come as tools of the same module.
 //!
 //! The module listens to nothing and publishes nothing on the bus: it is called by the LLM only.
 //! One HTTP client is kept open for all its tools. The logs say the host, the status, the size and
 //! the time of each request, never the question.
 
 pub mod config;
+pub mod weather;
 pub mod wikipedia;
 
 use std::{sync::Arc, time::Instant};
@@ -19,6 +20,7 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 pub use config::WebConfig;
+use weather::Weather;
 use wikipedia::Wikipedia;
 
 use crate::tools::Module;
@@ -122,6 +124,7 @@ impl Fetch for Http {
 
 /// The `web` module: the tools that are enabled.
 pub struct Web {
+    weather: Option<Weather>,
     wikipedia: Option<Wikipedia>,
 }
 
@@ -137,11 +140,22 @@ impl Web {
     /// The same, fetching through `fetch`.
     pub fn with_fetch(config: &WebConfig, fetch: Arc<dyn Fetch>) -> Option<Self> {
         config.any_tool().then(|| Self {
+            weather: config
+                .weather
+                .enabled
+                .then(|| Weather::new(&config.weather, fetch.clone())),
             wikipedia: config
                 .wikipedia
                 .enabled
                 .then(|| Wikipedia::new(&config.wikipedia, fetch)),
         })
+    }
+
+    /// Asks Open-Meteo at other addresses (the geocoding, then the forecast): for the tests, with
+    /// a server of their own.
+    pub fn weather_at(mut self, geocoding: &str, forecast: &str) -> Self {
+        self.weather = self.weather.map(|w| w.at(geocoding, forecast));
+        self
     }
 
     /// Asks Wikipedia at another address (`{lang}` stands for the language): for the tests, with
@@ -180,6 +194,31 @@ impl Module for Web {
     fn tools(&self) -> BoxFuture<'_, Vec<Tool>> {
         Box::pin(async {
             let mut tools = Vec::new();
+            if let Some(weather) = &self.weather {
+                tools.push(Tool::new(
+                    "weather",
+                    if weather.has_default() {
+                        "La météo, maintenant et les jours qui viennent. Sans lieu : chez l'utilisateur."
+                    } else {
+                        "La météo d'un lieu, maintenant et les jours qui viennent."
+                    },
+                    schema(json!({
+                        "type": "object",
+                        "properties": {
+                            "place": {
+                                "type": "string",
+                                "description": "le lieu : une ville, suivie du pays si le nom est ambigu (« Brest, France »)"
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 7,
+                                "description": "combien de jours, aujourd'hui compris (2 par défaut)"
+                            }
+                        }
+                    })),
+                ));
+            }
             if self.wikipedia.is_some() {
                 tools.push(Tool::new(
                     "wikipedia",
@@ -199,9 +238,12 @@ impl Module for Web {
         let tool = tool.to_owned();
         Box::pin(async move {
             let arguments = arguments.unwrap_or_default();
-            let outcome = match (tool.as_str(), &self.wikipedia) {
-                ("wikipedia", Some(wikipedia)) => match text(&arguments, "query") {
-                    Ok(query) => wikipedia.lookup(&query).await,
+            let outcome = match tool.as_str() {
+                "weather" if self.weather.is_some() => {
+                    self.weather.as_ref().unwrap().report(&arguments).await
+                }
+                "wikipedia" if self.wikipedia.is_some() => match text(&arguments, "query") {
+                    Ok(query) => self.wikipedia.as_ref().unwrap().lookup(&query).await,
                     Err(e) => Err(e),
                 },
                 _ => Err(format!("Outil inconnu : web_{tool}")),

@@ -52,7 +52,7 @@ pub struct Config {
     /// What the owner hears while the answer is prepared. Absent: nothing.
     #[serde(default)]
     pub waiting: WaitingConfig,
-    /// The web tools (`web_wikipedia`…). On by default.
+    /// The web tools (`web_weather`, `web_wikipedia`…). On by default.
     #[serde(default)]
     pub web: crate::web::WebConfig,
 }
@@ -858,7 +858,8 @@ token_file = "~/t.token"
         );
         // The developer switches modes while trying them: only its validity is checked.
         let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
-        assert!(dev.web.enabled && dev.web.wikipedia.enabled);
+        assert!(dev.web.enabled && dev.web.wikipedia.enabled && dev.web.weather.enabled);
+        assert!(!dev.web.weather.place.is_empty());
         // (its phrases file is relative to the root of the repository: only the values are checked)
         assert!(dev.waiting.check().is_ok());
     }
@@ -868,6 +869,7 @@ token_file = "~/t.token"
         let c: Config = MINIMAL.parse().unwrap();
         assert!(c.web.enabled && c.web.wikipedia.enabled);
         assert_eq!(c.web.wikipedia.languages, ["fr", "en"]);
+        assert!(c.web.weather.enabled && c.web.weather.place.is_empty());
         let c: Config =
             format!("{MINIMAL}\n[web]\nenabled = false\n[web.wikipedia]\nlanguages = [\"en\"]\n")
                 .parse()
@@ -878,7 +880,7 @@ token_file = "~/t.token"
             ("[web.wikipedia]\nlanguages = []", "web.wikipedia.languages"),
             ("[web.wikipedia]\nmax_chars = 1", "web.wikipedia.max_chars"),
             ("[web]\nvolume = 3", "volume"),
-            ("[web.weather]\nplace = \"x\"", "weather"),
+            ("[web.weathr]\nplace = \"x\"", "weathr"),
         ] {
             let error = format!(
                 "{:#}",

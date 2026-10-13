@@ -16,7 +16,24 @@ pub struct WebConfig {
     pub user_agent: Option<String>,
     /// Milliseconds for one call to an API.
     pub timeout_ms: u64,
+    pub weather: WeatherConfig,
     pub wikipedia: WikipediaConfig,
+}
+
+/// `web_weather`: the weather now and in the next days, from Open-Meteo.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WeatherConfig {
+    pub enabled: bool,
+    /// The place of the owner, used when the LLM gives none: a name, which Open-Meteo finds
+    /// (`"Lyon"`; a name shared by cities of several countries takes the country after a comma,
+    /// `"Brest, France"`). Empty: the LLM must be given a place.
+    pub place: String,
+    /// The coordinates of `place`, which save the lookup of its name. Both or none.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// How long a forecast is kept, in minutes (0: never).
+    pub cache_minutes: u64,
 }
 
 /// `web_wikipedia`: the summary of an article.
@@ -37,7 +54,20 @@ impl Default for WebConfig {
             enabled: true,
             user_agent: None,
             timeout_ms: 5000,
+            weather: WeatherConfig::default(),
             wikipedia: WikipediaConfig::default(),
+        }
+    }
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            place: String::new(),
+            latitude: None,
+            longitude: None,
+            cache_minutes: 10,
         }
     }
 }
@@ -66,7 +96,7 @@ impl WebConfig {
 
     /// Whether any web tool is left.
     pub fn any_tool(&self) -> bool {
-        self.enabled && self.wikipedia.enabled
+        self.enabled && (self.weather.enabled || self.wikipedia.enabled)
     }
 
     /// Refuses absurd values, naming the key.
@@ -81,7 +111,38 @@ impl WebConfig {
                 "web.user_agent must be a non-blank header value (no line break)"
             );
         }
+        self.weather.check()?;
         self.wikipedia.check()
+    }
+}
+
+impl WeatherConfig {
+    fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.place.chars().count() <= 100 && !self.place.contains(['\n', '\r']),
+            "web.weather.place must be a name of 100 characters at most"
+        );
+        anyhow::ensure!(
+            self.latitude.is_some() == self.longitude.is_some(),
+            "web.weather: latitude and longitude go together"
+        );
+        if let Some(latitude) = self.latitude {
+            anyhow::ensure!(
+                (-90.0..=90.0).contains(&latitude),
+                "web.weather.latitude must be between -90 and 90"
+            );
+        }
+        if let Some(longitude) = self.longitude {
+            anyhow::ensure!(
+                (-180.0..=180.0).contains(&longitude),
+                "web.weather.longitude must be between -180 and 180"
+            );
+        }
+        anyhow::ensure!(
+            self.cache_minutes <= 1440,
+            "web.weather.cache_minutes must be 1440 at most (0: no cache)"
+        );
+        Ok(())
     }
 }
 
@@ -140,7 +201,9 @@ mod tests {
     #[test]
     fn an_empty_section_gives_the_defaults() {
         let c = parse("").unwrap();
-        assert!(c.enabled && c.any_tool() && c.wikipedia.enabled);
+        assert!(c.enabled && c.any_tool() && c.wikipedia.enabled && c.weather.enabled);
+        assert!(c.weather.place.is_empty() && c.weather.latitude.is_none());
+        assert_eq!(c.weather.cache_minutes, 10);
         assert_eq!(c.timeout(), Duration::from_secs(5));
         assert_eq!(c.wikipedia.languages, ["fr", "en"]);
         assert_eq!(c.wikipedia.max_chars, 1200);
@@ -152,9 +215,16 @@ mod tests {
     fn the_keys_are_read() {
         let c = parse(
             "enabled = true\nuser_agent = \"Emory/9 (me@example.org)\"\ntimeout_ms = 2000\n\
+             [weather]\nplace = \"Lyon\"\nlatitude = 45.75\nlongitude = 4.85\ncache_minutes = 0\n\
              [wikipedia]\nlanguages = [\"en\", \"pt-br\"]\nmax_chars = 500\n",
         )
         .unwrap();
+        assert_eq!(c.weather.place, "Lyon");
+        assert_eq!(
+            (c.weather.latitude, c.weather.longitude),
+            (Some(45.75), Some(4.85))
+        );
+        assert_eq!(c.weather.cache_minutes, 0);
         assert_eq!(c.user_agent(), "Emory/9 (me@example.org)");
         assert_eq!(c.timeout(), Duration::from_secs(2));
         assert_eq!(c.wikipedia.languages, ["en", "pt-br"]);
@@ -164,7 +234,14 @@ mod tests {
     #[test]
     fn the_module_can_be_disabled_whole_or_by_tool() {
         assert!(!parse("enabled = false").unwrap().any_tool());
-        assert!(!parse("[wikipedia]\nenabled = false").unwrap().any_tool());
+        // One tool left is enough; none is no module.
+        assert!(parse("[wikipedia]\nenabled = false").unwrap().any_tool());
+        assert!(parse("[weather]\nenabled = false").unwrap().any_tool());
+        assert!(
+            !parse("[weather]\nenabled = false\n[wikipedia]\nenabled = false")
+                .unwrap()
+                .any_tool()
+        );
     }
 
     #[test]
@@ -174,6 +251,21 @@ mod tests {
             ("timeout_ms = 100000", "web.timeout_ms"),
             ("user_agent = \" \"", "web.user_agent"),
             ("user_agent = \"a\\nb\"", "web.user_agent"),
+            ("[weather]\nlatitude = 45.0", "web.weather"),
+            ("[weather]\nlongitude = 4.0", "web.weather"),
+            (
+                "[weather]\nlatitude = 95.0\nlongitude = 4.0",
+                "web.weather.latitude",
+            ),
+            (
+                "[weather]\nlatitude = 45.0\nlongitude = 200.0",
+                "web.weather.longitude",
+            ),
+            (
+                "[weather]\ncache_minutes = 5000",
+                "web.weather.cache_minutes",
+            ),
+            ("[weather]\nplace = \"a\\nb\"", "web.weather.place"),
             ("[wikipedia]\nlanguages = []", "web.wikipedia.languages"),
             (
                 "[wikipedia]\nlanguages = [\"fr\", \"fr\"]",
@@ -201,6 +293,8 @@ mod tests {
         // An unknown key, a misspelt section, a value of the wrong type.
         for bad in [
             "volume = 3",
+            "[weather]\ncity = \"Lyon\"",
+            "[weather]\nplace = 3",
             "[wikipedia]\nlang = [\"fr\"]",
             "[wikipedi]\nenabled = true",
             "timeout_ms = \"fast\"",
