@@ -469,11 +469,12 @@ mod tests {
     use crate::web::{FetchError, Fetched};
     use futures_util::future::BoxFuture;
 
-    const GEOCODE_BREST: &str = include_str!("../../tests/fixtures/web/weather-geocode-brest.json");
+    const GEOCODE_VALENCE: &str =
+        include_str!("../../tests/fixtures/web/weather-geocode-valence.json");
     const GEOCODE_UNKNOWN: &str =
         include_str!("../../tests/fixtures/web/weather-geocode-unknown.json");
-    const FORECAST_BREST: &str =
-        include_str!("../../tests/fixtures/web/weather-forecast-brest.json");
+    const FORECAST_VALENCE: &str =
+        include_str!("../../tests/fixtures/web/weather-forecast-valence.json");
 
     /// Recorded answers, by host, path and the first parameter (`name` or `latitude`); whatever
     /// else is asked is unreachable. What was asked is kept.
@@ -525,13 +526,17 @@ mod tests {
     const GEOCODING: &str = "geocoding-api.open-meteo.com/v1/search";
     const FORECAST: &str = "api.open-meteo.com/v1/forecast";
 
-    /// The recorded answers for Brest (France), asked as « Brest, France » or by its coordinates.
-    fn brest() -> Arc<Recorded> {
+    /// The recorded answers for Valence (France), asked as « Valence, France » or by its coordinates.
+    fn valence() -> Arc<Recorded> {
         let recorded = Arc::new(Recorded::default());
         recorded
-            .on(&format!("{GEOCODING}|Brest, France"), 200, GEOCODE_BREST)
+            .on(
+                &format!("{GEOCODING}|Valence, France"),
+                200,
+                GEOCODE_VALENCE,
+            )
             .on(&format!("{GEOCODING}|zzqxvkj"), 200, GEOCODE_UNKNOWN)
-            .on(&format!("{FORECAST}|48.39029"), 200, FORECAST_BREST);
+            .on(&format!("{FORECAST}|44.9256"), 200, FORECAST_VALENCE);
         recorded
     }
 
@@ -614,23 +619,23 @@ mod tests {
 
     #[tokio::test]
     async fn the_forecast_of_the_default_place_is_told_for_the_voice() {
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let text = w.report(&arguments(json!({}))).await.unwrap();
         let a = told(&text);
-        assert_eq!(a["place"], "Brest");
-        // The owner's own place: no country to say.
+        assert_eq!(a["place"], "Valence");
+        // The default place: no country to say.
         assert!(a.get("country").is_none());
         assert_eq!(
             a["now"],
-            json!({"temperature": 16, "feels_like": 16, "sky": "ciel dégagé", "wind_kmh": 4})
+            json!({"temperature": 18, "feels_like": 17, "sky": "partiellement nuageux", "wind_kmh": 11})
         );
         // Two days when not said: today, tomorrow. Whole degrees; rain under 1 mm is not given.
         assert_eq!(
             a["days"],
             json!([
-                {"day": "aujourd'hui", "sky": "bruine faible", "min": 14, "max": 20, "rain_chance": 80},
-                {"day": "demain", "sky": "couvert", "min": 12, "max": 19, "rain_chance": 3},
+                {"day": "aujourd'hui", "sky": "couvert", "min": 9, "max": 23, "rain_chance": 0},
+                {"day": "demain", "sky": "couvert", "min": 16, "max": 25, "rain_chance": 0},
             ])
         );
         // Compact, with no unit nor identifier to read out.
@@ -645,12 +650,12 @@ mod tests {
                 .collect()
         };
         let geocoding = query(&asked[0]);
-        assert!(geocoding.contains(&("name".into(), "Brest, France".into())));
+        assert!(geocoding.contains(&("name".into(), "Valence, France".into())));
         assert!(geocoding.contains(&("count".into(), "1".into())));
         assert!(geocoding.contains(&("language".into(), "fr".into())));
         let forecast = query(&asked[1]);
-        assert!(forecast.contains(&("latitude".into(), "48.39029".into())));
-        assert!(forecast.contains(&("longitude".into(), "-4.48628".into())));
+        assert!(forecast.contains(&("latitude".into(), "44.9256".into())));
+        assert!(forecast.contains(&("longitude".into(), "4.90956".into())));
         assert!(forecast.contains(&("timezone".into(), "auto".into())));
         let current = &forecast.iter().find(|(k, _)| k == "current").unwrap().1;
         assert!(current.contains("apparent_temperature") && current.contains("weather_code"));
@@ -658,8 +663,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_days_after_tomorrow_have_their_name_and_a_heavy_rain_its_millimetres() {
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let a = told(&w.report(&arguments(json!({"days": 7}))).await.unwrap());
         let days = a["days"].as_array().unwrap();
         assert_eq!(days.len(), 7);
@@ -676,12 +681,14 @@ mod tests {
                 "lundi"
             ]
         );
-        // Friday 1.9 mm; Monday 9.7 mm (« bruine forte ») and 16 %.
-        assert_eq!(days[3]["rain_mm"], 1.9);
-        assert_eq!(days[3]["sky"], "bruine");
-        assert_eq!(days[6]["rain_mm"], 9.7);
-        assert_eq!(days[6]["sky"], "bruine forte");
-        assert_eq!(days[6]["rain_chance"], 16);
+        // Friday: fog, no rain to give. Sunday 17.6 mm (« pluie ») and 38 %; Monday 9.5 mm.
+        assert_eq!(days[3]["sky"], "brouillard");
+        assert!(days[3].get("rain_mm").is_none());
+        assert_eq!(days[5]["rain_mm"], 17.6);
+        assert_eq!(days[5]["sky"], "pluie");
+        assert_eq!(days[5]["rain_chance"], 38);
+        assert_eq!(days[6]["rain_mm"], 9.5);
+        assert_eq!(days[6]["sky"], "pluie faible");
         assert!(days[1].get("rain_mm").is_none());
         // One day: only today.
         let a = told(&w.report(&arguments(json!({"days": 1}))).await.unwrap());
@@ -690,25 +697,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_place_asked_is_found_and_its_country_given() {
-        let recorded = brest();
+        let recorded = valence();
         let w = weather(&recorded, "");
         let a = told(
-            &w.report(&arguments(json!({"place": "  Brest,   France "})))
+            &w.report(&arguments(json!({"place": "  Valence,   France "})))
                 .await
                 .unwrap(),
         );
-        assert_eq!(a["place"], "Brest");
+        assert_eq!(a["place"], "Valence");
         assert_eq!(a["country"], "France");
         assert_eq!(
             recorded.asked()[0].query_pairs().next().unwrap().1,
-            "Brest, France"
+            "Valence, France"
         );
     }
 
     #[tokio::test]
     async fn an_unknown_place_is_said_so() {
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w
             .report(&arguments(json!({"place": "zzqxvkj"})))
             .await
@@ -726,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_a_default_place_the_llm_is_told_to_ask() {
-        let recorded = brest();
+        let recorded = valence();
         let w = weather(&recorded, "");
         assert!(!w.has_default());
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
@@ -736,10 +743,10 @@ mod tests {
 
     #[tokio::test]
     async fn coordinates_in_the_configuration_save_the_geocoding() {
-        let recorded = brest();
+        let recorded = valence();
         let w = weather(
             &recorded,
-            "place = \"Chez moi\"\nlatitude = 48.39029\nlongitude = -4.48628",
+            "place = \"Chez moi\"\nlatitude = 44.9256\nlongitude = 4.90956",
         );
         assert!(w.has_default());
         let a = told(&w.report(&arguments(json!({}))).await.unwrap());
@@ -748,21 +755,21 @@ mod tests {
         assert_eq!(asked.len(), 1, "{asked:?}");
         assert_eq!(asked[0].host_str(), Some("api.open-meteo.com"));
         // No name: no place in the answer, still a forecast.
-        let recorded = brest();
-        let w = weather(&recorded, "latitude = 48.39029\nlongitude = -4.48628");
+        let recorded = valence();
+        let w = weather(&recorded, "latitude = 44.9256\nlongitude = 4.90956");
         let a = told(&w.report(&arguments(json!({}))).await.unwrap());
         assert!(a.get("place").is_none() && a["days"].as_array().unwrap().len() == 2);
     }
 
     #[tokio::test]
     async fn a_place_and_a_forecast_are_kept_and_the_forecast_expires() {
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         for _ in 0..3 {
             w.report(&arguments(json!({}))).await.unwrap();
         }
         // The same name written otherwise (the case): the place is kept, so is its forecast.
-        w.report(&arguments(json!({"place": "BREST,  france"})))
+        w.report(&arguments(json!({"place": "VALENCE,  france"})))
             .await
             .unwrap();
         let hosts: Vec<_> = recorded
@@ -776,15 +783,15 @@ mod tests {
         );
 
         // Another number of days is the same forecast.
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         w.report(&arguments(json!({"days": 2}))).await.unwrap();
         w.report(&arguments(json!({"days": 5}))).await.unwrap();
         assert_eq!(recorded.asked().len(), 2);
 
         // No cache: the forecast is asked every time, the place only once.
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"\ncache_minutes = 0");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"\ncache_minutes = 0");
         w.report(&arguments(json!({}))).await.unwrap();
         w.report(&arguments(json!({}))).await.unwrap();
         assert_eq!(recorded.asked().len(), 3);
@@ -794,59 +801,59 @@ mod tests {
     async fn a_service_that_fails_is_said_simply() {
         // Nothing answers.
         let recorded = Arc::new(Recorded::default());
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
         assert_eq!(e, "La météo ne répond pas pour le moment.");
 
         // A refusal (a code other than 200) at the geocoding, then at the forecast.
-        let recorded = brest();
-        recorded.on(&format!("{GEOCODING}|Brest, France"), 429, "{}");
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        recorded.on(&format!("{GEOCODING}|Valence, France"), 429, "{}");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
         assert_eq!(e, "La météo ne répond pas pour le moment.");
-        let recorded = brest();
+        let recorded = valence();
         recorded.on(
-            &format!("{FORECAST}|48.39029"),
+            &format!("{FORECAST}|44.9256"),
             400,
             r#"{"error":true,"reason":"Latitude must be in range of -90 to 90°."}"#,
         );
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
         assert_eq!(e, "La météo ne répond pas pour le moment.");
 
         // An answer that is not what was expected.
-        let recorded = brest();
+        let recorded = valence();
         recorded.on(
-            &format!("{FORECAST}|48.39029"),
+            &format!("{FORECAST}|44.9256"),
             200,
             "<html>maintenance</html>",
         );
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
         assert!(e.contains("incompréhensible"), "{e}");
-        let recorded = brest();
+        let recorded = valence();
         recorded.on(
-            &format!("{FORECAST}|48.39029"),
+            &format!("{FORECAST}|44.9256"),
             200,
             r#"{"daily":{"time":[]}}"#,
         );
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let e = w.report(&arguments(json!({}))).await.unwrap_err();
         assert!(e.contains("incompréhensible"), "{e}");
     }
 
     #[tokio::test]
     async fn missing_values_are_left_out_rather_than_made_up() {
-        let recorded = brest();
+        let recorded = valence();
         recorded.on(
-            &format!("{FORECAST}|48.39029"),
+            &format!("{FORECAST}|44.9256"),
             200,
             r#"{"current":{"time":"2026-10-13T20:45","temperature_2m":-0.4,"weather_code":71},
                 "daily":{"time":["2026-10-13","2026-10-14"],"weather_code":[73,null],
                 "temperature_2m_max":[1.2,null],"temperature_2m_min":[-3.5,-4.0],
                 "precipitation_probability_max":[null,40],"precipitation_sum":[0.0,4.04]}}"#,
         );
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let a = told(&w.report(&arguments(json!({}))).await.unwrap());
         // -0.4 is zero degrees, not minus zero.
         assert_eq!(a["now"], json!({"temperature": 0, "sky": "neige faible"}));
@@ -862,8 +869,8 @@ mod tests {
     #[tokio::test]
     async fn today_is_the_date_at_the_place_not_the_one_of_this_machine() {
         // The recorded forecast says it is the 13th at the place: the names follow it.
-        let recorded = brest();
-        let w = weather(&recorded, "place = \"Brest, France\"");
+        let recorded = valence();
+        let w = weather(&recorded, "place = \"Valence, France\"");
         let a = told(&w.report(&arguments(json!({"days": 3}))).await.unwrap());
         assert_eq!(a["days"][2]["day"], "jeudi");
     }

@@ -30,9 +30,9 @@ use serde_json::{Value, json};
 
 const SEARCH_EIFFEL: &str = include_str!("fixtures/web/search-fr-tour-eiffel.json");
 const SUMMARY_EIFFEL: &str = include_str!("fixtures/web/summary-fr-tour-eiffel.json");
-const GEOCODE_BREST: &str = include_str!("fixtures/web/weather-geocode-brest.json");
+const GEOCODE_VALENCE: &str = include_str!("fixtures/web/weather-geocode-valence.json");
 const GEOCODE_UNKNOWN: &str = include_str!("fixtures/web/weather-geocode-unknown.json");
-const FORECAST_BREST: &str = include_str!("fixtures/web/weather-forecast-brest.json");
+const FORECAST_VALENCE: &str = include_str!("fixtures/web/weather-forecast-valence.json");
 
 /// What the fake Wikipedia was asked: the path and query, and the headers that matter.
 #[derive(Default)]
@@ -42,7 +42,7 @@ struct Seen(Mutex<Vec<Asked>>);
 type Asked = (String, Option<String>, Option<String>);
 
 /// The fake Wikipedia and Open-Meteo: the Eiffel Tower, a search that never ends, an answer too
-/// heavy, a nonsense subject with nothing; the weather of Brest, and a place nobody knows.
+/// heavy, a nonsense subject with nothing; the weather of Valence, and a place nobody knows.
 async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response {
     let headers: &HeaderMap = request.headers();
     let header = |name| {
@@ -69,14 +69,14 @@ async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response 
                 .to_owned(),
         ),
         "/api/rest_v1/page/summary/Tour_Eiffel" => json(SUMMARY_EIFFEL.to_owned()),
-        "/v1/search" if uri.contains("name=Brest%2C+France") => json(GEOCODE_BREST.to_owned()),
+        "/v1/search" if uri.contains("name=Valence%2C+France") => json(GEOCODE_VALENCE.to_owned()),
         "/v1/search" if uri.contains("name=lent") => {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            json(GEOCODE_BREST.to_owned())
+            json(GEOCODE_VALENCE.to_owned())
         }
         "/v1/search" => json(GEOCODE_UNKNOWN.to_owned()),
-        "/v1/forecast" if uri.contains("latitude=48.39029&longitude=-4.48628&") => {
-            json(FORECAST_BREST.to_owned())
+        "/v1/forecast" if uri.contains("latitude=44.9256&longitude=4.90956&") => {
+            json(FORECAST_VALENCE.to_owned())
         }
         "/v1/forecast" => (StatusCode::BAD_REQUEST, "{\"error\":true}").into_response(),
         "/heavy" => json("x".repeat(3000)),
@@ -248,7 +248,7 @@ async fn the_weather_tool_reaches_the_llm_through_emorys_server_and_answers() {
     let (address, seen) = serve_fake().await;
     let web = web_at(
         address,
-        &config("user_agent = \"Emory/test (contact)\"\n[weather]\nplace = \"Brest, France\""),
+        &config("user_agent = \"Emory/test (contact)\"\n[weather]\nplace = \"Valence, France\""),
     );
     let server = tools::serve(Tools::new(vec![Arc::new(web)]), ([127, 0, 0, 1], 0).into())
         .await
@@ -277,8 +277,8 @@ async fn the_weather_tool_reaches_the_llm_through_emorys_server_and_answers() {
     let result = client.call_tool(ask).await.unwrap();
     assert_ne!(result.is_error, Some(true), "{}", said(&result));
     let answer: Value = serde_json::from_str(&said(&result)).unwrap();
-    assert_eq!(answer["place"], "Brest");
-    assert_eq!(answer["now"]["sky"], "ciel dégagé");
+    assert_eq!(answer["place"], "Valence");
+    assert_eq!(answer["now"]["sky"], "partiellement nuageux");
     assert_eq!(answer["days"][0]["day"], "aujourd'hui");
     assert_eq!(answer["days"][1]["day"], "demain");
     assert_eq!(answer["days"].as_array().unwrap().len(), 2);
@@ -287,12 +287,12 @@ async fn the_weather_tool_reaches_the_llm_through_emorys_server_and_answers() {
     assert!(
         asked[0]
             .0
-            .starts_with("/v1/search?name=Brest%2C+France&count=1&language=fr")
+            .starts_with("/v1/search?name=Valence%2C+France&count=1&language=fr")
     );
     assert!(
         asked[1]
             .0
-            .starts_with("/v1/forecast?latitude=48.39029&longitude=-4.48628&")
+            .starts_with("/v1/forecast?latitude=44.9256&longitude=4.90956&")
     );
     for (_, agent, accept) in &asked {
         assert_eq!(agent.as_deref(), Some("Emory/test (contact)"));
@@ -355,7 +355,7 @@ async fn a_slow_or_broken_weather_service_is_an_error_in_time() {
 #[tokio::test]
 #[ignore = "reaches the real Open-Meteo"]
 async fn real_open_meteo() {
-    let web = Web::new(&config("[weather]\nplace = \"Brest, France\""))
+    let web = Web::new(&config("[weather]\nplace = \"Valence, France\""))
         .unwrap()
         .unwrap();
     // The default place (geocoding and forecast), the same again (kept: no request), a place
