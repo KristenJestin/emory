@@ -18,6 +18,7 @@ pub mod mind;
 pub mod prompt;
 pub mod request;
 pub mod sentences;
+pub mod speech;
 pub mod tools;
 pub mod waiting;
 pub mod web;
@@ -44,6 +45,8 @@ use crate::{
 const HEARING_SUBJECTS: &str = "hearing.*";
 /// How often the idle conversations are looked for.
 const TICK: Duration = Duration::from_secs(10);
+/// How often a device is looked at while a speech on Emory's own waits for it to be free.
+const SPEECH_TICK: Duration = Duration::from_millis(250);
 
 /// The dependencies whose logs, below these levels, carry the messages themselves: the requests
 /// to the LLM (what the owner said, the key of Emory's MCP server in `session/new`), the MCP calls and
@@ -159,6 +162,9 @@ pub async fn run(config: Config) -> Result<()> {
     let mut buttons = client.subscribe(subjects::ALL_BUTTONS).await?;
 
     let brain = Arc::new(brain);
+    // Handed to the timers (`specs/time.md`, T2) and the internal entry (`specs/events.md`, E2),
+    // which make Emory speak on her own; nothing does yet.
+    let (_speaker, mut speeches) = speech::channel();
     let mut mind = Mind::new(
         brain.clone(),
         Arc::new(hippocampe),
@@ -204,7 +210,9 @@ pub async fn run(config: Config) -> Result<()> {
                     Err(e) => { warn!("unreadable Button: {e}"); continue; }
                 }
             }
+            Some(speech) = speeches.recv() => Input::Speak(speech),
             _ = tick.tick() => Input::Tick,
+            () = tokio::time::sleep(SPEECH_TICK), if mind.has_pending_speech() => Input::Tick,
             () = brain.closed() => break Some(anyhow::anyhow!("the LLM adapter has stopped")),
             () = &mut shutdown => break None,
         };

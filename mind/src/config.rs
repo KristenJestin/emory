@@ -44,6 +44,9 @@ pub struct Config {
     pub hippocampe: HippocampeConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// The internal entry: Emory speaking on her own when a program asks (`specs/events.md`).
+    #[serde(default)]
+    pub events: EventsConfig,
     /// Who Emory talks to. Absent: the instructions name nobody.
     #[serde(default)]
     pub owner: OwnerConfig,
@@ -463,6 +466,21 @@ impl DictionaryConfig {
     }
 }
 
+/// The internal entry (`specs/events.md`). Only what Emory does before speaking on her own for
+/// now; the sources come with the entry itself.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct EventsConfig {
+    /// A short tone before speaking (`Cue` `tone`): a voice that comes out of nowhere startles.
+    pub chime: bool,
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self { chime: true }
+    }
+}
+
 /// The waiting cue (see [`crate::waiting`]): `off`, a `tone`, or a short phrase (`speech`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -676,6 +694,20 @@ token_file = "~/t.token"
         assert!(c.owner.name.is_none() && c.owner.address.is_none());
         assert!(c.dictionary.enabled);
         assert_eq!(c.dictionary.timeout(), Duration::from_secs(2));
+        assert!(c.events.chime);
+    }
+
+    #[test]
+    fn the_tone_before_speaking_on_her_own_can_be_turned_off() {
+        let c: Config = format!("{MINIMAL}\n[events]\nchime = false\n")
+            .parse()
+            .unwrap();
+        assert!(!c.events.chime);
+        assert!(
+            format!("{MINIMAL}\n[events]\nchimes = true\n")
+                .parse::<Config>()
+                .is_err()
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 # L'entrée interne : quand Emory parle sans qu'on lui parle
 
 Statut : brouillon du 2026-10-13, à relire avec Kris. Le principe est décidé avec lui le même
-jour ; la forme est une proposition.
+jour ; la forme est une proposition. **E1 (la parole d'elle-même) est construit le 2026-10-13**,
+voir « Ce qui a été décidé en construisant E1 ».
 
 Kris, le 2026-10-13 : « un système de webhook interne qui peut redémarrer le mind, mais dans un
 cadre particulier parce que pas déclenché par la voix ». Deux choses en sortent, écrites ici :
@@ -46,6 +47,65 @@ Une fonction interne de `mind` : dire un texte sur un appareil, au bon moment, c
   prochaine conversation de l'appareil.
 - **Le journal** dit l'origine (`timer`, `event`), l'appareil, l'attente avant de parler, la
   longueur du texte ; jamais le texte.
+
+### Ce qui a été décidé en construisant E1 (2026-10-13)
+
+**L'API interne** (`mind/src/speech.rs`), pour les minuteurs (T2) et l'entrée interne (E2) :
+`speech::channel()` donne un `Speaker` (qu'on clone, un par tâche) et la file que la boucle de
+`mind` lit. `Speaker::speak(Speech)` met une parole en attente et rend `false` seulement si `mind`
+s'est arrêté. `Speech::new(appareil, texte, Origin::Timer | Origin::Event)`, puis `.chime(bool)`
+(vrai par défaut) et `.expires_in(durée)` (600 s par défaut). L'appelant lit sa propre clé de
+configuration pour `chime` (`[events] chime`, `[time] chime`) : le mécanisme est commun, la clé
+est à chaque module. Dans `mind`, c'est une entrée de plus (`Input::Speak`), traitée dans l'ordre
+du bus comme un appui ou un tour.
+
+**« Libre »**, mesuré par `mind` seul (il n'écoute pas `voice.<nom>.speaking`) :
+
+- aucun bouton tenu : un appui `start` sans son `end` ;
+- aucun tour en cours d'écoute : de l'appui (ou de la première phrase entendue) jusqu'au `Turn`.
+  Le relâchement seul ne suffit pas : la transcription n'est pas finie, et la réponse va suivre ;
+- aucune réponse en cours (la tâche qui demande au LLM et envoie les phrases) ;
+- la voix a fini, **d'après l'estimation** : chaque texte envoyé à la voix (phrase d'une réponse,
+  phrase d'attente, parole d'elle-même) repousse la fin estimée de l'appareil de
+  `estimated_speech` (la formule du signal d'attente, voir [`mind.md`](mind.md)), les phrases
+  s'enchaînant ; un `Stop` la remet à zéro.
+
+Un appui ou un tour perdu sur le bus ne bloque pas pour toujours : un appui tenu ou un tour écouté
+depuis plus de **2 minutes** ne compte plus (`HELD_LIMIT`). L'attente est bornée par `expires_in` :
+au-delà, la parole est jetée et journalisée. Plusieurs paroles pour un même appareil passent dans
+l'ordre, une à la fois ; un autre appareil libre parle sans attendre. `mind` regarde les paroles
+en attente à chaque message reçu, et toutes les 250 ms tant qu'il en reste une.
+
+**Le son, puis 400 ms, puis la phrase** (`CHIME_LEAD`) : `voice` ne démarre aucun `Cue` arrivé
+après la première phrase de son tour ; le délai garantit qu'il passe avant, et le ton (0,34 s) est
+joué en entier. Un appui pendant ces 400 ms : ni phrase, un `Stop`.
+
+**Le tour** est un ULID tiré par `mind`. L'horloge de `mind` n'est pas celle de l'oreille : un
+appui arrête une parole d'elle-même **quel que soit l'ordre des tours**, et le tour de `mind`
+n'entre pas dans le « plus récent tour vu » de l'appareil (un appui de l'oreille n'est jamais
+pris pour en retard à cause de lui).
+
+**La conversation** : une règle unique, conversation ouverte ou non. Les cinq dernières paroles
+d'elle-même de l'appareil, de moins de 30 minutes, vont dans la demande suivante de cet appareil,
+sous la marque `[Tu as dit de toi-même]` (une ligne `- texte` chacune), après ce que la mémoire
+signale et avant les fiches trouvées, puis sont oubliées. Raison : la session du LLM ne reçoit rien
+entre deux demandes, la demande suivante est le seul moyen d'y mettre la phrase ; et une
+conversation ouverte se ferme d'elle-même après 30 minutes sans échange, donc la règle des
+30 minutes ne change rien pour elle. Une parole d'elle-même n'ouvre pas de conversation et ne
+compte pas comme un échange. Une parole arrêtée par un appui y entre quand même (le début a été
+entendu).
+
+**Le journal** : `asked to speak on its own` (origine, appareil, longueur, `busy`), `speaking on
+its own` (origine, appareil, tour, `waited_ms`, longueur, nombre de phrases, `chime`),
+`barge-in: speech on its own stopped`, `speech on its own dropped` (attente). Jamais le texte. Un
+texte sans mot est jeté avec un `warn`.
+
+**La configuration** : `[events] chime = true` (seule clé de `[events]` pour l'instant ; E2 ajoute
+le reste). `[time] chime` appartient à T2.
+
+**Pas vérifié** : rien n'a été joué. Le délai de 400 ms et l'enchaînement ton puis phrase sont
+déduits de la file de `voice` telle que décrite dans [`voice.md`](voice.md), pas écoutés ;
+l'estimation de la fin de la voix peut se tromper d'une seconde dans un sens ou l'autre.
 
 ## L'entrée interne
 
@@ -182,12 +242,13 @@ s'abonner à `mind.event.*`, pas d'y publier.
 
 ## L'ordre de construction
 
-1. **E1. La parole d'elle-même** dans `mind` : l'état « libre » d'un appareil, le tour tiré par
+1. **E1. La parole d'elle-même** dans `mind` (**construit le 2026-10-13**) : l'état « libre » d'un appareil, le tour tiré par
    `mind`, le `Cue` facultatif, l'ajout à la conversation et la mémoire des 30 minutes, l'arrêt
    par un appui. Vérifié : tests avec le faux LLM et les messages enregistrés (comme
    `mind/tests/`) : attend la fin d'une réponse, attend le relâchement du bouton, un appui
    l'arrête, la phrase est dans l'historique de la demande suivante. Les minuteurs ([`time.md`](time.md))
-   en dépendent.
+   en dépendent. Fait : `mind/tests/mind.rs` (horloge en pause), plus le son présent ou absent
+   selon `chime`, l'oubli après 30 minutes, l'expiration, l'appui perdu.
 2. **E2. L'entrée `say`** : contrat (`Event`, `EventReply`, `subjects::event`, `ALL_EVENTS`),
    abonnement, sources déclarées, déduplication, expiration, limites, journaux. Vérifié : NATS de
    test, source inconnue refusée, limite par heure, même `id` ignoré, texte trop long refusé.

@@ -1,6 +1,7 @@
 //! The text of a request to the LLM: the day and the time, what the memory flags for the moment
-//! (first request of a conversation only: the session keeps it), the entries found while the owner
-//! was speaking, then what was said. The markers name nobody: the owner's name would cost tokens in
+//! (first request of a conversation only: the session keeps it), what Emory said on her own since
+//! the last request (a timer, an event), the entries found while the owner was speaking, then what
+//! was said. The markers name nobody: the owner's name would cost tokens in
 //! every request and add nothing (the instructions say who it is).
 
 use std::fmt::Write;
@@ -13,7 +14,13 @@ use crate::memory::Found;
 /// The most entries put into a request, all the sentences of the turn together.
 pub const MAX_FOUND: usize = 10;
 
-pub fn build(now: Timestamp, heads_up: Option<&str>, found: &[Found], said: &str) -> String {
+pub fn build(
+    now: Timestamp,
+    heads_up: Option<&str>,
+    own: &[String],
+    found: &[Found],
+    said: &str,
+) -> String {
     let mut text = String::new();
     let _ = writeln!(text, "[Maintenant] {}\n", moment(now));
     if let Some(heads_up) = heads_up {
@@ -21,6 +28,13 @@ pub fn build(now: Timestamp, heads_up: Option<&str>, found: &[Found], said: &str
             text,
             "[Ce que la mémoire signale pour aujourd'hui]\n{heads_up}\n"
         );
+    }
+    if !own.is_empty() {
+        text.push_str("[Tu as dit de toi-même]\n");
+        for said in own {
+            let _ = writeln!(text, "- {said}");
+        }
+        text.push('\n');
     }
     if !found.is_empty() {
         text.push_str("[Fiches trouvées pendant qu'on te parlait]\n");
@@ -108,7 +122,7 @@ mod tests {
     #[test]
     fn a_request_without_memory_is_the_moment_and_what_was_said() {
         assert_eq!(
-            build(at(), None, &[], "bonjour"),
+            build(at(), None, &[], &[], "bonjour"),
             "[Maintenant] lundi 12 octobre 2026, 14:05\n\n[On te dit]\nbonjour"
         );
     }
@@ -118,7 +132,13 @@ mod tests {
         let mut f = found("musique");
         f.date = Some("2026-09-02".to_owned());
         f.excerpt = "le salon".to_owned();
-        let text = build(at(), Some("{\"upcoming\":[]}"), &[f], "et la musique ?");
+        let text = build(
+            at(),
+            Some("{\"upcoming\":[]}"),
+            &[],
+            &[f],
+            "et la musique ?",
+        );
         assert_eq!(
             text,
             "[Maintenant] lundi 12 octobre 2026, 14:05\n\n\
@@ -126,6 +146,22 @@ mod tests {
              [Fiches trouvées pendant qu'on te parlait]\n\
              - Titre musique (decision, musique, le 2026-09-02) : Résumé. Extrait : le salon\n\n\
              [On te dit]\net la musique ?"
+        );
+    }
+
+    #[test]
+    fn what_emory_said_on_her_own_comes_before_the_entries() {
+        let own = [
+            "Le minuteur des pâtes est fini.".to_owned(),
+            "Deux.".to_owned(),
+        ];
+        assert_eq!(
+            build(at(), None, &own, &[found("a")], "relance-le"),
+            "[Maintenant] lundi 12 octobre 2026, 14:05\n\n\
+             [Tu as dit de toi-même]\n- Le minuteur des pâtes est fini.\n- Deux.\n\n\
+             [Fiches trouvées pendant qu'on te parlait]\n\
+             - Titre a (decision, a) : Résumé.\n\n\
+             [On te dit]\nrelance-le"
         );
     }
 
