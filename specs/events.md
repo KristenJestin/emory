@@ -203,12 +203,15 @@ s'abonner à `mind.event.*`, pas d'y publier.
    redémarrage d'un conteneur est le travail de Docker et de Dokploy (politique de redémarrage),
    et une porte qui arrête `mind` serait une arme de plus. Si le besoin existe, un sujet à part
    (`mind.control.restart`), avec sa propre clé, à concevoir alors.
+   **Décidé le 2026-10-13 avec Kris : ne pas le prévoir.**
 2. Une source doit-elle pouvoir lancer une `task` qui écrit dans Hippocampe (`hippocampe_write`
    dans `tools`) ? Recommandation : permis par la configuration, pas par défaut ; ce qu'écrit une
    tâche est signé `emory` et se retrouve comme le reste (voir [`mind.md`](mind.md), « Écrire dans
    Hippocampe »).
+   **Décidé le 2026-10-13 avec Kris : permis par la configuration, pas par défaut.**
 3. Le son avant une parole d'elle-même (`Cue` `tone`) : recommandation, oui par défaut pour
    l'entrée interne et les minuteurs (`[events] chime`, `[time] chime`), parce qu'une voix qui surgit sans prévenir
    fait sursauter ; à juger à l'oreille.
+   **Décidé le 2026-10-13 avec Kris : oui par défaut.**
 4. Le pont HTTP : recommandation, attendre un vrai besoin ; d'ici là, `nats pub` avec la clé de la
    source.

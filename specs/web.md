@@ -282,9 +282,11 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
 
 1. Le lieu par défaut de la météo : lequel mettre dans `dev/mind.toml` ? Recommandation : la ville
    de Kris, par son nom seulement (le géocodage fait le reste), sans coordonnées précises.
+   **Décidé le 2026-10-13 avec Kris : Brest, par son nom.**
 2. Le `User-Agent` de navigateur pour DuckDuckGo : c'est se faire passer pour un navigateur.
    Recommandation : l'accepter, c'est le prix d'une recherche sans clé ; le jour où la page casse
    trop souvent, passer à un autre fournisseur plutôt que de ruser davantage.
+   **Décidé le 2026-10-13 avec Kris : oui.**
 3. `web_read` limité aux adresses trouvées : Kris pourrait vouloir « lis la page de la mairie ».
    Recommandation : garder la règle ; Emory cherche la page d'abord, ce qui revient au même pour
    la voix.

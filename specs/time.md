@@ -166,5 +166,7 @@ bornes ; le dossier est créé s'il manque.
 3. La répétition : une fois, une minute après, si personne n'a appuyé. Recommandation : garder ce
    défaut et l'ajuster à l'usage (un minuteur de cuisine qu'on n'entend pas est pire qu'une phrase
    de trop).
+   **Décidé le 2026-10-13 avec Kris : oui, une répétition après une minute.**
 4. Un minuteur perdu au-delà de 12 heures de panne : recommandation, le jeter (et le journaliser)
    plutôt que de dire de vieilles choses.
+   **Décidé le 2026-10-13 avec Kris : oui, jeté et journalisé.**
