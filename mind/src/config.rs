@@ -729,8 +729,8 @@ token_file = "~/t.token"
         let speech: Config = speech.parse().unwrap();
         assert_eq!(speech.waiting.mode, Mode::Speech);
         assert_eq!(speech.waiting.max_phrases, 2);
-        let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
-        assert_eq!(dev.waiting.mode, Mode::Tone);
+        // The developer switches modes while trying them: only its validity is checked.
+        let _dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
     }
 
     #[test]
