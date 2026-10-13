@@ -340,3 +340,54 @@ a proposé puis demandé. La règle tient donc même quand l'utilisateur donne l
 au prix d'une question de plus ; à revoir avec Kris si cela agace. Sa formulation (« Le système
 veut que je te demande d'abord confirmation ») est maladroite mais juste.
 
+
+## Le locuteur en appel direct à l'API : mesures (2026-10-13)
+
+Une unité de mesure, sans changer `mind` : `mind/examples/talker-bench.rs` envoie à l'API Anthropic,
+avec la crate `genai` 0.7.0-rc.4 (la 0.7 n'existe qu'en rc), la même requête que `mind` : le prompt
+système rendu par `prompt::render`, le texte de `request::build` (fiches cherchées pendant que la
+personne parle, point du jour à la première requête), et les outils d'Emory exécutés pour de bon
+dans le processus (Hippocampe en lecture seule, le dictionnaire avec une écoute simulée). Les
+questions sont celles du test en vrai du 2026-10-12 (`dev/talker-bench.toml`, 10 tours en 5
+conversations). 77 requêtes à l'API, 0,41 USD ; 3 requêtes sur l'abonnement pour le chemin actuel.
+Mesures, réponses et rapport complet dans `.agent-relay/runs/talker-bench/1/`.
+
+Prix de liste lus le 2026-10-13 sur la page de tarifs d'Anthropic, par million de tokens (entrée /
+écriture de cache 5 min / lecture de cache / sortie) : Haiku 5.5 0,10 / 0,125 / 0,01 / 0,50 USD ;
+Sonnet 5.5 2 / 2,5 / 0,10 / 10 USD. Le cache exige au moins 512 tokens ; le préfixe d'Emory (prompt
+et définitions des outils) en fait environ 5 200, donc il est mis en cache.
+
+Temps en ms depuis le tour (après la recherche des fiches), médiane / pire. « Premier mot » est le
+premier texte, « première phrase » ce que `voice` pourrait dire (même découpe que `mind`), « premier
+mot utile » le premier texte de la réponse après les outils (le premier mot peut être une phrase
+d'attente).
+
+| modèle | tours | premier mot | première phrase | premier mot utile | fin | USD par réponse | USD par mois (50 par jour) |
+|---|---|---|---|---|---|---|---|
+| Haiku 5.5 sans réflexion | 20 | 733 / 1851 | 1017 / 2795 | 1323 / 4304 | 1649 / 5245 | 0,0011 | 1,7 |
+| Sonnet 5.5 sans réflexion | 17 | 1523 / 3133 | 2552 / 8571 | 2534 / 8563 | 2690 / 8573 | 0,0150 | 22,5 |
+| Sonnet 5.5, effort bas | 7 | 1090 / 5934 | 1600 / 5949 | 1090 / 5934 | 2602 / 5953 | 0,0140 | 21,1 |
+
+Séparés selon les outils, Haiku donne la première phrase à 926 ms (médiane, sans outil) et 2032 ms
+(avec outil) ; Sonnet à 2042 ms et 6118 ms. Le chemin actuel (ACP) : 1,85 à 5,2 s pour la première
+phrase au test du 2026-10-12 (Sonnet 5.5 moyen) et 2,0 / 3,8 / 3,3 s pour Haiku 5.5 effort bas
+rejoué le 2026-10-13 (sans recherche préalable des fiches).
+
+Ce que cela veut dire :
+
+- **Haiku en appel direct vaut la peine** : la première phrase vient en 1 s quand il répond sans
+  outil, en 2 à 3 s avec outil, soit environ moitié moins que par ACP sans outil et un tiers de moins avec, pour 2 USD par mois.
+- **Sonnet ne se justifie pas comme locuteur** : trois fois plus lent après un outil (6 s, et le
+  texte d'après un outil arrive d'un seul bloc, pas au fil de l'eau), et treize fois plus cher.
+- **Le cache ne change pas les temps, il divise le coût par deux environ** (le préfixe ne passe
+  qu'une fois à plein tarif toutes les 5 minutes). Chaud ou non, le premier mot ne bouge pas à la
+  précision de la mesure.
+- **Les phrases d'attente** : malgré le prompt (« jamais de phrase d'attente »), les deux modèles
+  écrivent « Je regarde… » avant un outil (Haiku 8 fois sur 10 tours avec outil, Sonnet sans
+  réflexion 5 sur 7, Sonnet effort bas 0 sur 3). Le prompt est à durcir, ou le texte écrit avant un
+  appel d'outil à jeter.
+- **Les outils** : les deux lisent Hippocampe quand les fiches trouvées ne suffisent pas et
+  proposent un mot avant de l'ajouter ; la règle de `mind` (pas d'ajout avant le oui) a servi une
+  fois à Sonnet effort bas (il a appelé `dictionary_add` d'emblée, refusé, puis proposé).
+- Limite de `genai` : il envoie `thinking: disabled`, que Sonnet 5.5 refuse (il veut `between_tools`,
+  mis à la main dans le corps). Haiku 5.5 l'accepte.
