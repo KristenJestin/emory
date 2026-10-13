@@ -488,7 +488,8 @@ a donc deux implémentations du `Brain` (le trait qui existait déjà) et `[llm]
   comme définitions de fonctions et exécutés dans le processus par les mêmes modules que le
   serveur MCP, avec la clé de la conversation (la règle du dictionnaire tient de la même façon),
   historique de la conversation gardé par `mind`, interruption qui coupe la connexion aussitôt.
-  Pas de serveur MCP dans ce mode.
+  Pas de serveur MCP dans ce mode. Les appels passent par `Tools::call_in`, comme ceux du serveur : l'observateur
+  des outils (le signal d'attente et sa phrase contextuelle) les voit dans les deux modes.
 
 La configuration :
 
