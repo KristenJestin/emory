@@ -88,8 +88,9 @@ impl Default for NatsConfig {
 pub struct ModelsConfig {
     /// The `silero_vad.onnx` file.
     pub vad: ConfigPath,
-    /// The Parakeet folder (`encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`,
-    /// `tokens.txt`; or the same without `.int8`, the full-precision model, if there is no int8 one).
+    /// The Parakeet folder: `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx` (int8) or
+    /// `encoder.onnx`, `decoder.onnx`, `joiner.onnx` (fp32), and `tokens.txt`. Which of the two
+    /// is loaded: `[transcription] precision`.
     pub parakeet: ConfigPath,
 }
 
@@ -118,6 +119,43 @@ pub struct TranscriptionConfig {
     /// Where Parakeet computes: `cpu` (default) or `cuda`.
     #[serde(default)]
     pub provider: Provider,
+    /// Which weights of the Parakeet folder: `int8` (quantized, the CPU's) or `fp32` (full
+    /// precision, the GPU's). Absent: the int8 files if the folder has them, else the fp32 ones.
+    /// Given, the files must be there: there is no quiet switch to the other ones.
+    pub precision: Option<Precision>,
+    /// What to do when `provider = "cuda"` cannot be had (a build without the `cuda` feature, no
+    /// driver or library, a card without room, the CUDA provider not loaded): `false` (default)
+    /// is an error at start; `true` loads Parakeet on the CPU instead, with a warning in the
+    /// log. A server does not want to run on the CPU without anyone knowing, hence the opt-in.
+    #[serde(default)]
+    pub fallback_to_cpu: bool,
+}
+
+/// The weights of a Parakeet folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Precision {
+    /// `*.int8.onnx`: quantized, fast on the CPU, no gain on a GPU.
+    Int8,
+    /// `*.onnx`: full precision, 2.4 GB of weights, what a GPU speeds up.
+    Fp32,
+}
+
+impl Precision {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Int8 => "int8",
+            Self::Fp32 => "fp32",
+        }
+    }
+
+    /// The suffix of the model files: `encoder.int8.onnx` or `encoder.onnx`.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Int8 => ".int8",
+            Self::Fp32 => "",
+        }
+    }
 }
 
 /// Where a model computes.
@@ -219,6 +257,8 @@ impl Default for TranscriptionConfig {
             hotwords_score: default_hotwords_score(),
             bpe_vocab: None,
             provider: Provider::Cpu,
+            precision: None,
+            fallback_to_cpu: false,
         }
     }
 }
@@ -362,6 +402,64 @@ mod tests {
     fn cuda_is_refused_by_a_build_without_it() {
         assert!(Provider::Cpu.check().is_ok());
         assert_eq!(Provider::Cuda.check().is_ok(), cfg!(feature = "cuda"));
+    }
+
+    #[test]
+    fn the_precision_and_the_fallback_are_set_apart_and_default_to_the_safe_choice() {
+        let config: Config = toml::from_str("[models]\nvad = \"v\"\nparakeet = \"p\"\n").unwrap();
+        // No precision: the folder decides. No fallback: a missing GPU is an error.
+        assert_eq!(config.transcription.precision, None);
+        assert!(!config.transcription.fallback_to_cpu);
+
+        let config: Config = toml::from_str(
+            r#"
+            [models]
+            vad = "v"
+            parakeet = "p"
+            [transcription]
+            precision = "fp32"
+            fallback_to_cpu = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.transcription.precision, Some(Precision::Fp32));
+        assert!(config.transcription.fallback_to_cpu);
+        assert_eq!(Precision::Fp32.suffix(), "");
+        assert_eq!(Precision::Int8.suffix(), ".int8");
+    }
+
+    #[test]
+    fn an_unknown_precision_is_refused() {
+        let error = toml::from_str::<Config>(
+            "[models]\nvad = \"v\"\nparakeet = \"p\"\n[transcription]\nprecision = \"fp16\"\n",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fp16"), "{error}");
+    }
+
+    #[test]
+    fn the_server_example_runs_parakeet_fp32_on_the_gpu_and_silero_on_the_cpu() {
+        let config: Config =
+            toml::from_str(include_str!("../examples/hearing-server.toml")).unwrap();
+        assert_eq!(config.transcription.provider, Provider::Cuda);
+        assert_eq!(config.transcription.precision, Some(Precision::Fp32));
+        assert!(!config.transcription.fallback_to_cpu);
+        assert_eq!(config.vad.provider, Provider::Cpu);
+    }
+
+    #[test]
+    fn the_development_example_stays_on_the_cpu_with_the_int8_model() {
+        let config: Config = toml::from_str(include_str!("../examples/hearing.toml")).unwrap();
+        assert_eq!(config.transcription.provider, Provider::Cpu);
+        assert_eq!(config.transcription.precision, None);
+        assert!(
+            config
+                .models
+                .parakeet
+                .0
+                .to_string_lossy()
+                .ends_with("-int8")
+        );
     }
 
     #[test]
