@@ -8,6 +8,7 @@ use hearing::{
     config::Config,
     corrections::Corrections,
     engine::{DetectorPool, Transcriber},
+    hotwords::Vocabulary,
     service::Service,
 };
 use tracing::info;
@@ -25,17 +26,29 @@ async fn main() -> Result<()> {
     };
     let config = Config::read(&path)?;
 
-    let corrections = match &config.transcription.corrections {
-        Some(path) => Corrections::read(path.as_ref())?,
-        None => Corrections::default(),
+    // The table given in the configuration must be there; the one of the data folder may not be.
+    let (path, given) = config.transcription.corrections_path();
+    let corrections = if given || path.exists() {
+        Corrections::read(&path)?
+    } else {
+        Corrections::default()
     };
-    info!(rules = corrections.len(), "corrections table");
+    info!(rules = corrections.len(), path = %path.display(), "corrections table");
+
+    let vocabulary = Arc::new(Vocabulary::load(&config.transcription.hotwords_path())?);
+    info!(
+        words = vocabulary.words().list.len(),
+        path = %vocabulary.path().display(),
+        "vocabulary"
+    );
 
     let models = config.models.clone();
     let settings = config.transcription.clone();
-    let transcriber = tokio::task::spawn_blocking(move || Transcriber::start(&models, &settings))
-        .await
-        .context("starting Parakeet")??;
+    let words = vocabulary.clone();
+    let transcriber =
+        tokio::task::spawn_blocking(move || Transcriber::start(&models, &settings, words))
+            .await
+            .context("starting Parakeet")??;
 
     let detectors = DetectorPool::new(config.models.vad.as_ref(), &config.vad)?;
 
@@ -48,6 +61,7 @@ async fn main() -> Result<()> {
         transcriber,
         corrections: Arc::new(corrections),
         max_turn: config.turns.max_turn(),
+        vocabulary,
     }
     .run()
     .await

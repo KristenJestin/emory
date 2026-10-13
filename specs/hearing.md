@@ -335,7 +335,8 @@ recherche gloutonne.
   défaut), `bpe_vocab` (par défaut dans le dossier de Parakeet). Des mots sans
   `decoding_method` passent en recherche en faisceau ; `greedy_search` demandé avec des mots est
   refusé au démarrage plutôt que silencieusement sans effet.
-- Liste d'exemple (`hearing/examples/hotwords.txt`) : Emory, Hippocampe, Omarchy, Dokploy, KrisNet,
+- Liste d'exemple (`hearing/examples/hotwords.txt` jusqu'au 2026-10-13, aujourd'hui dans le
+  fichier de données, voir « Le dictionnaire ») : Emory, Hippocampe, Omarchy, Dokploy, KrisNet,
   Navidrome. Kris et Traefik de la première liste d'essai sont retirés : « trafic » n'est jamais
   devenu Traefik (et ne doit pas : c'est un mot français), et « Kris » est court et proche de mots
   existants, sans effet mesuré seul.
@@ -442,6 +443,62 @@ enregistrements).
 **Décision pour le serveur** : ne pas compter sur l'int8 pour le GPU. Pour la carte de 12 Go,
 configurer le modèle fp32 (`encoder.onnx`, `decoder.onnx`, `joiner.onnx` au lieu des `.int8.onnx`)
 une fois sa mesure faite; en attendant, l'int8 sur CPU reste le défaut.
+
+## Le dictionnaire (2026-10-13)
+
+Emory ajoute un mot au vocabulaire elle-même, en conversation, une fois que l'utilisateur a dit
+oui (le côté `mind` est dans [`mind.md`](mind.md), le message dans [`contract.md`](contract.md)).
+`hearing` possède le vocabulaire : il garde le fichier et prend les mots nouveaux sur le bus.
+
+**Le vocabulaire est une donnée de l'utilisateur, hors du dépôt** (Emory est générique, Kris le
+2026-10-13). Par défaut `hotwords.txt` et `corrections.tsv` dans le dossier de données,
+`$XDG_DATA_HOME/emory`, soit `~/.local/share/emory` ; sur le serveur, un volume monté là, ou les
+chemins donnés dans `[transcription]` (`hotwords`, `corrections`). Un fichier de mots absent est un
+vocabulaire vide, créé au premier mot ajouté ; une table de corrections donnée dans la
+configuration doit exister, celle du dossier par défaut peut manquer. Les fichiers de
+`hearing/examples/` ne gardent que du générique (Emory, le nom du produit) et servent de point de
+départ à copier. Les mots de Kris (Emory, Hippocampe, Omarchy, Dokploy, KrisNet, Navidrome) et
+ses corrections sont passés dans `~/.local/share/emory/` sur son PC, avec Hemera en plus.
+
+**Recharger sans redémarrer : il n'y a rien à recharger.** sherpa-onnx 1.13.8 crée un flux avec
+ses propres mots (`create_stream_with_hotwords`, que l'implémentation NeMo de Parakeet prend en
+recherche en faisceau) : `hearing` lui donne les mots tels qu'ils sont à chaque phrase, au lieu
+d'un fichier lu une fois au chargement. Un mot ajouté sert dès la phrase suivante, sans toucher à
+celle en cours. Le reconnaisseur charge toujours le `bpe.vocab` en faisceau, pour découper les
+mots qui arrivent après le démarrage.
+- **Le coût, mesuré** (Parakeet int8, 4 threads, ce PC, 200 tours) : créer le flux d'une phrase
+  avec 10 mots prend 0,1 ms, avec 50 mots 0,26 ms, contre environ 365 ms pour la transcrire. Le
+  chemin écarté, reconstruire le reconnaisseur en tâche de fond puis l'échanger entre deux
+  phrases, aurait coûté 2,3 s de chargement et la mémoire du modèle en double le temps de
+  l'échange (gênant sur la carte graphique).
+- **Vérifié en vrai** sur un bus à part, sans redémarrer `hearing` : 22 s de l'enregistrement de
+  Kris rejouées avec Emory seul dans le fichier donnent « Omarchi » et « Chris NetPoy » ; après
+  l'ajout d'Omarchy, KrisNet et Dokploy par le bus, le même extrait donne « Omarchy » et
+  « KrisNet ». « DocPuy » reste, comme mesuré le 2026-10-12 : le vocabulaire ne le rattrape pas.
+- **La recherche gloutonne ne prend pas de mots.** Si le fichier est vide au démarrage (et sans
+  `decoding_method`), `hearing` tourne en glouton : un mot ajouté est écrit, la réponse le dit
+  (`in_use: false`) et il compte au prochain démarrage. Choix le plus simple et réversible :
+  passer en faisceau pour un fichier vide coûterait 20 à 30 % de calcul pour rien, et
+  reconstruire le reconnaisseur pour ce seul cas ne vaut pas sa complexité.
+
+**L'ajout** (`hearing.vocabulary.add`, demande avec réponse) : le mot est validé (une ligne, 40
+caractères au plus, des lettres de tout alphabet, chiffres, espaces, tirets, apostrophes et
+points, au moins une lettre ; ni `/` qui sépare les mots donnés à sherpa-onnx, ni `:` qui
+annonce un score, ni `#`), ajouté à la fin du fichier, et le fichier gardé tel que l'utilisateur
+l'a écrit (commentaires compris). Un mot déjà là, quelle que soit la casse, n'est pas réécrit et
+la réponse est un succès. Le mot n'entre pas dans les journaux.
+
+**Pas de règle de correction ajoutée d'office.** `heard_as`, ce que la transcription a donné à la
+place, est gardé en commentaire au-dessus du mot (`# 2026-10-13 : entendu « et mera »`), pas
+transformé en règle : une règle s'applique à toutes les phrases, et une forme entendue une fois
+peut être un vrai mot ou un prénom (« A Mira » a demandé des précautions à la main) ; le
+vocabulaire seul suffit souvent. Le commentaire garde de quoi écrire la règle à la main si le mot
+ne suffit pas.
+
+**Après la fusion, pour la chaîne qui tourne** : l'exemple `hearing/examples/hearing.toml` ne
+donne plus de chemin, donc `hearing` lit `~/.local/share/emory/hotwords.txt` et
+`corrections.tsv`, où sont déjà les mots de Kris. Il suffit de redémarrer `hearing` (et `mind`,
+pour les outils).
 
 ## Hors version 1
 

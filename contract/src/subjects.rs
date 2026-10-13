@@ -11,6 +11,9 @@ pub const TURN: &str = "hearing.turn";
 pub const SAY: &str = "voice.say";
 /// Everything not yet said of a turn is thrown away ([`crate::Stop`]).
 pub const STOP: &str = "voice.stop";
+/// A word to add to the vocabulary of the hearing ([`crate::VocabularyAdd`]), a request whose
+/// reply is a [`crate::VocabularyReply`].
+pub const VOCABULARY_ADD: &str = "hearing.vocabulary.add";
 /// The mind asks all the ears, mouths and hands to announce themselves (empty message).
 pub const ANNOUNCE_REQUEST: &str = "announce.request";
 

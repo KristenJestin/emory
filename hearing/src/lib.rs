@@ -12,3 +12,4 @@ pub mod hotwords;
 pub mod level;
 pub mod service;
 pub mod turns;
+pub mod vocabulary;

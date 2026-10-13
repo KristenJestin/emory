@@ -47,6 +47,8 @@ pub struct Config {
     /// Who Emory talks to. Absent: the instructions name nobody.
     #[serde(default)]
     pub owner: OwnerConfig,
+    #[serde(default)]
+    pub dictionary: DictionaryConfig,
 }
 
 /// The person Emory serves. Both fields fill the placeholders of the instructions
@@ -224,6 +226,32 @@ impl Default for ToolsConfig {
     }
 }
 
+/// The dictionary: the LLM may add a word to the vocabulary of the hearing, once the user said
+/// yes (`dictionary_propose`, then `dictionary_add`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DictionaryConfig {
+    /// Whether the LLM gets the two tools.
+    pub enabled: bool,
+    /// Milliseconds to wait for the hearing's reply before telling the LLM it failed.
+    pub timeout_ms: u64,
+}
+
+impl Default for DictionaryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: 2000,
+        }
+    }
+}
+
+impl DictionaryConfig {
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
+}
+
 /// Whether a text has anything to say or to be said: a letter or a digit, not only blanks and
 /// punctuation.
 pub fn has_words(text: &str) -> bool {
@@ -274,6 +302,10 @@ impl std::str::FromStr for Config {
             );
         }
         anyhow::ensure!(
+            (100..=30_000).contains(&config.dictionary.timeout_ms),
+            "dictionary.timeout_ms must be between 100 and 30000"
+        );
+        anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
         );
@@ -310,6 +342,8 @@ token_file = "~/t.token"
         assert!(c.hippocampe.tools.contains(&"search".to_owned()));
         assert!(c.tools.bind.ip().is_loopback());
         assert!(c.owner.name.is_none() && c.owner.address.is_none());
+        assert!(c.dictionary.enabled);
+        assert_eq!(c.dictionary.timeout(), Duration::from_secs(2));
     }
 
     #[test]
@@ -362,6 +396,7 @@ token_file = "~/t.token"
             "[conversation]\nidle_minutes = 0\n",
             "[conversation]\nnothing_heard = \" ... \"\n",
             "[tools]\nbind = \"0.0.0.0:0\"\n",
+            "[dictionary]\ntimeout_ms = 0\n",
             "nope = 1\n",
         ] {
             assert!(

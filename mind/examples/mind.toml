@@ -41,6 +41,12 @@ tool_timeout_ms = 10000
 name = "Alex"                        # without it: « la personne qui te parle »
 address = "une femme ; tu la tutoies"   # free text, in the language of the instructions
 
+# The dictionary: the LLM may add a word to the hearing's vocabulary, only after the user said yes
+# in a later turn (dictionary_propose, then dictionary_add).
+[dictionary]
+enabled = true
+timeout_ms = 2000   # how long to wait for the hearing's reply
+
 # Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
 [tools]
 bind = "127.0.0.1:0"

@@ -28,7 +28,10 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::brain::{Brain, Event, SessionId};
+use crate::{
+    brain::{Brain, Event, SessionId},
+    conversations::{self, ConversationKey},
+};
 
 /// How a session is set up: what goes into `session/new`.
 #[derive(Clone, Debug)]
@@ -44,12 +47,13 @@ pub struct SessionSettings {
 }
 
 impl SessionSettings {
-    /// The `session/new` request, with the settings measured on 2026-10-11 in `_meta`.
-    pub fn request(&self) -> NewSessionRequest {
-        let server = McpServerHttp::new(MCP_SERVER, &self.mcp_url).headers(vec![HttpHeader::new(
-            "Authorization",
-            format!("Bearer {}", self.mcp_key),
-        )]);
+    /// The `session/new` request of a conversation, with the settings measured on 2026-10-11 in
+    /// `_meta`.
+    pub fn request(&self, conversation: &ConversationKey) -> NewSessionRequest {
+        let server = McpServerHttp::new(MCP_SERVER, &self.mcp_url).headers(vec![
+            HttpHeader::new("Authorization", format!("Bearer {}", self.mcp_key)),
+            HttpHeader::new(conversations::HEADER, conversation.0.clone()),
+        ]);
         NewSessionRequest::new(self.workdir.clone())
             .mcp_servers(vec![McpServer::Http(server)])
             .meta(self.meta())
@@ -81,7 +85,7 @@ impl SessionSettings {
 type Streams = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>>;
 
 enum Command {
-    Open(oneshot::Sender<anyhow::Result<SessionId>>),
+    Open(ConversationKey, oneshot::Sender<anyhow::Result<SessionId>>),
     Prompt {
         session: SessionId,
         text: String,
@@ -138,9 +142,9 @@ impl AcpBrain {
 }
 
 impl Brain for AcpBrain {
-    async fn open(&self) -> anyhow::Result<SessionId> {
+    async fn open(&self, conversation: &ConversationKey) -> anyhow::Result<SessionId> {
         let (reply, answer) = oneshot::channel();
-        self.send(Command::Open(reply))?;
+        self.send(Command::Open(conversation.clone(), reply))?;
         answer.await.context("the ACP connection is closed")?
     }
 
@@ -308,9 +312,9 @@ fn handle(
     command: Command,
 ) {
     match command {
-        Command::Open(reply) => {
+        Command::Open(conversation, reply) => {
             let cx = cx.clone();
-            let request = settings.request();
+            let request = settings.request(&conversation);
             tokio::spawn(async move {
                 let result = cx
                     .send_request(request)
@@ -422,7 +426,8 @@ mod tests {
             mcp_url: "http://127.0.0.1:4321/mcp".to_owned(),
             mcp_key: "k".to_owned(),
         };
-        let request = serde_json::to_value(settings.request()).unwrap();
+        let request =
+            serde_json::to_value(settings.request(&ConversationKey("c-7".to_owned()))).unwrap();
         let meta = &request["_meta"];
         assert_eq!(meta["systemPrompt"], "Tu es Emory.");
         let options = &meta["claudeCode"]["options"];
@@ -439,6 +444,9 @@ mod tests {
         assert_eq!(servers[0]["name"], "emory");
         assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
         assert_eq!(servers[0]["headers"][0]["value"], "Bearer k");
+        // The tools know which conversation calls them.
+        assert_eq!(servers[0]["headers"][1]["name"], "emory-conversation");
+        assert_eq!(servers[0]["headers"][1]["value"], "c-7");
     }
 
     fn asked(tool_call: Value) -> RequestPermissionRequest {

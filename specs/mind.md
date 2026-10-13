@@ -76,6 +76,8 @@ module, et ce qui s'ajoutera (les mains, les yeux) devient un module de plus :
 - **la musique** : chercher dans Navidrome par l'API Subsonic, un module de l'`emory-hands` du
   serveur (appareil `server`) ;
 - **les mains** : les actions annoncées par l'`emory-hands` de chaque appareil (MPRIS sur le PC) ;
+- **le dictionnaire** : ajouter un mot au vocabulaire de la transcription, après le oui de
+  l'utilisateur (construit le 2026-10-13, voir « Le dictionnaire » à la fin) ;
 - **plus tard** : les yeux.
 
 ## Hippocampe
@@ -295,3 +297,46 @@ rarement (elle terminait presque chaque réponse ainsi). Le reste est inchangé 
 d'attente, aucune liste lue, nombres en lettres, aucun identifiant lu, français). Les exemples et
 les tests du dépôt ne contiennent plus de données personnelles ; `dev/mind.toml` porte les valeurs
 du développeur, `[owner]` compris.
+
+## Le dictionnaire (2026-10-13)
+
+Kris l'a demandé le 2026-10-12 (« ça tu peux le dev déjà ») : Parakeet écorche les noms propres
+de l'utilisateur, et Emory doit pouvoir en ajouter un au vocabulaire de `hearing` elle-même, en
+conversation, **mais seulement une fois que l'utilisateur a confirmé** : Emory propose (« Tu veux
+que j'ajoute Hemera au dictionnaire ? »), l'utilisateur dit oui, le mot est ajouté.
+
+**La confirmation est tenue par `mind`, pas seulement demandée au LLM.** Un module `dictionary`
+sur le serveur MCP d'Emory, deux outils :
+
+- `dictionary_propose(word, heard_as?)` note la proposition dans la conversation et répond au LLM
+  de demander à l'utilisateur, puis d'attendre son oui ;
+- `dictionary_add(word)` n'est accepté que pour un mot proposé **à un tour précédent** de la même
+  conversation : l'utilisateur doit avoir parlé depuis. Sinon il est refusé, avec un message qui
+  dit de demander d'abord (mot jamais proposé, ou proposé à ce tour-ci). Accepté, il envoie le mot
+  à `hearing` (`hearing.vocabulary.add`, voir [`contract.md`](contract.md)) et rend sa réponse
+  au LLM : ajouté, déjà là, ou refusé et pourquoi.
+- Les propositions meurent avec la conversation ; un mot ajouté consomme sa proposition.
+- Les descriptions des outils sont courtes (elles partent avec chaque requête) et portent la
+  consigne ; le prompt système n'a pas changé.
+
+**Comment un outil sait de quelle conversation il est appelé.** Les appels du LLM arrivent au
+serveur MCP sans le dire. Chaque conversation tire donc une clé au hasard, que sa session donne au
+serveur dans l'en-tête `emory-conversation` (dans `session/new`, à côté de la clé du serveur) ; le
+serveur la lit dans la requête HTTP de l'appel. `mind` tient le registre des conversations
+ouvertes et du dernier tour de l'utilisateur dans chacune (`src/conversations.rs`) : le tour
+avance quand un tour entendu arrive à `mind`, avant la requête, et la conversation sort du
+registre quand elle se ferme. Une clé inconnue, ou un appel sans clé, est refusé. Le registre sert
+à tout outil qui doit attendre l'utilisateur.
+
+**La configuration** : `[dictionary]` `enabled` (par défaut oui ; non retire les deux outils) et
+`timeout_ms` (2 s par défaut), l'attente de la réponse de `hearing`.
+
+**Essayé en vrai** le 2026-10-13, Sonnet 5.5, sur un bus à part (3 requêtes) : à « quand je dis
+Hemera, la transcription écrit « et mera », tu peux arranger ça ? », le LLM a appelé
+`dictionary_propose` et demandé « Je l'ajoute ? » ; au « Oui, vas-y. » suivant, `dictionary_add`
+est passé et `hearing` a écrit le mot, avec « et mera » en commentaire. À « Ajoute aussi Jellyfin
+au dictionnaire, direct. », le LLM a appelé `dictionary_add` d'emblée : refusé (jamais proposé), il
+a proposé puis demandé. La règle tient donc même quand l'utilisateur donne l'ordre directement,
+au prix d'une question de plus ; à revoir avec Kris si cela agace. Sa formulation (« Le système
+veut que je te demande d'abord confirmation ») est maladroite mais juste.
+

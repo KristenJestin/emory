@@ -114,6 +114,23 @@ fn action_replies() {
 }
 
 #[test]
+fn vocabulary() {
+    let add: VocabularyAdd = round_trip(json!({ "word": "Grafana", "heard_as": "gras fana" }));
+    assert_eq!(add.heard_as.as_deref(), Some("gras fana"));
+    let bare: VocabularyAdd = round_trip(json!({ "word": "Grafana" }));
+    assert_eq!(bare.heard_as, None);
+    let added: VocabularyReply = round_trip(json!({ "ok": true, "known": false, "in_use": true }));
+    assert_eq!(added, VocabularyReply::success(false, true));
+    let refused: VocabularyReply =
+        round_trip(json!({ "ok": false, "known": false, "in_use": false, "error": "too long" }));
+    assert_eq!(refused, VocabularyReply::failure("too long"));
+    // An older hearing, or a shorter reply, still reads.
+    let short: VocabularyReply = serde_json::from_value(json!({ "ok": true })).unwrap();
+    assert!(short.ok && !short.known && !short.in_use);
+    assert_eq!(subjects::VOCABULARY_ADD, "hearing.vocabulary.add");
+}
+
+#[test]
 fn an_invalid_device_name_is_refused() {
     for name in ["", "Office", "office.living", "of fice", "*", ">"] {
         assert!(Device::new(name).is_err(), "{name:?}");

@@ -13,6 +13,7 @@ use std::{
 use contract::{Button, Device, Say, Sentence, State, Stop, Turn, TurnId, Wake};
 use mind::{
     brain::{Brain, Event, SessionId},
+    conversations::{ConversationKey, Conversations},
     memory::{Found, Memory},
     mind::{Input, Mind, Outbox, Settings},
 };
@@ -35,6 +36,8 @@ type Streams = Arc<Mutex<HashMap<SessionId, mpsc::UnboundedSender<Event>>>>;
 #[derive(Default)]
 struct FakeBrain {
     opened: Mutex<u32>,
+    /// The conversation of each session opened, in order.
+    keys: Mutex<Vec<ConversationKey>>,
     /// How many of the next openings fail.
     failing_opens: AtomicU32,
     /// The agent does not answer the cancels.
@@ -66,7 +69,7 @@ impl FakeBrain {
 }
 
 impl Brain for FakeBrain {
-    async fn open(&self) -> anyhow::Result<SessionId> {
+    async fn open(&self, conversation: &ConversationKey) -> anyhow::Result<SessionId> {
         if self
             .failing_opens
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -74,6 +77,7 @@ impl Brain for FakeBrain {
         {
             anyhow::bail!("the adapter refused the session");
         }
+        self.keys.lock().unwrap().push(conversation.clone());
         let mut opened = self.opened.lock().unwrap();
         *opened += 1;
         Ok(SessionId(format!("s{opened}")))
@@ -223,6 +227,7 @@ struct Bench {
     brain: Arc<FakeBrain>,
     out: Arc<Recorder>,
     prompts: mpsc::UnboundedReceiver<Prompt>,
+    conversations: Conversations,
 }
 
 fn bench(memory: FakeMemory) -> Bench {
@@ -230,6 +235,7 @@ fn bench(memory: FakeMemory) -> Bench {
     let (tx, prompts) = mpsc::unbounded_channel();
     *brain.prompts.lock().unwrap() = Some(tx);
     let out = Arc::new(Recorder::default());
+    let conversations = Conversations::default();
     let mind = Mind::new(
         brain.clone(),
         Arc::new(memory),
@@ -240,12 +246,14 @@ fn bench(memory: FakeMemory) -> Bench {
             search_limit: 5,
             nothing_heard: NOTHING_HEARD.to_owned(),
         },
-    );
+    )
+    .with_conversations(conversations.clone());
     Bench {
         mind,
         brain,
         out,
         prompts,
+        conversations,
     }
 }
 
@@ -673,6 +681,31 @@ async fn an_idle_conversation_closes_and_the_next_press_opens_another() {
     let (_, again) = b.ask("office", &["re"]).await;
     assert_ne!(again.session, prompt.session);
     assert!(again.text.contains("[Ce que la mémoire signale"));
+}
+
+/// What the tools see of a conversation: its key, given to its session, and the user's last turn,
+/// until it closes.
+#[tokio::test(start_paused = true)]
+async fn the_tools_follow_the_turns_of_the_conversation() {
+    let mut b = bench(FakeMemory::default());
+    let (first, prompt) = b.ask("office", &["bonjour"]).await;
+    let key = b.brain.keys.lock().unwrap()[0].clone();
+    assert_eq!(b.conversations.turn(&key), Some(Some(first)));
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(1).await;
+    let (second, prompt) = b.ask("office", &["oui"]).await;
+    assert_eq!(b.conversations.turn(&key), Some(Some(second)));
+    // Another device has its own conversation.
+    prompt.events.send(done()).unwrap();
+    let (other, _) = b.ask("kitchen", &["salut"]).await;
+    let other_key = b.brain.keys.lock().unwrap()[1].clone();
+    assert_ne!(other_key, key);
+    assert_eq!(b.conversations.turn(&other_key), Some(Some(other)));
+    assert_eq!(b.conversations.turn(&key), Some(Some(second)));
+
+    tokio::time::sleep(Duration::from_secs(31 * 60)).await;
+    b.mind.handle(Input::Tick).await;
+    assert_eq!(b.conversations.turn(&key), None);
 }
 
 #[tokio::test]

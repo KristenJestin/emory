@@ -1,6 +1,6 @@
 # Le contrat
 
-Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11.
+Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13.
 
 Le contrat est la seule chose que les programmes d'Emory partagent : les sujets du bus et le format
 de chaque message. Il vit dans `contract/`, une crate Rust sans réseau (des types `serde`, des
@@ -58,6 +58,7 @@ Les en-têtes d'un message audio :
 | `mouth.<nom>.announce` | `emory-mouth` | `mind` | `Announce` |
 | `hearing.sentence` | `hearing` | `mind` | `Sentence` |
 | `hearing.turn` | `hearing` | `mind` | `Turn` |
+| `hearing.vocabulary.add` | `mind` | `hearing` | `VocabularyAdd`, demande avec réponse `VocabularyReply` |
 | `voice.say` | `mind` | `voice` | `Say` |
 | `voice.stop` | `mind` | `voice` | `Stop` |
 | `voice.<nom>.speaking` | `voice` | `emory-hands` de l'appareil | `Speaking` |
@@ -68,7 +69,7 @@ Les en-têtes d'un message audio :
 Dans le code, les sujets et les abonnements viennent de `contract::subjects` :
 `subjects::button(&device)`, `subjects::ear_audio`, `subjects::ear_announce`,
 `subjects::mouth_audio`, `subjects::mouth_announce`, `subjects::hands_announce`,
-`subjects::speaking`, `subjects::action`, les constantes `SENTENCE`, `TURN`, `SAY`, `STOP`,
+`subjects::speaking`, `subjects::action`, les constantes `SENTENCE`, `TURN`, `VOCABULARY_ADD`, `SAY`, `STOP`,
 `ANNOUNCE_REQUEST`, et les abonnements à tous les appareils `ALL_BUTTONS`, `ALL_EAR_AUDIO`,
 `ALL_EAR_ANNOUNCES`, `ALL_MOUTH_ANNOUNCES`, `ALL_HANDS_ANNOUNCES`. `device_of_subject` retrouve
 l'appareil d'un sujet qui commence par `ear`, `mouth`, `hands` ou `voice`.
@@ -179,6 +180,26 @@ avec les arguments en JSON. La réponse :
 ```
 
 `mind` attend 2 s au plus (`ACTION_TIMEOUT`) ; un appareil éteint ne répond pas, et Emory le dit simplement.
+
+### `VocabularyAdd` et `VocabularyReply`
+
+Ajouté le 2026-10-13. Un mot à ajouter au vocabulaire de `hearing`, une demande avec réponse NATS
+sur `hearing.vocabulary.add`. `mind` ne l'envoie qu'une fois que l'utilisateur a dit oui (voir
+[`mind.md`](mind.md)).
+
+```json
+{ "word": "Grafana", "heard_as": "gras fana" }
+{ "ok": true, "known": false, "in_use": true }
+{ "ok": false, "known": false, "in_use": false, "error": "caractère refusé dans le mot : '/'" }
+```
+
+- `heard_as` (facultatif) : ce que la transcription a donné à la place ; `hearing` le garde en
+  commentaire au-dessus du mot.
+- `known` : le mot y était déjà (quelle que soit la casse) ; rien n'est écrit, et c'est un succès.
+- `in_use` : la transcription s'en sert dès la phrase suivante. `false` quand `hearing` tourne en
+  recherche gloutonne, qui ne prend pas de mots : le mot est écrit et compte au prochain démarrage.
+- `error` : pourquoi le mot est refusé (vide, plus de 40 caractères, saut de ligne, `/`, `:`, `#`,
+  pas de lettre…). `mind` attend 2 s au plus (`[dictionary] timeout_ms`).
 
 ## Hors du contrat
 

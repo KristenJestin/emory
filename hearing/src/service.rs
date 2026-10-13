@@ -35,6 +35,7 @@ use crate::{
     bus::publish,
     corrections::Corrections,
     engine::{Detector, DetectorPool, Segment, Transcriber, Transcription},
+    hotwords::Vocabulary,
     level::Level,
     turns::{Chunk, Closed, Opening, Reason, Turns},
 };
@@ -231,6 +232,8 @@ pub struct Service {
     pub corrections: Arc<Corrections>,
     /// A turn is closed after this long, whatever the ear does.
     pub max_turn: Duration,
+    /// The vocabulary, to which the mind adds words (`hearing.vocabulary.add`).
+    pub vocabulary: Arc<Vocabulary>,
 }
 
 impl Service {
@@ -239,6 +242,7 @@ impl Service {
     /// supervisor restarts it.
     pub async fn run(self) -> Result<()> {
         let mut ear = self.client.subscribe(EAR_SUBJECTS).await?;
+        let mut vocabulary = self.client.subscribe(subjects::VOCABULARY_ADD).await?;
         info!(subjects = EAR_SUBJECTS, "hearing is listening");
 
         let mut turns = Turns::<Session>::new(audio::SILENCE_CLOSES_TURN, self.max_turn);
@@ -262,6 +266,12 @@ impl Service {
                         None => {}
                     }
                 }
+                Some(message) = vocabulary.next() => crate::vocabulary::handle(
+                    self.client.clone(),
+                    self.vocabulary.clone(),
+                    self.transcriber.takes_words(),
+                    message,
+                ),
                 _ = watch.tick() => {
                     for closed in turns.expire(Instant::now()) {
                         match closed.reason {
