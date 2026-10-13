@@ -5,6 +5,10 @@ engine = "kyutai"
 engine_url = "http://127.0.0.1:8001"
 voice = "cml-tts/fr/5476_3103_000072-0001.wav"
 
+# The pronunciation lexicon, tuned on Pocket: Kyutai may read some of these words right without it
+# (`lexicon_enabled = false` switches the stage off, to compare).
+lexicon = "lexicon.fr.toml"
+
 # The loudness of the voice (peaks of Kyutai not measured yet: the limiter keeps it under full scale).
 gain = 2.0
 

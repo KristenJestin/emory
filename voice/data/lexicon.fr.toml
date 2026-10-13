@@ -24,28 +24,38 @@
 #   son nom (voir en bas).
 
 # Les sigles dits comme des mots, jamais épelés (ils gardent leur écriture, avec ou sans « s »).
+# Pocket les lit bien tels quels. « OK » et « YAML » en font partie : épelés, ils sonneraient faux.
 not_spelled = [
   "NASA", "OVNI", "UNESCO", "OTAN", "ONU", "RAM", "LED", "LASER", "RADAR", "SIDA", "SMIC",
-  "OUI", "NON", "STOP", "SOS",
+  "OUI", "NON", "OK", "YAML",
 ]
 
 # Les mots remplacés, en respectant les majuscules et les minuscules.
+#
+# Ce que ce lexique corrige a été mesuré avec Pocket (voix estelle), en refaisant transcrire la
+# synthèse : seuls les mots lus de travers y sont. « Docker », « Bluetooth », « YouTube »,
+# « Google », « iPhone » ou « Wi-Fi » sont déjà bien lus, y toucher risquerait de les abîmer ; si
+# un autre moteur les lit mal, les ajouter ici ou dans son propre fichier.
 [replace]
 GitHub = "guite-heub"
-GitLab = "guite-labe"
-Docker = "docqueure"
+GitLab = "guite-lab"
+Git = "guite"
 Linux = "linuxe"
-"Wi-Fi" = "ouifi"
-Bluetooth = "bloute-outhe"
-YouTube = "you-tioube"
-Google = "gougueule"
-iPhone = "aïe-faune"
-OK = "okay"
+Android = "androïde"
+Redis = "rédisse"
+PostgreSQL = "postgresse-ku-èl"
+Neo4j = "néo-fore-djé"
+Rust = "reuste"
+JSON = "djé-son"
+Gmail = "djimèle"
+OVNI = "ovni"
+STOP = "stop"
 
-# Les mots remplacés, quelle que soit l'écriture : « okay », « Okay » et « OKAY » donnent la même
-# chose.
+# Les mots remplacés, quelle que soit l'écriture : une seule ligne pour « Okay », « okay » et
+# « OKAY ». Rien par défaut.
 [replace_any_case]
 
-# Le nom des lettres et des chiffres pour l'épellation, à n'ajouter que pour en changer un :
+# Le nom des lettres et des chiffres pour l'épellation, à n'ajouter que pour en changer un (la
+# clé est une majuscule ou un chiffre) :
 # [letters]
-# S = "èsse"
+# R = "èrre"

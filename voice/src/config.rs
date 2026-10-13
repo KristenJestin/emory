@@ -444,6 +444,17 @@ mod tests {
     }
 
     #[test]
+    fn the_development_lexicon_keeps_up_with_the_built_in_one() {
+        let sentence = "GitHub GitLab Git Linux Android Redis PostgreSQL Neo4j Rust JSON Gmail OVNI STOP \
+                        NASA OK YAML LED RAM OTAN SSH MCP";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../dev/voice.toml");
+        let dev = Config::load(&path).unwrap();
+        let built_in = crate::text::Lexicon::builtin().unwrap();
+        assert_eq!(dev.text.apply(sentence), built_in.apply(sentence));
+        assert!(dev.text.len() >= built_in.len());
+    }
+
+    #[test]
     fn the_lexicon_stage_is_on_with_the_built_in_lexicon_by_default() {
         let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
         let c: Config = base.parse().unwrap();
