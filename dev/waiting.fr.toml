@@ -96,6 +96,19 @@ plain = [
   "J'ajoute ce mot.",
 ]
 
+# La météo : le lieu est dit s'il est dicible (un nom de ville), sinon une phrase sans lieu.
+[tools.web_weather]
+argument = "place"
+phrases = [
+  "Je regarde la météo à {}.",
+  "Je regarde le temps qu'il fait à {}.",
+]
+plain = [
+  "Je regarde la météo.",
+  "Je regarde le temps qu'il fait.",
+  "Je regarde le ciel.",
+]
+
 # Le résumé d'un article Wikipédia : le sujet est dit s'il est dicible.
 [tools.web_wikipedia]
 argument = "query"

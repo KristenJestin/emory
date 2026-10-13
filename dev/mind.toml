@@ -33,10 +33,17 @@ mode = "off"
 # pulse_after_speech = true
 # pulse_delay_ms = 600
 
-# The web: Emory answers from Wikipedia (French first, then English) with `web_wikipedia`. No key.
-# The weather, the search and the reading of a page come later (specs/web.md).
+# The web: Emory answers from Wikipedia (French first, then English) with `web_wikipedia`, and about
+# the weather with `web_weather` (Open-Meteo). No key. The search and the reading of a page come
+# later (specs/web.md).
 [web]
 enabled = true
+
+# The developer's place, by its name: the country after the comma, because « Brest » alone is the
+# one of Belarus for Open-Meteo.
+[web.weather]
+enabled = true
+place = "Brest, France"
 
 [web.wikipedia]
 enabled = true
