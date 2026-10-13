@@ -1,0 +1,41 @@
+# Questions of the talker bench (`cargo run -p mind --example talker-bench`), taken from the live
+# test of 2026-10-12: what the owner really asked, transcribed as the hearing wrote it. One
+# conversation keeps its history from one turn to the next; every conversation is run again for
+# each run, from nothing.
+
+[[conversation]]
+name = "recap"
+turns = [
+  "Tu peux me refaire un topo sur ce qu'on a bossé aujourd'hui?",
+  "Ouais, dis-moi en plus.",
+]
+
+[[conversation]]
+name = "project"
+turns = [
+  "Quoi sur la direction artistique pour Ali là? Est-ce qu'on a un peu décidé où on va, est-ce qu'on a des infos là dessus?",
+]
+
+[[conversation]]
+name = "plain"
+turns = [
+  "T'as accès à Internet là?",
+  "Je te demande de me mettre un timer. Est-ce que t'as la main là-dessus?",
+]
+
+[[conversation]]
+name = "dictionary"
+turns = [
+  "l'écrit sous quelle forme Emera là. Pourquoi tu arrives pas à le trouver?",
+  "T'as la main sur le dictionnaire pour ajouter ce truc là du coup?",
+  "Oui, fais-le.",
+]
+
+# The same exchange when the model is told the word at once (the "dictionary" one above gives it
+# only through a transcription that the memory has to untangle).
+[[conversation]]
+name = "dictionary-clear"
+turns = [
+  "Le nom du projet s'écrit H, E, M, E, R, A, Hemera, et la transcription l'écrit n'importe comment. Tu peux l'ajouter à ton dictionnaire ?",
+  "Oui, vas-y.",
+]
