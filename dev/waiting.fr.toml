@@ -95,3 +95,15 @@ phrases = [
 plain = [
   "J'ajoute ce mot.",
 ]
+
+# Le résumé d'un article Wikipédia : le sujet est dit s'il est dicible.
+[tools.web_wikipedia]
+argument = "query"
+phrases = [
+  "Je cherche {} sur Wikipédia.",
+  "Je regarde ce que dit Wikipédia sur {}.",
+]
+plain = [
+  "Je regarde sur Wikipédia.",
+  "Je cherche sur Wikipédia.",
+]

@@ -32,3 +32,11 @@ mode = "off"
 # phrase_spacing_from = "end"
 # pulse_after_speech = true
 # pulse_delay_ms = 600
+
+# The web: Emory answers from Wikipedia (French first, then English) with `web_wikipedia`. No key.
+# The weather, the search and the reading of a page come later (specs/web.md).
+[web]
+enabled = true
+
+[web.wikipedia]
+enabled = true

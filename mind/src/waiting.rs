@@ -1293,5 +1293,8 @@ silent = true
         assert!(!search.phrases.is_empty() && !search.plain.is_empty());
         assert!(phrases.tools["hippocampe_read"].argument.is_none());
         assert!(phrases.tools["dictionary_propose"].silent);
+        let wikipedia = &phrases.tools["web_wikipedia"];
+        assert_eq!(wikipedia.argument.as_deref(), Some("query"));
+        assert!(!wikipedia.phrases.is_empty() && !wikipedia.plain.is_empty());
     }
 }
