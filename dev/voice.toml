@@ -4,5 +4,5 @@ voice = "estelle"
 
 # The sounds of the waiting cue (the mind decides when, `[waiting]` in dev/mind.toml).
 [cue]
-volume = 0.3
+volume = 0.1
 tone = "rising"
