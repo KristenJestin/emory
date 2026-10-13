@@ -199,7 +199,10 @@ par le même code que `voice` (`voice/examples/loudness-check.rs`, rien de joué
 | étage, cible -16 | -15,9 | 3,3 LU | -1,0 dBFS | 1 |
 | étage, cible -14 | -14,0 | 3,6 LU | -1,0 dBFS | 5 |
 
-Le détail par phrase est dans le rapport de l'unité. À `gain = 2`, le réglage précédent, la
+Le gros de l'effet est le nivellement d'une phrase à l'autre ; l'écrasement dans la phrase est
+modeste (crête, pic moins sonie, de 13,5 dB en moyenne à 13,0 à -16 et 12,4 à -14), le compresseur
+étant réglé doux : plus fort, il tire les phrases courtes sous la cible. Le détail par phrase est
+dans le rapport de l'unité. À `gain = 2`, le réglage précédent, la
 parole est à -17,3 LUFS en moyenne ; le niveau « normal » des services de streaming est de -14 à
 -16 LUFS (c'est un chiffre de l'industrie, rien n'a été enregistré sur la sortie du PC), et les
 vidéos ou les notifications sont souvent masterisées plus fort. À -14, la voix est donc 3 dB
