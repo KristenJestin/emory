@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
 /// # gain = 1.0                       # loudness of the voice, 0.1 to 8: 1 = as the engine says it
+///                                    # (ignored when [loudness] is enabled)
 ///
 /// # [loudness]                       # compressor, look-ahead limiter and target level of the voice
 /// # enabled = false                  # off by default: the voice is sent as the engine says it
