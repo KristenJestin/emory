@@ -338,11 +338,119 @@ serveur de Kyutai le fait). Le premier son partirait alors environ 0,25 s après
 mots, au lieu de 0,25 s après la première phrase entière : on gagnerait le temps que met le LLM
 à écrire sa première phrase. Le contrat (`Say`, phrase par phrase) n'a pas changé.
 
+## Le lexique de prononciation (2026-10-13)
+
+Entendu en direct le 2026-10-13 : la voix française (Pocket, estelle) lit « GitHub » « jithub » et
+« SSH » comme un mot. Le modèle écrit souvent des mots techniques, et la mémoire de Kris en est
+pleine : le lexique prévu depuis le 2026-10-11 est construit.
+
+**Une étape de texte avant la synthèse**, dans `voice/src/text.rs`, là où le texte est nettoyé
+(`text::clean`, appelée par `device.rs` pour chaque phrase). Elle s'applique à tous les moteurs,
+après le nettoyage des espaces, et fait deux choses, dans cet ordre :
+
+1. **Le lexique** : des mots (ou n'importe quel texte) remplacés par leur écriture à lire,
+   `GitHub` devient « guite-heub ». Mot entier seulement (« Git » ne touche pas « GitHub »), le plus
+   long d'abord, les majuscules respectées sauf si l'entrée demande de les ignorer, et la
+   ponctuation autour du mot reste. Une entrée l'emporte sur la règle 2. Ce qu'une règle écrit
+   n'est jamais relu par l'autre.
+2. **Les sigles épelés** : un mot de 2 à 6 caractères, tous des majuscules A à Z ou des chiffres,
+   avec au moins une lettre, qu'aucune entrée ne couvre et qui n'est pas dans la liste des sigles
+   dits comme des mots (`not_spelled`), est épelé avec le nom des lettres et des chiffres, reliés
+   par des traits d'union : « SSH » devient « èsse-èsse-ache », « MP3 » « èm-pé-trois », « 4G »
+   « quatre-jé ». Un « s » minuscule final (« PCs », « APIs ») tombe : le pluriel d'un sigle ne se
+   prononce pas. **Ce qui n'est pas épelé** : une seule lettre (« A », « I »), plus de 6 (« WYSIWYG »),
+   un mot qui mêle des minuscules (« iPhone », « Ssh »), un nombre seul (« 2024 »), un mot qui
+   commence par deux chiffres ou plus (« 10H », « 20KG » : une quantité), un mot qui a une lettre
+   accentuée (« ÉTÉ »), un mot qui contient un `_` (« MAX_SIZE »).
+
+**Les écritures des lettres** (celles de `LETTERS` dans `text.rs`) sont les noms français usuels
+(« bé », « cé », « ache », « ji », « ka », « èm », « èsse », « double vé », « i-grec »,
+« zède »…), avec deux choix faits à la mesure :
+
+- **G se lit « jé »**, pas « gé » (qui se lirait « gué »).
+- **Les lettres sont reliées par des traits d'union**, pas par des espaces ni des virgules. Mesuré
+  avec Pocket en refaisant transcrire la synthèse par Parakeet (douze sigles, trois séparateurs) :
+  avec des traits d'union, neuf sont reconnus comme le sigle (SSH, API, USB, DNS, URL, QR, CPU,
+  TCP…) et la durée est celle de quelqu'un qui épelle ; avec des espaces, deux lettres égales se
+  fondent (« SSH » devient « SH ») et les noms sont entendus comme des mots (« a pé i » : « à
+  payer ») ; avec des virgules, chaque lettre a sa pause et un sigle de trois lettres dure presque le
+  double. Pour la même raison, Y est « i-grec » (« ix-i grec-zède » : « YZ », « ix-i-grec-zède » :
+  « XYZ »). W reste « double vé » avec une espace.
+- Un moteur ne lit pas comme un autre : la table se change par lettre dans le fichier
+  (`[letters]`), sans toucher au code.
+
+**Le fichier** est du TOML (`voice/data/lexicon.fr.toml`, le lexique livré, en explique le format
+en français en tête). Une table `[replace]` pour les mots remplacés en respectant les majuscules,
+`[replace_any_case]` pour ceux qui les ignorent, `not_spelled` pour les sigles dits comme des
+mots, `[letters]` pour le nom d'une lettre ; des commentaires partout. **Pourquoi du TOML et pas
+le TSV de la table de corrections de `hearing`** : ce fichier a quatre sortes de contenu (deux
+tables de mots, une liste, une table de lettres), la configuration de `voice` est déjà du TOML, et
+`mind` garde ses phrases d'attente dans un TOML livré de la même façon. Le TSV de `hearing` est une
+table de règles à expression régulière qu'on lit de haut en bas, ce qui n'est pas le besoin ici :
+ici la clé est un mot, le plus long gagne, l'ordre ne compte pas.
+
+**La configuration** (à la racine du fichier de `voice`, pas dans un tableau : `voice` y est une
+chaîne) :
+
+- `lexicon_enabled` (`true` par défaut) : `false` éteint toute l'étape, la phrase part comme
+  l'esprit l'a écrite.
+- `lexicon` : le chemin d'un fichier de lexique. **Un fichier donné remplace le lexique livré, il ne
+  s'y ajoute pas** : on le copie et on le complète. Sans cette clé, le lexique livré est dans le
+  binaire. `~/` désigne le dossier personnel, et un chemin relatif part du dossier du fichier de
+  configuration, comme dans `hearing` (`voice` n'avait aucune clé de chemin relatif avant celle-ci).
+- Le lexique est lu une fois au démarrage : un fichier illisible, une entrée mal formée (une
+  valeur qui n'est pas du texte, une écriture vide, une clé de `[letters]` qui n'est pas une
+  majuscule ou un chiffre, un mot de `not_spelled` qui en contient deux) arrêtent le démarrage avec
+  un message qui nomme le fichier, la table et l'entrée. Pour recharger, on redémarre `voice`.
+
+**Par défaut, l'étape est allumée, avec le lexique livré.** Elle ne change que des mots que le
+moteur lit de travers et des sigles de majuscules qu'aucun moteur français ne lit bien, et le
+lexique livré est court et mesuré (voir plus bas). Le risque est un mot français écrit en
+majuscules (« NON », « OUI », « STOP ») : les plus courants sont dans `not_spelled`, et l'éteindre
+tient en une ligne.
+
+**Le lexique livré est générique** : il corrige les mots que Pocket lisait de travers à la mesure
+(GitHub, GitLab, Git, Linux, Android, Redis, PostgreSQL, Neo4j, Rust, JSON, Gmail, STOP, OVNI) et
+met en `not_spelled` des sigles qui se disent comme des mots (NASA, OVNI, UNESCO, OTAN, ONU, RAM,
+LED, LASER, RADAR, SIDA, SMIC, OUI, NON, OK, YAML). **Docker, Bluetooth, YouTube, Google, iPhone,
+Wi-Fi n'y sont pas** : Pocket les lit déjà bien (mesure ci-dessous), y toucher risquait de les
+abîmer. Les mots de Kris (les noms de ses outils) sont dans `dev/lexicon.fr.toml`, qui recopie le
+lexique livré et y ajoute les siens (`dev/voice.toml` et `dev/voice-kyutai.toml` le lisent).
+
+**Mesuré le 2026-10-13, avec Pocket (estelle), sans rien jouer** : chaque forme candidate est
+synthétisée puis transcrite par Parakeet de `hearing` (processeur, 2 fils), dans une phrase
+« J'utilise X tous les jours. ». « GitHub » est transcrit « JTUP » tel quel et « GitHub » avec
+« guite-heub » ; « Linux » « Linus » et « Linux » avec « linuxe » ; « JSON » « Y el son » et
+« Jason » avec « djé-son » ; « Android » « en droit » et « Android » avec « androïde ». Sur dix
+phrases passées par le vrai `voice` sur un bus à part, avant et après, GitHub, JSON, Neo4j, « 4G »
+et OVNI passent de faux à reconnus (échantillons dans `.agent-relay/scratch/lexique/`). **Les
+limites de la mesure** : un transcripteur est indulgent (SSH est transcrit « SSH » avec ou sans
+l'épellation) et corrige d'après le sens (« reuste » est entendu « russe »), donc il écarte les
+formes franchement fausses et ne départage pas les bonnes. **Jamais écouté** : les écritures
+choisies sont à juger à l'oreille.
+
+**Limites connues**
+
+- Une élision devant un sigle épelé (« l'API » devient « l'a-pé-i ») est le point faible mesuré :
+  la transcription en est mauvaise (« La pays »). À écouter.
+- Les chiffres romains (« XIV », « CD ») sont épelés comme des sigles ; une entrée les corrige
+  (`XIV = "quatorze"`).
+- Un mot français écrit tout en majuscules par emphase est épelé, sauf ceux de `not_spelled`.
+- Le lexique livré est réglé sur Pocket. **Kyutai TTS 1.6B (`en_fr`) n'a pas été essayé** (la carte
+  graphique est prise) : il lit peut-être déjà bien les mots anglais, et un lexique fait pour
+  Pocket pourrait alors les abîmer. À mesurer quand il tournera ; `lexicon_enabled = false`, ou un
+  fichier à lui, règle le cas.
+- Le lexique ne vient pas encore d'Hippocampe : un mot s'y ajoute à la main. Le tirer des titres et
+  des alias, comme le vocabulaire de `hearing`, reste possible (le format est fait pour être écrit
+  par un programme).
+
 ## Ce qui est lu
 
-- **Les mots anglais et les noms propres** : un moteur français lit « Neo4j » ou « MCP » à la
-  française. Un lexique de prononciation les remplace avant la synthèse (« MCP » → « èm cé pé »),
-  tiré, comme le vocabulaire de `hearing`, des titres et des alias d'Hippocampe.
+- **Les mots anglais, les noms propres et les sigles** : un moteur français lit « Neo4j » ou
+  « MCP » à la française. **Construit le 2026-10-13** : un lexique de prononciation les remplace
+  avant la synthèse (« Neo4j » → « néo-fore-djé »), et les sigles de majuscules sont épelés
+  (« MCP » → « èm-cé-pé ») ; voir « Le lexique de prononciation ». Le tirer d'Hippocampe, comme le
+  vocabulaire de `hearing`, reste à faire.
 - **Les nombres, les dates et les heures** sont écrits en toutes lettres avant la synthèse ; le
   plus simple est de le demander à l'esprit.
 
@@ -350,7 +458,10 @@ mots, au lieu de 0,25 s après la première phrase entière : on gagnerait le te
 
 1. Une meilleure voix qu'estelle : Kyutai 1.6B, choisi le 2026-10-12 et construit (voir « Le
    moteur Kyutai »), attend la carte graphique du serveur.
-2. La lecture des nombres, des sigles et des noms propres par Pocket : pas encore écoutée en
-   détail, le lexique et l'écriture en toutes lettres restent prévus.
+2. La lecture des nombres, des sigles et des noms propres par Pocket : le lexique et l'épellation
+   des sigles sont construits (2026-10-13, voir « Le lexique de prononciation »), mais **jamais
+   écoutés** : les écritures choisies sont à juger à l'oreille, l'élision devant un sigle épelé en
+   premier. Restent la lecture des nombres, des dates et des heures, et le comportement de
+   Kyutai avec ce lexique.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
    pas encore dites) : sujets `voice.say` et `voice.stop` du bus, format fixé dans `contract/` (`Say`, avec `last` sur la dernière phrase ; voir [`contract.md`](contract.md)).

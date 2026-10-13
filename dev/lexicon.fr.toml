@@ -1,0 +1,36 @@
+# Le lexique de prononciation du développeur : le lexique livré (voice/data/lexicon.fr.toml), plus
+# ses mots à lui. Un fichier donné à `lexicon` remplace celui livré : il le recopie donc en entier.
+# Le format et la façon d'ajouter un mot sont expliqués dans le fichier livré.
+# Écritures choisies avec Pocket (voix estelle), en refaisant transcrire la synthèse.
+
+not_spelled = [
+  "NASA", "OVNI", "UNESCO", "OTAN", "ONU", "RAM", "LED", "LASER", "RADAR", "SIDA", "SMIC",
+  "OUI", "NON", "OK", "YAML",
+]
+
+[replace]
+# Le lexique livré.
+GitHub = "guite-heub"
+GitLab = "guite-lab"
+Git = "guite"
+Linux = "linuxe"
+Android = "androïde"
+Redis = "rédisse"
+PostgreSQL = "postgresse-ku-èl"
+Neo4j = "néo-fore-djé"
+Rust = "reuste"
+JSON = "djé-son"
+Gmail = "djimèle"
+OVNI = "ovni"
+STOP = "stop"
+
+# Un sigle épelé par la règle, écrit ici pour pouvoir en changer le son à l'oreille.
+SSH = "èsse-èsse-ache"
+
+# Les noms des outils du développeur, mal lus par Pocket (« Kyutai » : « ktoy », « Dokploy » :
+# « docloy »).
+Kyutai = "kioutaï"
+Parakeet = "parakite"
+Dokploy = "doc-ploille"
+
+[replace_any_case]

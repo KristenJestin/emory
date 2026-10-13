@@ -219,7 +219,7 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     device: device.clone(),
                     turn,
                     index,
-                    text,
+                    text: text::clean(&text, &cx.config.text),
                     received,
                     seq,
                 };
@@ -246,6 +246,7 @@ struct Sentence {
     device: Device,
     turn: TurnId,
     index: u32,
+    /// What the engine reads: the text already through `text::clean` (whitespace, lexicon).
     text: String,
     received: Instant,
     seq: u32,
@@ -410,7 +411,7 @@ async fn say(
     let mut engine_first = None;
     let streamed = stream(
         &engine,
-        &text::clean(&text),
+        &text,
         chunk_ms,
         &mut sender,
         &mut chunker,

@@ -71,3 +71,50 @@ a hard clip would crackle. With a gain of exactly 1 the bytes are left as the en
 Pocket peaks around 0.3 to 0.4 of full scale as it comes: `gain = 2.0` brings that to 0.6 to 0.9.
 A gain much above 2 makes the speech crackle (the soft curve flattens the peaks, which is
 distortion): that is what `[loudness]` is for.
+
+### The pronunciation lexicon: `lexicon`, `lexicon_enabled`
+
+A French engine reads « GitHub » as « jithub » and « SSH » as a word. Before the synthesis, whatever
+the engine, every sentence goes through a text stage (`src/text.rs`):
+
+1. **The lexicon**: whole words replaced by how they must be written to be read right
+   (`GitHub` → « guite-heub »). Case-sensitive unless the entry says otherwise, longest entry first,
+   the punctuation around the word kept, a word inside another one untouched. An entry wins over 2.
+2. **The spelled acronyms**: a word of 2 to 6 capitals A to Z or digits (at least one letter) that no
+   entry covers is spelled with the names of the letters, joined by hyphens: `SSH` → « èsse-èsse-ache »,
+   `MP3` → « èm-pé-trois », `4G` → « quatre-jé ». A final lowercase `s` is dropped (`PCs` → « pé-cé »).
+   Not spelled: a single letter, a word of more than 6, a word with lowercase letters (`iPhone`), a
+   number, a word that starts with two digits (`10H`), accented capitals (`ÉTÉ`), a word with `_`.
+   Acronyms read as words (`NASA`, `RAM`…) are listed in `not_spelled`.
+
+```toml
+lexicon_enabled = true             # default; false: the sentence goes as the mind wrote it
+lexicon = "lexicon.fr.toml"        # default: the built-in lexicon (data/lexicon.fr.toml)
+```
+
+The stage is **on by default with the built-in lexicon**. A file given in `lexicon` **replaces** the
+built-in one (copy it and complete it; `dev/lexicon.fr.toml` is an example). `~/` stands for the home
+folder and a relative path is read from the folder of the configuration file (like `hearing`). The
+file is read once at the start: an unreadable file or a malformed entry stops the start with a message
+that names the file and the entry.
+
+The file is TOML, commented in French (see `data/lexicon.fr.toml`):
+
+```toml
+not_spelled = ["NASA", "RAM"]      # acronyms read as words
+
+[replace]                          # case-sensitive
+GitHub = "guite-heub"
+"Wi-Fi" = "ouifi"                  # a key that is not only letters is quoted
+
+[replace_any_case]                 # whatever the case
+okay = "oké"
+
+[letters]                          # the name of a letter or digit, only to change one
+R = "èrre"
+```
+
+The written forms of the built-in lexicon were chosen with Pocket (voice estelle): each candidate was
+synthesised and transcribed back by Parakeet, and only the words read wrong are in it. Nothing was
+listened to. Kyutai was not tried: if it reads English words well, turn the stage off or use its own
+file.

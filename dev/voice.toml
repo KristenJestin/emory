@@ -2,6 +2,10 @@ nats_url = "nats://127.0.0.1:4222"
 engine_url = "http://127.0.0.1:8000"
 voice = "estelle"
 
+# The pronunciation lexicon (acronyms spelled, English words respelled): the developer's file, read
+# from the folder of this one. Without `lexicon`, the built-in lexicon is used.
+lexicon = "lexicon.fr.toml"
+
 # The loudness of the voice: a compressor, a look-ahead limiter and a make-up gain that brings the
 # speech to `target` LUFS, whatever the level the engine says it at (Pocket varies by 5 to 10 dB
 # from one sentence to the next, and peaks around 0.3 to 0.4 of full scale). With the stage on,
