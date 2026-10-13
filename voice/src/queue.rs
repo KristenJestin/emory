@@ -967,6 +967,41 @@ mod tests {
     }
 
     #[test]
+    fn a_pulse_after_a_phrase_numbers_on_from_it_and_a_later_phrase_goes_between_pulses() {
+        let (mut q, t0, turn) = (cue_queue(), Instant::now(), TurnId::new());
+        q.cue(&cue(turn, CueKind::Speech, Some("Je regarde.")), t0);
+        q.sound_sent(turn, ms(800), t0 + ms(100));
+        q.finished(turn, CUE_SENTENCE, 3, t0 + ms(300));
+        // The mind asks for the pulse once the phrase is over: it takes the next number.
+        let effects = q.cue(&cue(turn, CueKind::Pulse, None), t0 + ms(2000));
+        assert_eq!(sounds(&effects), [(CueSound::Pulse, 3)]);
+        // Another phrase while the pulse goes on: said at once, numbered after the pulse.
+        let effects = q.cue(
+            &cue(turn, CueKind::Speech, Some("Voyons voir.")),
+            t0 + ms(2500),
+        );
+        assert_eq!(said(&effects), [(CUE_SENTENCE, "Voyons voir.", 4)]);
+        // A pulse due during the phrase is skipped (one writer of the numbers at a time).
+        assert!(sounds(&q.expire(t0 + ms(3000))).is_empty());
+        q.sound_sent(turn, ms(800), t0 + ms(3100));
+        q.finished(turn, CUE_SENTENCE, 6, t0 + ms(3500));
+        // The pulse goes on after it, with the next number.
+        assert_eq!(q.deadline(), Some(t0 + ms(4000)));
+        assert_eq!(sounds(&q.expire(t0 + ms(4000))), [(CueSound::Pulse, 6)]);
+        // The first word stops it, and numbers on.
+        let effects = q.say(&say(turn, 0, "Voilà."), t0 + ms(4200));
+        assert_eq!(said(&effects), [(0, "Voilà.", 7)]);
+        assert_eq!(q.deadline(), None);
+        // A stop of the turn ends the pulse of a turn that had phrases too.
+        let (mut q, turn) = (cue_queue(), TurnId::new());
+        q.cue(&cue(turn, CueKind::Speech, Some("Je regarde.")), t0);
+        q.finished(turn, CUE_SENTENCE, 3, t0 + ms(300));
+        q.cue(&cue(turn, CueKind::Pulse, None), t0 + ms(2000));
+        q.stop(turn);
+        assert_eq!(q.deadline(), None);
+    }
+
+    #[test]
     fn a_blank_phrase_says_nothing() {
         let (mut q, t0, turn) = (cue_queue(), Instant::now(), TurnId::new());
         assert!(
