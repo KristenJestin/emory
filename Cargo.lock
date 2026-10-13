@@ -2068,6 +2068,7 @@ dependencies = [
  "contract",
  "futures-util",
  "genai",
+ "reqwest 0.13.5",
  "rmcp",
  "serde",
  "serde_json",

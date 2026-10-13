@@ -52,6 +52,9 @@ pub struct Config {
     /// What the owner hears while the answer is prepared. Absent: nothing.
     #[serde(default)]
     pub waiting: WaitingConfig,
+    /// The web tools (`web_wikipedia`…). On by default.
+    #[serde(default)]
+    pub web: crate::web::WebConfig,
 }
 
 /// The person Emory serves. Both fields fill the placeholders of the instructions
@@ -630,6 +633,7 @@ impl std::str::FromStr for Config {
             "dictionary.timeout_ms must be between 100 and 30000"
         );
         config.waiting.check()?;
+        config.web.check()?;
         anyhow::ensure!(
             config.tools.bind.ip().is_loopback(),
             "tools.bind must be a loopback address: the server has no other protection than its key"
@@ -854,8 +858,34 @@ token_file = "~/t.token"
         );
         // The developer switches modes while trying them: only its validity is checked.
         let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
+        assert!(dev.web.enabled && dev.web.wikipedia.enabled);
         // (its phrases file is relative to the root of the repository: only the values are checked)
         assert!(dev.waiting.check().is_ok());
+    }
+
+    #[test]
+    fn the_web_module_is_on_by_default_and_its_section_is_checked() {
+        let c: Config = MINIMAL.parse().unwrap();
+        assert!(c.web.enabled && c.web.wikipedia.enabled);
+        assert_eq!(c.web.wikipedia.languages, ["fr", "en"]);
+        let c: Config =
+            format!("{MINIMAL}\n[web]\nenabled = false\n[web.wikipedia]\nlanguages = [\"en\"]\n")
+                .parse()
+                .unwrap();
+        assert!(!c.web.enabled && c.web.wikipedia.languages == ["en"]);
+        for (bad, key) in [
+            ("[web]\ntimeout_ms = 0", "web.timeout_ms"),
+            ("[web.wikipedia]\nlanguages = []", "web.wikipedia.languages"),
+            ("[web.wikipedia]\nmax_chars = 1", "web.wikipedia.max_chars"),
+            ("[web]\nvolume = 3", "volume"),
+            ("[web.weather]\nplace = \"x\"", "weather"),
+        ] {
+            let error = format!(
+                "{:#}",
+                format!("{MINIMAL}\n{bad}\n").parse::<Config>().unwrap_err()
+            );
+            assert!(error.contains(key), "{bad}: {error}");
+        }
     }
 
     #[test]
