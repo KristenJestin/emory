@@ -343,12 +343,12 @@ fn done() -> Event {
 async fn the_answer_streams_sentence_by_sentence_with_the_last_marked() {
     let mut b = bench(FakeMemory::default());
     let (id, prompt) = b.ask("office", &["bonjour"]).await;
-    prompt.events.send(text("Bonjour Kris. Le con")).unwrap();
+    prompt.events.send(text("Bonjour Léa. Le con")).unwrap();
     prompt.events.send(text("trat finit ")).unwrap();
     b.out.wait_for(1).await;
     assert_eq!(
         b.out.says(),
-        [("office".into(), 0, "Bonjour Kris.".into(), false)]
+        [("office".into(), 0, "Bonjour Léa.".into(), false)]
     );
     prompt.events.send(text("en mars.")).unwrap();
     prompt.events.send(done()).unwrap();
@@ -356,7 +356,7 @@ async fn the_answer_streams_sentence_by_sentence_with_the_last_marked() {
     assert_eq!(
         b.out.says(),
         [
-            ("office".into(), 0, "Bonjour Kris.".into(), false),
+            ("office".into(), 0, "Bonjour Léa.".into(), false),
             ("office".into(), 1, "Le contrat finit en mars.".into(), true)
         ]
     );
@@ -422,14 +422,14 @@ async fn the_request_carries_the_heads_up_once_and_the_entries_found() {
     assert!(
         first
             .text
-            .ends_with("[Kris dit]\nla musique du salon rien du tout")
+            .ends_with("[On te dit]\nla musique du salon rien du tout")
     );
     first.events.send(done()).unwrap();
 
     let (_, second) = b.ask("office", &["et après"]).await;
     assert_eq!(second.session, first.session);
     assert!(second.text.starts_with("[Maintenant] "));
-    assert!(second.text.ends_with("\n\n[Kris dit]\net après"));
+    assert!(second.text.ends_with("\n\n[On te dit]\net après"));
     assert!(!second.text.contains("[Ce que la mémoire") && !second.text.contains("[Fiches"));
 }
 
@@ -461,7 +461,7 @@ async fn a_press_while_answering_cancels_the_llm_and_stops_the_voice() {
         .unwrap();
     b.out.wait_for(1).await;
 
-    // Kris presses again: the request is cancelled, the voice stopped.
+    // The owner presses again: the request is cancelled, the voice stopped.
     let next = new_turn();
     b.mind.handle(press("office", next)).await;
     assert_eq!(
@@ -550,7 +550,7 @@ async fn nothing_heard_is_said_without_asking_the_llm() {
 
 #[tokio::test]
 async fn nothing_heard_opens_no_session_of_its_own() {
-    // The press opens the conversation (while Kris speaks): the empty turn opens nothing more,
+    // The press opens the conversation (while the owner speaks): the empty turn opens nothing more,
     // and a turn that came without its press opens nothing at all.
     let mut b = bench(FakeMemory::default());
     let id = new_turn();
@@ -718,7 +718,7 @@ async fn a_press_before_the_request_leaves_means_no_request() {
     b.mind.handle(press("office", first)).await;
     b.mind.handle(sentence("office", first, 0, "lent")).await;
     b.mind.handle(turn("office", first, "lent")).await;
-    // The answer waits for its search: Kris presses again.
+    // The answer waits for its search: the owner presses again.
     settle().await;
     b.mind.handle(press("office", new_turn())).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -850,7 +850,7 @@ async fn a_silent_llm_is_given_up_but_its_request_is_waited_for() {
     let mut b = bench(FakeMemory::default());
     b.brain.deaf.store(true, Ordering::SeqCst);
     let (_, first) = b.ask("office", &["raconte"]).await;
-    // Nothing comes for a minute: Kris is told, the request cancelled.
+    // Nothing comes for a minute: the owner is told, the request cancelled.
     tokio::time::sleep(mind::mind::STALL + Duration::from_secs(1)).await;
     assert_eq!(
         b.out.says(),
@@ -893,7 +893,7 @@ async fn a_late_turn_after_a_newer_press_is_not_answered() {
     b.mind.handle(sentence("office", new, 0, "neuf")).await;
     b.mind.handle(turn("office", new, "neuf")).await;
     let prompt = next_prompt(&mut b).await;
-    assert!(prompt.text.ends_with("[Kris dit]\nneuf"));
+    assert!(prompt.text.ends_with("[On te dit]\nneuf"));
     assert!(!prompt.text.contains("Fiche vieux"));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(b.prompts.try_recv().is_err(), "the old turn was answered");

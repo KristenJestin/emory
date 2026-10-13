@@ -18,7 +18,11 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   environment: the local Claude Code login in development, `CLAUDE_CODE_OAUTH_TOKEN` when set.
   Every request takes from the Claude subscription.
 - **The instructions** of the LLM are in `prompts/system.fr.md`: two or three short sentences by
-  default, longer only when Kris asks for details.
+  default, never cut short, longer when asked for details. The file is a template, filled from the
+  `[owner]` section of the configuration: `{owner}` becomes `name` (« la personne qui te parle »
+  without it) and `{address}` becomes `address`, the free text on how to speak to the owner (« un
+  homme ; tu le tutoies »; without it, « tu tutoies cette personne »). The shipped text names
+  nobody, and neither do the markers of the requests (`[On te dit]`, see `src/request.rs`).
 - **A turn with nothing in it** (empty, or only blanks and punctuation: the headset sent
   near-silence) gets no request to the LLM: Emory says `[conversation] nothing_heard` (default
   « Je n'ai rien entendu. ») with `voice.say` and `last`, to the device of the turn.

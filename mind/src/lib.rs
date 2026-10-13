@@ -10,6 +10,7 @@ pub mod config;
 pub mod hippocampe;
 pub mod memory;
 pub mod mind;
+pub mod prompt;
 pub mod request;
 pub mod sentences;
 pub mod tools;
@@ -36,7 +37,7 @@ const HEARING_SUBJECTS: &str = "hearing.*";
 const TICK: Duration = Duration::from_secs(10);
 
 /// The dependencies whose logs, below these levels, carry the messages themselves: the requests
-/// to the LLM (what Kris said, the key of Emory's MCP server in `session/new`), the MCP calls and
+/// to the LLM (what the owner said, the key of Emory's MCP server in `session/new`), the MCP calls and
 /// their headers, the bus payloads. Pinned whatever `RUST_LOG` says.
 const PINNED_LOGS: [(&str, &str); 7] = [
     ("agent_client_protocol", "warn"),
@@ -98,12 +99,15 @@ fn hearing_message(subject: &str) -> Option<HearingMessage> {
 /// Runs the mind until the program stops (Ctrl-C or SIGTERM). Fails if the adapter of the LLM or a
 /// bus subscription ends.
 pub async fn run(config: Config) -> Result<()> {
-    let system_prompt = std::fs::read_to_string(&config.llm.system_prompt).with_context(|| {
-        format!(
-            "reading the system prompt {}",
-            config.llm.system_prompt.0.display()
-        )
-    })?;
+    let system_prompt = prompt::render(
+        &std::fs::read_to_string(&config.llm.system_prompt).with_context(|| {
+            format!(
+                "reading the system prompt {}",
+                config.llm.system_prompt.0.display()
+            )
+        })?,
+        &config.owner,
+    );
 
     let hippocampe = Hippocampe::new(
         config.hippocampe.url.clone(),
