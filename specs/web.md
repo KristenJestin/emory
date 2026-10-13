@@ -115,7 +115,7 @@ Le signal d'attente sait déjà dire une phrase par outil : le fichier de phrase
   si rien n'est trouvé.
 - Le résultat : `title`, `description`, `extract` (sans le contenu entre crochets qui contient des
   caractères de l'alphabet phonétique, sans « Écouter »), coupé à `max_chars`, `url` (pour
-  `web_read` seulement), `lang`, et `others`, les deux autres titres trouvés (pour que le LLM
+  `web_read` seulement : ajouté avec W4), `lang`, et `others`, les deux autres titres trouvés (pour que le LLM
   choisisse quand la question était ambiguë).
 - Une page d'homonymie (`type: disambiguation`) n'est pas résumée : le résultat donne les titres
   trouvés et le LLM demande lequel.
@@ -261,11 +261,12 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
 
 ## L'ordre de construction
 
-1. **W1. Le module et Wikipédia** : `mind/src/web/` avec la configuration `[web]` et
-   `[web.wikipedia]`, le client HTTP, `web_wikipedia` (recherche, résumé, homonymie, nettoyage de
-   la prononciation, repli sur la langue suivante). Vérifié : tests sur des réponses enregistrées
-   (le résumé de `Tour_Eiffel`, une homonymie), aucun appel réseau dans les tests ; un essai à la
-   main.
+1. **W1. Le module et Wikipédia** : **construit le 2026-10-13** (branche `web-wikipedia`).
+   `mind/src/web/` avec la configuration `[web]` et `[web.wikipedia]`, le client HTTP,
+   `web_wikipedia` (recherche, résumé, homonymie, nettoyage de la prononciation, repli sur la
+   langue suivante). Vérifié : tests sur des réponses enregistrées (le résumé de `Tour_Eiffel`,
+   une homonymie, un 404, le repli sur l'anglais), aucun appel réseau dans les tests ; un essai à
+   la main (voir « Ce qui a été décidé en construisant W1 »).
 2. **W2. La météo** : `web_weather`, géocodage, table des codes OMM, cache. Vérifié : tests sur
    des réponses enregistrées, les noms de jours, un lieu inconnu.
 3. **W3. La recherche** : le trait `SearchProvider`, DuckDuckGo, les trois cas de panne, la pause,
@@ -277,6 +278,47 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
 5. **W5. Les consignes et l'attente** : la ligne du prompt, les phrases d'attente des outils web.
    Vérifié : un essai en vrai par Kris (« il va pleuvoir demain ? », « c'est qui Gustave
    Eiffel ? »).
+
+## Ce qui a été décidé en construisant W1 (2026-10-13)
+
+- **Le module est un seul `Module` nommé `web`** (`mind/src/web/mod.rs`), dont la liste d'outils
+  suit la configuration : W2 à W4 y ajoutent leurs outils et leurs sections sans rien changer à
+  `tools.rs`. Sans outil activé, le module n'est pas enregistré.
+- **Le client HTTP** est celui de `reqwest` 0.13, déjà compilé pour `rmcp` et `genai` (seule
+  dépendance directe ajoutée, avec `rustls` et `gzip`). Délai par appel (`timeout_ms`), trois
+  redirections au plus, réponse lue par morceaux et abandonnée au-delà d'un mégaoctet. `User-Agent` :
+  `[web] user_agent`, et sans lui `Emory/<version> (assistant vocal)`, sans contact : le
+  propriétaire l'ajoute pour Wikimedia (exemple dans `mind/examples/mind.toml`).
+- **Pas de champ `url` dans le résultat de `web_wikipedia` pour l'instant** : il ne sert qu'à
+  `web_read` (W4), et donner une adresse au LLM avant que le prompt lui dise de ne jamais la lire
+  (W5) est un risque pour rien. W4 l'ajoute, avec la liste des adresses trouvées par conversation.
+- **La recherche ne demande que les titres** (`srprop=` vide) : les extraits balisés de la
+  recherche ne servent à rien, le résumé suit.
+- **L'homonymie** donne `{"lang", "title", "disambiguation": true, "options": [...], "note"}` :
+  `options` est les autres titres de la recherche (le texte de la page d'homonymie n'est pas
+  donné), `note` dit au LLM de demander lequel. Les autres éditions ne sont pas interrogées.
+- **Une erreur du réseau arrête la recherche** (délai, code autre que 200 ou 404, réponse illisible) :
+  « Wikipédia ne répond pas pour le moment. » (ou « …a répondu quelque chose d'incompréhensible. »).
+  On ne passe pas à la langue suivante, qui serait chez le même service et doublerait l'attente.
+  Le repli sur la langue suivante est pour « aucun titre trouvé » et pour un résumé introuvable
+  (404). Rien trouvé nulle part : « Wikipédia n'a pas d'article sur « sujet ». »
+- **Le nettoyage de la prononciation** retire les crochets et les barres obliques qui contiennent
+  un caractère de l'alphabet phonétique, le lien « écouter » (ou « listen ») en tête d'une
+  parenthèse, puis les parenthèses et les espaces que cela laisse vides. Les blancs sont ramenés
+  à une espace simple (les espaces insécables du français aussi). Limite connue : les
+  respellings anglais (`EYE-fəl`) restent ; le résumé anglais de la tour Eiffel n'en porte pas.
+- **Le résumé est coupé à `max_chars`** après une phrase si elle finit dans la seconde moitié, sinon
+  après un mot, avec « … ».
+- **Une langue de `languages` est un code** (`fr`, `pt-br`, lettres minuscules, chiffres et
+  tirets, cinq langues au plus) : il devient le début d'un nom de machine, rien d'autre ne doit
+  passer.
+- **Les phrases d'attente de `web_wikipedia`** sont ajoutées dès maintenant au fichier livré
+  (« Je cherche {} sur Wikipédia. »), en nommant Wikipédia plutôt que « le web » ; `web_search`,
+  `web_weather` et `web_read` restent à W5.
+- **Mesuré à la main le 2026-10-13** (10 requêtes en tout, y compris l'enregistrement des réponses
+  de test) : « tour eiffel » en 0,56 s (recherche et résumé), un mot sans article en 0,64 s (la
+  recherche dans les deux éditions). Les réponses enregistrées (`mind/tests/fixtures/web/`) sont
+  celles de Wikipédia ; le 404 du résumé est `{"status":404,"type":"Internal error"}`.
 
 ## Questions ouvertes
 

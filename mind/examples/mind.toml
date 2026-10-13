@@ -67,6 +67,19 @@ address = "une femme ; tu la tutoies"   # free text, in the language of the inst
 enabled = true
 timeout_ms = 2000   # how long to wait for the hearing's reply
 
+# The web (`web_wikipedia`: the summary of a Wikipedia article, French first). Every key has the
+# value shown; without this section the module is on with these values. No key, no account.
+[web]
+enabled = true         # false takes every web tool away
+# user_agent = "Emory/0.1 (assistant vocal; contact: you@example.org)"
+#                      # sent to Wikimedia, which wants a way to reach the author: add a contact
+timeout_ms = 5000      # for one call to an API
+
+[web.wikipedia]
+enabled = true
+languages = ["fr", "en"]   # tried in this order: the next one is asked when the previous has nothing
+max_chars = 1200           # the longest summary given to the LLM
+
 # What the owner hears while the answer is prepared (1 to 2 s without a tool, 3 to 5 s when the LLM
 # reads the memory). One of three modes; the sounds themselves are drawn by the voice (`[cue]` in
 # its configuration: volume, shape of the tone, time between pulses).

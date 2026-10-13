@@ -20,6 +20,7 @@ pub mod request;
 pub mod sentences;
 pub mod tools;
 pub mod waiting;
+pub mod web;
 
 use std::{sync::Arc, time::Duration};
 
@@ -142,6 +143,9 @@ pub async fn run(config: Config) -> Result<()> {
             },
             conversations.clone(),
         )));
+    }
+    if let Some(web) = web::Web::new(&config.web)? {
+        modules.push(Arc::new(web));
     }
     let brain = Backend::start(
         &config.llm,
