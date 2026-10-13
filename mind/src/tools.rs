@@ -374,6 +374,9 @@ mod tests {
             with_defaults("read", args(serde_json::json!({"entry": "e"}))),
             args(serde_json::json!({"entry": "e"}))
         );
+        // A write goes through as the LLM made it: nothing added, nothing dropped.
+        let write = serde_json::json!({"title": "t", "source": {"said_by": "owner"}});
+        assert_eq!(with_defaults("write", args(write.clone())), args(write));
     }
 
     type Call = (Option<ConversationKey>, String, Option<JsonObject>);

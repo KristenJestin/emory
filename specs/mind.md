@@ -768,6 +768,37 @@ ce qui reste une consigne au LLM, pas une règle de `mind`. Le pire cas est une 
 signée `emory`, archivable. Les tests du dépôt n'écrivent jamais dans la production : un faux
 Hippocampe, ou l'instance de développement.
 
+### M1 construite (2026-10-13)
+
+Écrire sur demande est construit : un bloc de consignes dans `mind/prompts/system.fr.md` (à la
+place de la phrase « Quand on te demande de noter… », qu'il reprend), et rien dans le code de
+`mind`, comme prévu : `write`, `search`, `link` sont relayés sans que `mind` y touche (sauf la
+valeur par défaut de `neighbors` pour `search`, qui existait déjà).
+
+Décidé en construisant :
+
+- **Cinq règles, courtes**, parce que chaque ligne coûte de la latence à chaque tour et que les
+  descriptions d'Hippocampe disent déjà la forme des arguments : n'écrire que sur demande ;
+  chercher d'abord la fiche, la mettre à jour si c'est le même sujet ; la provenance (ce que dit
+  l'utilisateur est `extracted` avec `said_by`, ce qu'Emory déduit est `inferred`) ; le dire
+  après, en une phrase, avec le titre et sans identifiant ; retrouver ce qu'elle a écrit
+  (`by: emory`, `since`) et le défaire (archiver ce qu'elle a créé, ou la modification inverse ;
+  un corps réécrit en entier ne se défait pas à la voix).
+- **`seen_by` n'est pas dans les consignes** : Emory n'écrit que sur demande, donc rarement ce
+  qu'elle a fait ou vu elle-même ; la ligne viendra avec la tâche de fond (M2) ou la première
+  écriture sans demande.
+- **Pas de ligne de journal par écriture** : le journal de chaque appel d'outil (nom, erreur,
+  durée) existe déjà et dit qu'`hippocampe_write` a été appelé ; l'identifiant de la fiche est dans
+  le résultat, dont la forme n'a pas été vue (la clé de lecture seule n'offre pas `write`), et
+  l'historique d'Hippocampe garde chaque écriture, signée `emory`. À ajouter si l'essai en vrai en
+  montre le besoin.
+- **Tests** (`mind/tests/memory_write.rs`) : un faux agent ACP joue le LLM (il lit l'adresse et
+  la clé du serveur MCP d'Emory dans `session/new`, comme l'adaptateur) et appelle les outils ; un
+  faux Hippocampe enregistre ce qui arrive. Vérifié : la recherche d'abord, les écritures
+  (création, quelques mots, supposé, archivage) arrivent telles qu'écrites, une écriture refusée
+  arrive au LLM comme une erreur et se dit en une phrase, `by` et `since` passent. Les consignes
+  elles-mêmes (le LLM les suit-il ?) ne se testent qu'en vrai.
+
 ### La tâche de fond (une phase plus tard)
 
 Prévue depuis le 2026-10-11 (plus haut, « Deux parties ») ; **pas nécessaire d'abord**, parce
@@ -826,9 +857,10 @@ L'entrée interne n'est pas un module : aucun outil ne l'atteint.
 
 Une unité par fil de travail ; le détail et les vérifications de chacune sont dans sa spec.
 
-1. **M1. Écrire sur demande** : les lignes des consignes, des tests avec un faux Hippocampe (le LLM
-   faux appelle `hippocampe_write`, la provenance passe telle quelle), puis un essai en vrai par
-   Kris (« note que… », « qu'est-ce que tu as noté aujourd'hui ? », « annule ça »).
+1. **M1. Écrire sur demande** (**construite le 2026-10-13**, voir « M1 construite » plus haut) :
+   les lignes des consignes, des tests avec un faux Hippocampe (le LLM faux appelle
+   `hippocampe_write`, la provenance passe telle quelle), puis un essai en vrai par Kris
+   (« note que… », « qu'est-ce que tu as noté aujourd'hui ? », « annule ça »), **pas encore fait**.
 2. **W1, W2. Wikipédia, puis la météo** ([`web.md`](web.md)) : les questions les plus fréquentes,
    sans risque.
 3. **E1. La parole d'elle-même** ([`events.md`](events.md)), **T1, T2. Les minuteurs**
