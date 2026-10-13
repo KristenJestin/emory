@@ -2,8 +2,14 @@ nats_url = "nats://127.0.0.1:4222"
 engine_url = "http://127.0.0.1:8000"
 voice = "estelle"
 
-# The loudness of the voice: Pocket peaks around 0.3 to 0.4 as it comes, about 0.6 to 0.9 with 2.
-gain = 2.0
+# The loudness of the voice: a compressor, a look-ahead limiter and a make-up gain that brings the
+# speech to `target` LUFS, whatever the level the engine says it at (Pocket varies by 5 to 10 dB
+# from one sentence to the next, and peaks around 0.3 to 0.4 of full scale). With the stage on,
+# `gain` is ignored. Measured on Pocket: -14 is 3 dB above the former `gain = 2.0`, with the
+# limiter acting only on rare peaks; -16 is the default of the stage.
+[loudness]
+enabled = true
+target = -14.0
 
 # The sounds of the waiting cue (the mind decides when, `[waiting]` in dev/mind.toml).
 [cue]

@@ -5,8 +5,11 @@ engine = "kyutai"
 engine_url = "http://127.0.0.1:8001"
 voice = "cml-tts/fr/5476_3103_000072-0001.wav"
 
-# The loudness of the voice (peaks of Kyutai not measured yet: the limiter keeps it under full scale).
-gain = 2.0
+# The loudness of the voice: same stage as voice.toml (the levels of Kyutai are not measured yet,
+# the stage brings the speech to the target whatever they are).
+[loudness]
+enabled = true
+target = -14.0
 
 [kyutai]
 padding_bonus = -3.0
