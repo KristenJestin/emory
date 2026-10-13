@@ -117,7 +117,7 @@ impl Tools {
         // `resultType`, which the revision this server speaks requires: the adapter would refuse
         // it as malformed.
         result.result_type.get_or_insert(ResultType::COMPLETE);
-        // The arguments and the result stay out of the logs: they hold what Kris said.
+        // The arguments and the result stay out of the logs: they hold what the user said.
         info!(
             tool = name,
             error = result.is_error == Some(true),

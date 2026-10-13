@@ -4,7 +4,7 @@
 # already there is not downloaded again.
 #
 # It also writes `bpe.vocab` into the Parakeet folder, which the hotwords (the vocabulary of
-# Kris's names) need and the model does not ship: the same tokens as `tokens.txt`, each with the
+# the user's names) need and the model does not ship: the same tokens as `tokens.txt`, each with the
 # score -id, in the `token<TAB>score` format sherpa-onnx reads. Made from the model's own tokens,
 # it cannot disagree with it.
 #
