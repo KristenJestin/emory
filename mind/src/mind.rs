@@ -1,10 +1,10 @@
-//! The relay: the conversations, the searches made while Kris speaks, the answer streamed
+//! The relay: the conversations, the searches made while the owner speaks, the answer streamed
 //! sentence by sentence to the device that heard him, and the barge-in.
 //!
 //! One [`Mind`] follows every device, fed in order by the bus loop ([`Input`]). Per device:
 //!
 //! - **the conversation**, opened at the first press: an LLM session, and what the memory flags
-//!   for the moment, both fetched while Kris is still speaking. It closes after a time without an
+//!   for the moment, both fetched while the owner is still speaking. It closes after a time without an
 //!   exchange; a session that failed to open is opened again at the next turn;
 //! - **the turn being heard**: each transcribed sentence is searched in the memory at once, as it
 //!   is, given up beyond the search timeout;
@@ -51,13 +51,13 @@ use crate::{
     sentences::Splitter,
 };
 
-/// Said when the LLM cannot be reached, or gave nothing: Kris pressed and waits for something.
+/// Said when the LLM cannot be reached, or gave nothing: the owner pressed and waits for something.
 pub const FAILURE: &str = "Je n'arrive pas à réfléchir pour le moment.";
 
 /// How long a request waits for the previous one of its session to end once cancelled, before
 /// the session is given up as broken.
 pub const CANCEL_WAIT: Duration = Duration::from_secs(10);
-/// How long an answer may stay silent before Kris is told it failed.
+/// How long an answer may stay silent before the owner is told it failed.
 pub const STALL: Duration = Duration::from_secs(60);
 /// How long the heads-up may delay the opening of a conversation.
 const HEADS_UP_WAIT: Duration = Duration::from_secs(2);
@@ -301,7 +301,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         self.devices.entry(device.clone()).or_default()
     }
 
-    /// Kris presses: what Emory says of an older turn stops, and this turn is heard.
+    /// The owner presses: what Emory says of an older turn stops, and this turn is heard.
     fn pressed(&mut self, device: &Device, turn: TurnId) {
         if !self.state(device).see(turn) {
             debug!(%device, %turn, "late press: ignored");
@@ -394,7 +394,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         }
     }
 
-    /// A sentence heard while Kris speaks: searched in the memory at once.
+    /// A sentence heard while the owner speaks: searched in the memory at once.
     fn heard(&mut self, sentence: Sentence) {
         let device = sentence.device.clone();
         if !self.state(&device).see(sentence.turn) {
@@ -545,7 +545,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
 }
 
 /// Opens a session and reads the heads-up, in a task of their own: the opening goes on while
-/// Kris speaks.
+/// The owner speaks.
 fn opening<B: Brain, M: Memory>(brain: Arc<B>, memory: Arc<M>, device: Device) -> Opening {
     let started = Instant::now();
     let task = tokio::spawn(async move {
@@ -681,7 +681,7 @@ impl<B: Brain, M: Memory> Job<B, M> {
         );
         let mut splitter = Splitter::new();
         let mut first_text = true;
-        // Once the LLM stalled, Kris was told; what still comes is dropped until `Done`.
+        // Once the LLM stalled, the owner was told; what still comes is dropped until `Done`.
         let mut given_up = false;
         loop {
             let event = if given_up {
@@ -780,7 +780,7 @@ impl Sayer {
         self.last_sent = last;
     }
 
-    /// The answer is over, whatever way: the voice gets its `last`. When nothing was said, Kris
+    /// The answer is over, whatever way: the voice gets its `last`. When nothing was said, the owner
     /// is told it failed; otherwise an empty last sentence closes the turn (the voice ends it
     /// with an empty chunk carrying the end).
     fn finish(&mut self) {

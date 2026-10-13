@@ -143,9 +143,9 @@ mod tests {
     #[test]
     fn sentences_are_released_when_the_next_one_starts() {
         let mut s = Splitter::new();
-        assert!(s.push("Bonjour Kris.").is_empty());
+        assert!(s.push("Bonjour Léa.").is_empty());
         assert!(s.push(" ").is_empty());
-        assert_eq!(s.push("Tu"), ["Bonjour Kris."]);
+        assert_eq!(s.push("Tu"), ["Bonjour Léa."]);
         assert!(s.push(" vas bien ?").is_empty());
         assert_eq!(s.finish().as_deref(), Some("Tu vas bien ?"));
     }

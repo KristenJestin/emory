@@ -1,5 +1,5 @@
 //! Hippocampe, the long-term memory: one MCP connection kept open, for the searches made while
-//! Kris speaks, the heads-up of a new conversation, and the tools relayed to the LLM.
+//! the owner speaks, the heads-up of a new conversation, and the tools relayed to the LLM.
 //!
 //! The key is read from its file each time the connection opens, and never logged.
 

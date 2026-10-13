@@ -1,5 +1,5 @@
 //! Emory's MCP server and the Hippocampe module against a fake Hippocampe (never the real one):
-//! the search made while Kris speaks, the heads-up, the relayed tools under their prefix, a
+//! the search made while the owner speaks, the heads-up, the relayed tools under their prefix, a
 //! refused write surfaced as a tool error, the key of the server.
 
 use std::{net::SocketAddr, sync::Arc};
@@ -161,7 +161,7 @@ mod tempdir {
 #[tokio::test]
 async fn the_search_and_the_heads_up_read_the_memory() {
     let (hippocampe, _dir) = hippocampe().await;
-    // Not connected yet: the search made while Kris speaks does not wait, it fails at once and
+    // Not connected yet: the search made while the owner speaks does not wait, it fails at once and
     // the connection opens in the background.
     assert!(hippocampe.search("la musique", 5).await.is_err());
     hippocampe.connect().await.unwrap();

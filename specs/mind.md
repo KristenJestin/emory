@@ -275,3 +275,23 @@ n'ouvre aucune session : celle qui existe a été ouverte par l'appui, pendant q
 comme pour tout tour (ouvrir une session ne prend rien sur le quota ; retarder l'ouverture après le
 tour aurait coûté de la latence à tous les autres tours). Un tour vide arrivé sans son appui n'en
 ouvre aucune. Une phrase transcrite vide n'ouvre plus de conversation non plus.
+
+**Emory ne connaît personne par son nom, et les consignes changent** (2026-10-13, essai en direct du
+2026-10-12). Emory doit pouvoir être reprise par quelqu'un d'autre : plus aucun nom propre dans le
+code, les consignes ni le texte des demandes. Le propriétaire vient de la configuration, section
+`[owner]` de `mind` : `name` (son nom) et `address` (texte libre, en français, sur la façon de lui
+parler, par exemple « un homme ; tu le tutoies »). Les deux sont facultatifs. Le fichier de consignes
+(`prompts/system.fr.md`) est un gabarit : `{owner}` devient `name`, ou « la personne qui te parle »
+sans nom ; `{address}` devient `address`, ou « tu tutoies cette personne » sans adresse. Une section
+absente donne donc des consignes qui ne nomment personne, et non un refus de démarrer (un nom ou une
+adresse vides sont refusés). Les marqueurs envoyés au LLM ne nomment personne non plus
+(`[On te dit]`, `[Fiches trouvées pendant qu'on te parlait]`) : le nom dans chaque demande coûterait
+des jetons sans rien apporter. Trois retouches aux consignes, tirées de l'essai : Emory parle au
+propriétaire à la deuxième personne et reformule les fiches (« tu as… », pas « Kris a… »), sans dire
+son nom sauf rarement, quand c'est naturel (elle l'avait dit une dizaine de fois en une séance) ;
+deux ou trois phrases par défaut mais plus de plafond dur, qui coupait des réponses : elle finit
+toujours sa pensée ; « Je t'en dis plus ? » seulement quand il reste quelque chose d'important, et
+rarement (elle terminait presque chaque réponse ainsi). Le reste est inchangé (aucune phrase
+d'attente, aucune liste lue, nombres en lettres, aucun identifiant lu, français). Les exemples et
+les tests du dépôt ne contiennent plus de données personnelles ; `dev/mind.toml` porte les valeurs
+du développeur, `[owner]` compris.
