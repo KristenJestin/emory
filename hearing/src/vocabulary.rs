@@ -24,17 +24,17 @@ pub fn answer(vocabulary: &Vocabulary, takes_words: bool, payload: &[u8]) -> Voc
                 known = added == Added::Known,
                 in_use = takes_words,
                 words = vocabulary.words().list.len(),
-                "vocabulary: word added"
+                "word added to the vocabulary"
             );
             if !takes_words && added == Added::New {
                 warn!(
-                    "vocabulary: the greedy search takes no words, the word counts from the next start"
+                    "the greedy search takes no words: the word counts from the next start"
                 );
             }
             VocabularyReply::success(added == Added::Known, takes_words)
         }
         Err(error) => {
-            warn!("vocabulary: word refused: {error}");
+            warn!("word refused for the vocabulary: {error}");
             VocabularyReply::failure(error)
         }
     }

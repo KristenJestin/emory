@@ -529,6 +529,63 @@ mod tests {
         assert_eq!(queue.pop(), None);
     }
 
+    /// What the words given with each sentence cost, on the real model:
+    /// `EMORY_TEST_PARAKEET=<folder> cargo test -p hearing --release -- --ignored --nocapture
+    /// per_stream`. The folder needs its `bpe.vocab` (`scripts/download-models.sh`).
+    #[test]
+    #[ignore = "needs the Parakeet model"]
+    fn per_stream_words_cost() {
+        let Ok(folder) = std::env::var("EMORY_TEST_PARAKEET") else {
+            eprintln!("skipped: EMORY_TEST_PARAKEET is not set");
+            return;
+        };
+        let folder = PathBuf::from(folder);
+        let config = OfflineRecognizerConfig {
+            model_config: OfflineModelConfig {
+                transducer: OfflineTransducerModelConfig {
+                    encoder: Some(path_string(&model_file(&folder, "encoder")).unwrap()),
+                    decoder: Some(path_string(&model_file(&folder, "decoder")).unwrap()),
+                    joiner: Some(path_string(&model_file(&folder, "joiner")).unwrap()),
+                },
+                tokens: Some(path_string(&folder.join("tokens.txt")).unwrap()),
+                num_threads: 4,
+                model_type: Some("nemo_transducer".to_owned()),
+                modeling_unit: Some("bpe".to_owned()),
+                bpe_vocab: Some(path_string(&folder.join("bpe.vocab")).unwrap()),
+                ..OfflineModelConfig::default()
+            },
+            decoding_method: Some("modified_beam_search".to_owned()),
+            hotwords_score: 2.0,
+            ..OfflineRecognizerConfig::default()
+        };
+        let started = Instant::now();
+        let recognizer = OfflineRecognizer::create(&config).unwrap();
+        eprintln!("recognizer load (what a reload would cost): {:?}", started.elapsed());
+        const ROUNDS: u32 = 200;
+        let time = |words: &str| {
+            let started = Instant::now();
+            for _ in 0..ROUNDS {
+                let stream = if words.is_empty() {
+                    recognizer.create_stream()
+                } else {
+                    recognizer.create_stream_with_hotwords(words)
+                };
+                drop(stream);
+            }
+            started.elapsed() / ROUNDS
+        };
+        let names = [
+            "Emory", "Grafana", "Nextcloud", "Syncthing", "Jellyfin", "Traefik", "Proxmox",
+            "Kubernetes", "Gare du Nord", "Saint-Ouen",
+        ];
+        eprintln!("stream without words: {:?}", time(""));
+        for count in [1, 5, 10] {
+            eprintln!("stream with {count} words: {:?}", time(&names[..count].join("/")));
+        }
+        let fifty: Vec<String> = (0..50).map(|i| format!("{} {i}", names[i % 10])).collect();
+        eprintln!("stream with 50 words: {:?}", time(&fifty.join("/")));
+    }
+
     #[tokio::test]
     async fn a_thread_that_panics_is_reported_as_stopped() {
         let queue = Arc::new(JobQueue::new(2));
