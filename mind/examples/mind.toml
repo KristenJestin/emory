@@ -61,6 +61,10 @@ tool_timeout_ms = 10000
 name = "Alex"                        # without it: « la personne qui te parle »
 address = "une femme ; tu la tutoies"   # free text, in the language of the instructions
 
+# Emory speaking on her own when a program asks (specs/events.md); the sources come later.
+[events]
+chime = true   # a short tone before she speaks; false: the sentence alone
+
 # The dictionary: the LLM may add a word to the hearing's vocabulary, only after the user said yes
 # in a later turn (dictionary_propose, then dictionary_add).
 [dictionary]
