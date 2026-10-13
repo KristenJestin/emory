@@ -587,3 +587,101 @@ mesurer chez lui, en changeant `mode`.
 Le banc (`examples/talker-bench.rs`) reste tel quel : il mesure les tokens et le coût de chaque
 appel, ce que le `Brain` ne remonte pas. La sonde `examples/talker-probe.rs` (ex `acp-probe`) joue
 des tours sur un bus à part quel que soit le mode, appui et phrase compris, et une interruption.
+
+## Remplir le silence après la phrase d'attente (2026-10-13)
+
+Mesuré en vrai avec `dev/mind.toml` (`speech`, `both`, phrase à 100 ms, acquittements neutres) :
+requête partie à 0 s, phrase d'attente entendue de +0,36 s à +1,5 s, `hippocampe_search` appelé à
++2,5 s sans aucune phrase (l'écart de 2,5 s, une constante, partait du début de la première phrase
+et n'était pas écoulé), première phrase de la réponse à +4,2 s : 2,7 s de silence entre
+l'acquittement et la réponse. Kris : « qu'elle comble un peu les blancs, pour pas que ce soit trop
+bizarre », et « faut que tout ça soit de la config ». Les valeurs par défaut gardent le
+comportement d'avant ; tout est dans `[waiting]` (`mind/examples/mind.toml` documente chaque clé).
+
+**Les clés ajoutées** (mode `speech`, sauf `pulse_delay_ms` qui existait) :
+
+```toml
+[waiting]
+phrase_spacing_ms = 2500        # 0 à 60000 : au moins ce temps entre deux phrases d'un tour
+phrase_spacing_from = "start"   # "start" : compté depuis l'envoi de la phrase précédente ;
+                                # "end" : depuis sa fin estimée
+pulse_after_speech = false      # true : la pulsation comble le silence après une phrase
+pulse_delay_ms = 1500           # (déjà là) avec pulse_after_speech : silence après la fin de la phrase
+prewritten_repeat_ms = 0        # 0 : aucune ; sinon une autre pré-écrite après ce silence de plus
+```
+
+**L'écart, depuis la fin.** `mind` connaît le texte d'une phrase, pas la durée de son audio : il
+l'estime (`estimated_speech`) à 350 ms avant le premier son, plus 500 ms et 70 ms par caractère.
+C'est calé sur la mesure d'aujourd'hui (neuf caractères : entendu dès +0,34 s, 1,16 s de long ; la
+formule donne 1,48 s). L'estimation est grossière (la voix peut être plus lente ou plus rapide) mais
+elle suffit : un écart « depuis la fin » est ce qu'on entend, un silence entre deux phrases, là où
+« depuis le début » mélange la durée de la phrase et le silence. Le défaut reste `start` avec 2500
+ms (le comportement d'avant) ; `end` est un choix de configuration, pas un changement silencieux.
+Les valeurs ne se comparent pas : 800 ms depuis la fin vaut à peu près 2,3 s depuis le début pour
+une phrase de neuf caractères. Les constantes de l'estimation sont dans le code, pas dans la
+configuration : ce que le propriétaire règle est l'écart, pas la vitesse de la voix.
+
+**La pulsation après une phrase.** Avec `pulse_after_speech = true`, quand une phrase est finie
+(fin estimée) et qu'aucune réponse n'a commencé au bout de `pulse_delay_ms`, `mind` envoie un `Cue`
+`pulse` (celui du mode `tone`, que `voice` répète à son intervalle jusqu'au premier mot et arrête
+tout de suite, comme avant). `mind` ne l'envoie qu'une fois. Une phrase envoyée plus tard (la
+contextuelle à un appel d'outil) **n'interrompt pas la pulsation et ne l'attend pas** : la file de
+`voice` dit la phrase dès qu'elle arrive, la pulsation saute les échéances pendant que la phrase est
+en synthèse (un seul écrivain des numéros de chunk à la fois), puis reprend après elle. Si la
+pulsation n'est pas encore partie quand la phrase est envoyée, `mind` la repousse à la fin de cette
+phrase plus `pulse_delay_ms` : une pulsation ne sonne jamais juste avant une phrase. Raison du choix
+(plutôt qu'arrêter la pulsation à chaque phrase) : rien à changer dans `voice`, et la file le fait
+déjà proprement ; un test de la file le fixe (`a_pulse_after_a_phrase_numbers_on_from_it...`). Sans
+phrase dite, pas de pulsation : en `source = "contextual"` sans appel d'outil, c'est le silence
+d'avant.
+
+**Plus de phrases.** Avant, la pré-écrite ne partait qu'une fois, au délai (`speech_delay_ms`).
+`prewritten_repeat_ms` ajoute, avec `source = "prewritten"` ou `"both"`, une autre pré-écrite après
+ce silence de plus depuis la dernière phrase (compté comme l'écart : depuis le début ou la fin selon
+`phrase_spacing_from`), jamais plus près que `phrase_spacing_ms`, jamais au-delà de `max_phrases`.
+Une phrase envoyée (même contextuelle) repart pour un tour de ce délai ; sans cette clé, le délai
+initial reste comme avant (une phrase au délai, puis rien). Jamais une phrase après la réponse :
+`answer_started` et `cancel` retirent tout ce qui est prévu pour le tour, sous le verrou du
+`Waiter`, avant que la phrase de la réponse soit mise en file.
+
+**Pas fait, volontairement.** Le ton au début du tour avant la phrase en mode `speech` (un court
+ton puis la phrase) : Kris ne l'a pas demandé, ce serait un son de plus sur chaque tour.
+
+**Validation.** `max_phrases` de 1 à 5 ; `phrase_spacing_ms` de 0 à 60000 ; `prewritten_repeat_ms` 0
+ou de 100 à 60000 ; `phrase_spacing_from` `"start"` ou `"end"`. Refusés avec un message qui nomme la
+clé : `pulse_after_speech = true` ou `prewritten_repeat_ms` hors du mode `speech` (la clé ne ferait
+rien), `prewritten_repeat_ms` avec `source = "contextual"` (aucune pré-écrite à répéter).
+
+**Les valeurs de `dev/mind.toml`** : phrase à 100 ms, `phrase_spacing_ms = 800` depuis `"end"`,
+`pulse_after_speech = true`, `pulse_delay_ms = 600`. L'écart n'est pas 1500 ms : la première phrase
+finit vers +1,6 s, donc 1500 ms depuis sa fin ferait +3,1 s et l'appel d'outil de +2,5 s resterait
+muet comme avant ; 800 ms laisse parler dès +2,4 s. Ce que ça donne sur le cas mesuré :
+
+| temps | ce qu'on entend |
+|---|---|
+| 0 à +0,45 s | rien (la synthèse démarre) |
+| +0,45 à +1,5 s | « D'accord. » (phrase envoyée à +0,1 s, finie estimée à +1,58 s) |
+| +1,5 à +2,2 s | rien |
+| +2,2 s | la pulsation (1,58 + 0,6 s) |
+| +2,5 s | appel d'outil : « Je regarde ce que j'ai sur Ali. » envoyée (écart ok depuis +2,38 s) ; la pulsation saute ses échéances pendant la synthèse |
+| +2,85 à ≈ +5 s | la phrase contextuelle |
+| ≈ +5 s | la réponse, qui était prête à +4,2 s : **elle suit la phrase** (voir « la réponse arrive pendant une phrase »), donc ≈ 0,8 s de retard sur le premier mot |
+
+Le silence le plus long passe de 2,7 s à 0,7 s, mais la phrase contextuelle retarde la réponse quand
+celle-ci arrive pendant qu'on la dit. À juger à l'oreille : si ce retard gêne, `source =
+"prewritten"` avec `pulse_after_speech` donne l'acquittement puis la pulsation sans phrase longue
+au milieu.
+
+**Ce qui est testé** (faux, temps en pause) : le cas ci-dessus, à +2,5 s la phrase contextuelle est
+maintenant dite avec `end` et ne l'est pas avec `start` (et jamais avant la fin de la première phrase
+pour `end`) ; la pulsation arrive après la phrase, une seule fois, et pas si la réponse est venue ;
+une phrase à l'appel d'outil repousse la pulsation à sa fin, une phrase après le départ de la
+pulsation ne la redemande pas ; rien après le premier mot ni après un barge-in ; la répétition des
+pré-écrites (écart, plafond de `max_phrases`, jamais plus près que l'écart) ; les valeurs par défaut
+inchangées ; la config (clés, bornes, refus). À travers tout `mind` (faux LLM, messages enregistrés) :
+la phrase, la pulsation, le premier mot. La file de `voice` : une pulsation après une phrase prend
+le numéro suivant, une phrase entre deux pulsations est dite, la pulsation s'arrête au premier mot et
+à un `Stop`. `voice` n'a pas changé (un test de plus seulement).
+
+**Pas vérifié.** Jamais écouté. Pas de bout en bout avec `voice` et un haut-parleur, ni avec un vrai
+appel d'outil du LLM. L'estimation de la fin des phrases vient d'une seule mesure (neuf caractères).

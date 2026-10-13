@@ -15,7 +15,7 @@ use mind::{
     memory::{Found, Memory},
     mind::{Input, Mind, Outbox, Settings},
     tools::Observer,
-    waiting::{Mode, Phrases, Settings as WaitingSettings, Source, Waiter},
+    waiting::{Mode, Phrases, Settings as WaitingSettings, Source, SpacingFrom, Waiter},
 };
 use tokio::sync::mpsc;
 
@@ -117,19 +117,20 @@ struct Bench {
 }
 
 fn bench(mode: Mode, source: Source) -> Bench {
+    bench_with(WaitingSettings {
+        mode,
+        pulse_delay: Duration::from_millis(1500),
+        speech_delay: Duration::from_millis(800),
+        source,
+        max_phrases: 2,
+        ..WaitingSettings::off()
+    })
+}
+
+fn bench_with(waiting: WaitingSettings) -> Bench {
     let brain = Arc::new(FakeBrain::default());
     let out = Arc::new(Recorder::default());
-    let waiter = Waiter::with_seed(
-        WaitingSettings {
-            mode,
-            pulse_delay: Duration::from_millis(1500),
-            speech_delay: Duration::from_millis(800),
-            source,
-            max_phrases: 2,
-        },
-        Phrases::parse(FILE).unwrap(),
-        3,
-    );
+    let waiter = Waiter::with_seed(waiting, Phrases::parse(FILE).unwrap(), 3);
     let mind = Mind::new(
         brain.clone(),
         Arc::new(FakeMemory),
@@ -329,4 +330,36 @@ async fn a_turn_with_nothing_heard_gets_no_cue() {
     b.ask("  ").await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(b.out.all(), [Out::Say(0)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_silence_after_the_phrase_is_filled_until_the_first_word() {
+    let mut b = bench_with(WaitingSettings {
+        mode: Mode::Speech,
+        source: Source::Both,
+        speech_delay: Duration::from_millis(100),
+        pulse_delay: Duration::from_millis(600),
+        pulse_after_speech: true,
+        phrase_spacing: Duration::from_millis(800),
+        spacing_from: SpacingFrom::End,
+        ..WaitingSettings::off()
+    });
+    b.ask("on avait décidé quoi pour Atlas").await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(
+        b.out.all(),
+        [Out::Cue(CueKind::Speech, Some("Je regarde.".to_owned()))]
+    );
+    // The phrase is over at about +1.4 s: the pulse comes 600 ms after, then goes on by itself.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(b.out.all()[1], Out::Cue(CueKind::Pulse, None));
+    // The first word of the answer: nothing of the cue follows it.
+    b.brain.send(Event::Text("On avait dit oui.".to_owned()));
+    b.brain.send(Event::Done(Ok("end_turn".to_owned())));
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    b.tool("hippocampe_search", serde_json::json!({"query": "Marc"}));
+    settle().await;
+    let all = b.out.all();
+    assert_eq!(all.len(), 3, "{all:?}");
+    assert!(matches!(all[2], Out::Say(0)));
 }

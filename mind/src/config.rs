@@ -465,7 +465,8 @@ impl DictionaryConfig {
 #[serde(deny_unknown_fields, default)]
 pub struct WaitingConfig {
     pub mode: crate::waiting::Mode,
-    /// `tone`: milliseconds without an answer before the soft pulse starts.
+    /// `tone`: milliseconds without an answer before the soft pulse starts; `speech` with
+    /// `pulse_after_speech`: milliseconds without an answer after a phrase is over.
     pub pulse_delay_ms: u64,
     /// `speech`: milliseconds without an answer before a pre-written phrase.
     pub speech_delay_ms: u64,
@@ -473,6 +474,16 @@ pub struct WaitingConfig {
     pub source: crate::waiting::Source,
     /// `speech`: the most phrases said in a turn.
     pub max_phrases: u32,
+    /// `speech`: the least milliseconds between two phrases of a turn.
+    pub phrase_spacing_ms: u64,
+    /// `speech`: whether the spacing is counted from the `start` of the previous phrase or from
+    /// its `end` (estimated).
+    pub phrase_spacing_from: crate::waiting::SpacingFrom,
+    /// `speech`: the soft pulse fills the silence after a phrase until the answer.
+    pub pulse_after_speech: bool,
+    /// `speech`: another pre-written phrase after this many more milliseconds without an answer
+    /// (0: none).
+    pub prewritten_repeat_ms: u64,
     /// `speech`: the file of the phrases; the built-in French ones without it.
     pub phrases: Option<ConfigPath>,
 }
@@ -486,6 +497,10 @@ impl Default for WaitingConfig {
             speech_delay_ms: defaults.speech_delay.as_millis() as u64,
             source: defaults.source,
             max_phrases: defaults.max_phrases,
+            phrase_spacing_ms: defaults.phrase_spacing.as_millis() as u64,
+            phrase_spacing_from: defaults.spacing_from,
+            pulse_after_speech: defaults.pulse_after_speech,
+            prewritten_repeat_ms: defaults.prewritten_repeat.as_millis() as u64,
             phrases: None,
         }
     }
@@ -499,6 +514,10 @@ impl WaitingConfig {
             speech_delay: Duration::from_millis(self.speech_delay_ms),
             source: self.source,
             max_phrases: self.max_phrases,
+            phrase_spacing: Duration::from_millis(self.phrase_spacing_ms),
+            spacing_from: self.phrase_spacing_from,
+            pulse_after_speech: self.pulse_after_speech,
+            prewritten_repeat: Duration::from_millis(self.prewritten_repeat_ms),
         }
     }
 
@@ -516,6 +535,30 @@ impl WaitingConfig {
             (1..=5).contains(&self.max_phrases),
             "waiting.max_phrases must be between 1 and 5"
         );
+        anyhow::ensure!(
+            self.phrase_spacing_ms <= 60_000,
+            "waiting.phrase_spacing_ms must be between 0 and 60000"
+        );
+        anyhow::ensure!(
+            self.prewritten_repeat_ms == 0 || (100..=60_000).contains(&self.prewritten_repeat_ms),
+            "waiting.prewritten_repeat_ms must be 0 (none) or between 100 and 60000"
+        );
+        // Keys of the `speech` mode that would do nothing elsewhere are a mistake, said loudly.
+        if self.mode != crate::waiting::Mode::Speech {
+            anyhow::ensure!(
+                !self.pulse_after_speech,
+                "waiting.pulse_after_speech only applies to mode = \"speech\" (the `tone` mode always pulses)"
+            );
+            anyhow::ensure!(
+                self.prewritten_repeat_ms == 0,
+                "waiting.prewritten_repeat_ms only applies to mode = \"speech\""
+            );
+        } else {
+            anyhow::ensure!(
+                self.prewritten_repeat_ms == 0 || self.source != crate::waiting::Source::Contextual,
+                "waiting.prewritten_repeat_ms needs source = \"prewritten\" or \"both\""
+            );
+        }
         Ok(())
     }
 
@@ -715,6 +758,67 @@ token_file = "~/t.token"
     }
 
     #[test]
+    fn the_keys_that_fill_the_silence_are_set_and_checked() {
+        use crate::waiting::{Mode, SpacingFrom};
+        let c: Config = format!(
+            "{MINIMAL}\n[waiting]\nmode = \"speech\"\nphrase_spacing_ms = 800\nphrase_spacing_from = \"end\"\npulse_after_speech = true\npulse_delay_ms = 600\nprewritten_repeat_ms = 4000\n"
+        )
+        .parse()
+        .unwrap();
+        let settings = c.waiting.settings();
+        assert_eq!(settings.mode, Mode::Speech);
+        assert_eq!(settings.phrase_spacing, Duration::from_millis(800));
+        assert_eq!(settings.spacing_from, SpacingFrom::End);
+        assert!(settings.pulse_after_speech);
+        assert_eq!(settings.prewritten_repeat, Duration::from_millis(4000));
+        assert!(c.waiting.waiter().is_ok());
+        // The defaults are the behaviour of before.
+        let d = MINIMAL.parse::<Config>().unwrap().waiting.settings();
+        assert_eq!(d.phrase_spacing, crate::waiting::PHRASE_SPACING);
+        assert_eq!(d.spacing_from, SpacingFrom::Start);
+        assert!(!d.pulse_after_speech && d.prewritten_repeat.is_zero());
+        for (bad, why) in [
+            (
+                "mode = \"speech\"\nphrase_spacing_ms = 999999",
+                "phrase_spacing_ms",
+            ),
+            (
+                "mode = \"speech\"\nphrase_spacing_from = \"middle\"",
+                "phrase_spacing_from",
+            ),
+            (
+                "mode = \"speech\"\nprewritten_repeat_ms = 5",
+                "prewritten_repeat_ms",
+            ),
+            (
+                "mode = \"speech\"\nprewritten_repeat_ms = 999999",
+                "prewritten_repeat_ms",
+            ),
+            (
+                "mode = \"speech\"\nsource = \"contextual\"\nprewritten_repeat_ms = 3000",
+                "prewritten_repeat_ms",
+            ),
+            (
+                "mode = \"tone\"\npulse_after_speech = true",
+                "pulse_after_speech",
+            ),
+            (
+                "mode = \"off\"\nprewritten_repeat_ms = 3000",
+                "prewritten_repeat_ms",
+            ),
+            (
+                "mode = \"speech\"\npulse_after_speech = \"yes\"",
+                "pulse_after_speech",
+            ),
+        ] {
+            let error = format!("{MINIMAL}\n[waiting]\n{bad}\n")
+                .parse::<Config>()
+                .unwrap_err();
+            assert!(format!("{error:#}").contains(why), "{bad}: {error:#}");
+        }
+    }
+
+    #[test]
     fn the_shipped_configurations_are_valid() {
         use crate::waiting::Mode;
         let example: Config = include_str!("../examples/mind.toml").parse().unwrap();
@@ -725,12 +829,33 @@ token_file = "~/t.token"
             .replace("# speech_delay_ms", "speech_delay_ms")
             .replace("# source =", "source =")
             .replace("# max_phrases", "max_phrases")
+            .replace("# phrase_spacing_ms", "phrase_spacing_ms")
+            .replace("# phrase_spacing_from", "phrase_spacing_from")
+            .replace("# pulse_after_speech", "pulse_after_speech")
+            .replace("# prewritten_repeat_ms", "prewritten_repeat_ms")
             .replace("# phrases =", "phrases =");
         let speech: Config = speech.parse().unwrap();
         assert_eq!(speech.waiting.mode, Mode::Speech);
         assert_eq!(speech.waiting.max_phrases, 2);
+        // The example's values are the defaults: switching its keys on changes nothing.
+        let defaults = WaitingConfig::default();
+        assert_eq!(speech.waiting.phrase_spacing_ms, defaults.phrase_spacing_ms);
+        assert_eq!(
+            speech.waiting.phrase_spacing_from,
+            defaults.phrase_spacing_from
+        );
+        assert_eq!(
+            speech.waiting.pulse_after_speech,
+            defaults.pulse_after_speech
+        );
+        assert_eq!(
+            speech.waiting.prewritten_repeat_ms,
+            defaults.prewritten_repeat_ms
+        );
         // The developer switches modes while trying them: only its validity is checked.
-        let _dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
+        let dev: Config = include_str!("../../dev/mind.toml").parse().unwrap();
+        // (its phrases file is relative to the root of the repository: only the values are checked)
+        assert!(dev.waiting.check().is_ok());
     }
 
     #[test]

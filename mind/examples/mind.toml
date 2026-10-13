@@ -75,13 +75,25 @@ timeout_ms = 2000   # how long to wait for the hearing's reply
 # turn is closed, then, if no answer has started after `pulse_delay_ms`, a soft pulse that stops
 # the moment the first word plays. "speech": a short phrase said by the voice while the LLM works.
 mode = "off"
-pulse_delay_ms = 1500   # tone: how long without an answer before the pulse starts
+pulse_delay_ms = 1500   # tone: how long without an answer before the pulse starts; speech with
+#                         pulse_after_speech: how long after a phrase is over
 # For `mode = "speech"`:
 # speech_delay_ms = 800        # how long without an answer before a pre-written phrase
 # source = "both"              # "prewritten": only after the delay; "contextual": only at a tool
 #                              # call, about what is searched; "both": a tool call gives the
 #                              # contextual phrase, the delay a pre-written one
-# max_phrases = 2              # at most this many per turn, 2.5 s apart at least
+# max_phrases = 2              # at most this many per turn (1 to 5)
+# phrase_spacing_ms = 2500     # at least this long between two phrases (0 to 60000)
+# phrase_spacing_from = "start"   # counted from the "start" of the previous phrase, or from its
+#                                 # "end": the mind estimates it from the text (a few hundred ms
+#                                 # to start sounding, then about 70 ms a character), so that
+#                                 # the spacing is the silence between two phrases
+# pulse_after_speech = false   # true: once a phrase is over and no answer has started after
+#                              # pulse_delay_ms, the soft pulse of "tone" fills the silence until
+#                              # the first word; a later phrase is still said, between the pulses
+# prewritten_repeat_ms = 0     # 0: none. Otherwise: with source "prewritten" or "both", another
+#                              # pre-written phrase after this much silence since the last phrase
+#                              # (never closer than phrase_spacing_ms, never past max_phrases)
 # phrases = "mind/prompts/waiting.fr.toml"   # the file of phrases; the built-in ones without it
 
 # Emory's MCP server, served to the ACP adapter only (none in api mode): loopback, any free port, a
