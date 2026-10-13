@@ -25,6 +25,7 @@ use crate::{
     config::Config,
     cue,
     engine::Engine,
+    gain::Gain,
     queue::{CueSound, Effect, Queue},
     text,
 };
@@ -227,6 +228,7 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     cx.nats.clone(),
                     cx.engine.clone(),
                     cx.config.chunk_ms,
+                    Gain::new(cx.config.gain),
                     cx.own.clone(),
                     cancelled.clone(),
                 ));
@@ -252,6 +254,7 @@ struct Sender {
     turn: TurnId,
     index: u32,
     format: Format,
+    gain: Gain,
     seq: u32,
     audio: Duration,
     first_sound: Option<Instant>,
@@ -276,7 +279,8 @@ impl Sender {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    async fn send(&mut self, payload: Vec<u8>, last: bool) -> anyhow::Result<()> {
+    async fn send(&mut self, mut payload: Vec<u8>, last: bool) -> anyhow::Result<()> {
+        self.gain.apply(&mut payload);
         let duration = duration_of(payload.len(), self.format);
         let first = self.first_sound.is_none() && !duration.is_zero();
         if first {
@@ -326,6 +330,7 @@ async fn say(
     nats: Client,
     engine: Engine,
     chunk_ms: u32,
+    gain: Gain,
     inbox: Inbox,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -344,6 +349,7 @@ async fn say(
         turn,
         index,
         format: engine.last_format().unwrap_or(FALLBACK_FORMAT),
+        gain,
         seq,
         audio: Duration::ZERO,
         first_sound: None,
