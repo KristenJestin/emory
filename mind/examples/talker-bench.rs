@@ -470,6 +470,7 @@ async fn run(args: RunArgs) -> Result<()> {
                 let text = request::build(
                     contract::now(),
                     heads_up.as_deref().filter(|_| index == 0),
+                    &[],
                     &found,
                     question,
                 );

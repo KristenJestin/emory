@@ -23,15 +23,19 @@
 //!
 //! A session takes one request at a time: a request waits for the end (`Done`) of the previous
 //! one, cancelling it. If the agent never ends it, the session is closed and another one opened.
+//!
+//! Emory also speaks on her own ([`Input::Speak`], see [`crate::speech`]): the speech waits until
+//! its device is free, then goes out like an answer, in a turn drawn by the mind, after a tone if
+//! asked. A press stops it, and the next request of the device carries what was said.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     future::Future,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use contract::{Button, Cue, Device, Say, Sentence, State, Stop, Turn, TurnId};
+use contract::{Button, Cue, CueKind, Device, Say, Sentence, State, Stop, Turn, TurnId};
 use futures_util::{
     FutureExt,
     future::{BoxFuture, Shared, join_all},
@@ -50,7 +54,8 @@ use crate::{
     memory::{Found, Memory},
     request,
     sentences::Splitter,
-    waiting::Waiter,
+    speech::Speech,
+    waiting::{Waiter, estimated_speech},
 };
 
 /// Said when the LLM cannot be reached, or gave nothing: the owner pressed and waits for something.
@@ -63,6 +68,17 @@ pub const CANCEL_WAIT: Duration = Duration::from_secs(10);
 pub const STALL: Duration = Duration::from_secs(60);
 /// How long the heads-up may delay the opening of a conversation.
 const HEADS_UP_WAIT: Duration = Duration::from_secs(2);
+/// A press without its release, or a turn heard without its end, stops keeping the device busy
+/// after this time: a message lost on the bus does not silence Emory for good.
+pub const HELD_LIMIT: Duration = Duration::from_secs(120);
+/// Between the tone and the first sentence of a speech on Emory's own: the tone (0.34 s) is
+/// played whole, and the voice never sees the sentence before the tone (it drops a cue that
+/// comes after the first sentence of its turn).
+pub const CHIME_LEAD: Duration = Duration::from_millis(400);
+/// What Emory said on her own and the next request of the device carries: the last ones, for
+/// this long.
+pub const OWN_KEPT: usize = 5;
+pub const OWN_MEMORY: Duration = Duration::from_secs(30 * 60);
 
 /// Where the sentences go: the bus, or a recorder in the tests.
 pub trait Outbox: Send + Sync + 'static {
@@ -81,7 +97,9 @@ pub enum Input {
     Button(Device, Button),
     Sentence(Sentence),
     Turn(Turn),
-    /// Time passes: the idle conversations close.
+    /// Something to say on Emory's own, when the device is free.
+    Speak(Speech),
+    /// Time passes: the idle conversations close, the speeches waiting for a device are tried.
     Tick,
 }
 
@@ -200,6 +218,17 @@ struct Previous {
 struct Hearing {
     turn: TurnId,
     searches: Vec<JoinHandle<Vec<Found>>>,
+    since: Instant,
+}
+
+impl Hearing {
+    fn new(turn: TurnId) -> Self {
+        Self {
+            turn,
+            searches: Vec::new(),
+            since: Instant::now(),
+        }
+    }
 }
 
 /// The last answer of a device, until the next press.
@@ -207,6 +236,9 @@ struct Answer {
     turn: TurnId,
     gate: Arc<Gate>,
     task: Running,
+    /// Said on Emory's own: its turn was drawn by the mind, whose clock is not the ear's, so any
+    /// press stops it, whatever the order of the turns.
+    own: bool,
 }
 
 #[derive(Default)]
@@ -216,6 +248,10 @@ struct DeviceState {
     answer: Option<Answer>,
     /// The newest turn seen on this device (press, sentence or turn): what is older is late.
     latest: Option<TurnId>,
+    /// The button is held since then (a press without its release yet).
+    held: Option<Instant>,
+    /// What Emory said on her own, for the next request: when, and the text.
+    own: VecDeque<(Instant, String)>,
 }
 
 impl DeviceState {
@@ -237,8 +273,12 @@ enum Message {
 }
 
 /// The messages to the voice, published in the order they were queued, by a task of their own.
+/// It guesses, from the texts queued, until when the voice speaks on each device.
 #[derive(Clone)]
-struct Mailbox(mpsc::UnboundedSender<Message>);
+struct Mailbox {
+    sender: mpsc::UnboundedSender<Message>,
+    speaking: Arc<Mutex<HashMap<Device, Instant>>>,
+}
 
 impl Mailbox {
     fn start<O: Outbox>(out: Arc<O>) -> Self {
@@ -264,12 +304,47 @@ impl Mailbox {
                 }
             }
         });
-        Self(sender)
+        Self {
+            sender,
+            speaking: Arc::default(),
+        }
     }
 
     fn send(&self, message: Message) {
-        let _ = self.0.send(message);
+        {
+            let mut speaking = self.speaking.lock().unwrap();
+            let spoken = match &message {
+                Message::Say(say) => Some((&say.device, say.text.as_str())),
+                Message::Cue(cue) => cue.text.as_deref().map(|text| (&cue.device, text)),
+                Message::Stop(stop) => {
+                    speaking.remove(&stop.device);
+                    None
+                }
+            };
+            // The voice says them one after the other.
+            if let Some((device, text)) = spoken.filter(|(_, text)| !text.is_empty()) {
+                let now = Instant::now();
+                let from = speaking.get(device).copied().filter(|end| *end > now);
+                speaking.insert(device.clone(), from.unwrap_or(now) + estimated_speech(text));
+            }
+        }
+        let _ = self.sender.send(message);
     }
+
+    /// Whether the voice may still be saying what was queued for this device.
+    fn speaking(&self, device: &Device) -> bool {
+        self.speaking
+            .lock()
+            .unwrap()
+            .get(device)
+            .is_some_and(|end| *end > Instant::now())
+    }
+}
+
+/// A speech waiting for its device.
+struct Pending {
+    speech: Speech,
+    asked: Instant,
 }
 
 pub struct Mind<B, M> {
@@ -280,6 +355,8 @@ pub struct Mind<B, M> {
     devices: HashMap<Device, DeviceState>,
     conversations: Conversations,
     waiter: Waiter,
+    /// The speeches on Emory's own waiting for their device, in the order asked.
+    pending: VecDeque<Pending>,
 }
 
 impl<B: Brain, M: Memory> Mind<B, M> {
@@ -293,6 +370,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             devices: HashMap::new(),
             conversations: Conversations::default(),
             waiter: Waiter::off(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -313,15 +391,21 @@ impl<B: Brain, M: Memory> Mind<B, M> {
 
     pub async fn handle(&mut self, input: Input) {
         match input {
-            Input::Button(device, button) => {
-                if button.state == State::Start {
-                    self.pressed(&device, button.turn);
-                }
-            }
+            Input::Button(device, button) => match button.state {
+                State::Start => self.pressed(&device, button.turn),
+                State::End => self.released(&device, button.turn),
+            },
             Input::Sentence(sentence) => self.heard(sentence),
             Input::Turn(turn) => self.answer(turn),
+            Input::Speak(speech) => self.asked_to_speak(speech),
             Input::Tick => self.close_idle(),
         }
+        self.speak_pending();
+    }
+
+    /// Whether a speech waits for its device: the run loop then ticks often.
+    pub fn has_pending_speech(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Whether a conversation is open on this device (for the tests and the logs).
@@ -344,12 +428,18 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         self.barge_in(device, turn);
         self.open(device);
         let state = self.state(device);
+        state.held = Some(Instant::now());
         // Its sentences may have come first: their searches are kept.
         if state.hearing.as_ref().is_none_or(|h| h.turn != turn) {
-            state.hearing = Some(Hearing {
-                turn,
-                searches: Vec::new(),
-            });
+            state.hearing = Some(Hearing::new(turn));
+        }
+    }
+
+    /// The owner releases the button: the turn is still heard until it comes.
+    fn released(&mut self, device: &Device, turn: TurnId) {
+        let state = self.state(device);
+        if state.latest.is_none_or(|latest| turn >= latest) {
+            state.held = None;
         }
     }
 
@@ -359,7 +449,11 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let brain = self.brain.clone();
         let mail = self.mail.clone();
         let state = self.state(device);
-        if state.answer.as_ref().is_none_or(|a| a.turn >= turn) {
+        if state
+            .answer
+            .as_ref()
+            .is_none_or(|a| !a.own && a.turn >= turn)
+        {
             return;
         }
         let Some(answer) = state.answer.take() else {
@@ -385,7 +479,11 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             turn: answer.turn,
             device: device.clone(),
         }));
-        info!(%device, turn = %answer.turn, "barge-in: answer stopped");
+        if answer.own {
+            info!(%device, turn = %answer.turn, "barge-in: speech on its own stopped");
+        } else {
+            info!(%device, turn = %answer.turn, "barge-in: answer stopped");
+        }
     }
 
     /// Opens the conversation of this device if it has none (or if it has gone idle), opens its
@@ -454,10 +552,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             .is_none_or(|h| h.turn != sentence.turn)
         {
             self.open(&device);
-            self.state(&device).hearing = Some(Hearing {
-                turn: sentence.turn,
-                searches: Vec::new(),
-            });
+            self.state(&device).hearing = Some(Hearing::new(sentence.turn));
         }
         let memory = self.memory.clone();
         let limit = self.settings.search_limit;
@@ -499,6 +594,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             return;
         }
         let state = self.state(&device);
+        state.held = None;
         let searches = match state.hearing.take_if(|h| h.turn == turn.turn) {
             Some(h) => h.searches,
             None => Vec::new(),
@@ -516,6 +612,12 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let conversations = self.conversations.clone();
         let waiter = self.waiter.clone();
         let state = self.state(&device);
+        let own: Vec<String> = state
+            .own
+            .drain(..)
+            .filter(|(at, _)| at.elapsed() < OWN_MEMORY)
+            .map(|(_, text)| text)
+            .collect();
         let Some(conversation) = state.conversation.as_mut() else {
             return;
         };
@@ -532,6 +634,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             device: device.clone(),
             turn: turn.turn,
             text: turn.text,
+            own,
             searches,
             link: conversation.link.clone(),
             conversation: conversation.key.clone(),
@@ -550,6 +653,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             turn: turn.turn,
             gate,
             task: running,
+            own: false,
         });
     }
 
@@ -571,7 +675,148 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         sayer.publish(self.settings.nothing_heard.clone(), true);
         // No task: the answer is already over, but the voice may still be saying it.
         let (_, task) = Running::new();
-        self.state(device).answer = Some(Answer { turn, gate, task });
+        self.state(device).answer = Some(Answer {
+            turn,
+            gate,
+            task,
+            own: false,
+        });
+    }
+
+    /// Whether Emory may speak on this device now: no answer running or being said, no button
+    /// held, no turn being heard.
+    fn free(&self, device: &Device) -> bool {
+        if self.mail.speaking(device) {
+            return false;
+        }
+        let Some(state) = self.devices.get(device) else {
+            return true;
+        };
+        let recent = |since: Instant| since.elapsed() < HELD_LIMIT;
+        !state.held.is_some_and(recent)
+            && !state.hearing.as_ref().is_some_and(|h| recent(h.since))
+            && !state.answer.as_ref().is_some_and(|a| !a.task.is_finished())
+    }
+
+    fn asked_to_speak(&mut self, speech: Speech) {
+        if !has_words(&speech.text) {
+            warn!(origin = %speech.origin, device = %speech.device, "speech on its own without words: dropped");
+            return;
+        }
+        info!(
+            origin = %speech.origin,
+            device = %speech.device,
+            chars = speech.text.chars().count(),
+            busy = !self.free(&speech.device),
+            "asked to speak on its own"
+        );
+        self.pending.push_back(Pending {
+            speech,
+            asked: Instant::now(),
+        });
+    }
+
+    /// Says the speeches whose device is free, in the order asked, one at a time per device;
+    /// drops those that waited too long.
+    fn speak_pending(&mut self) {
+        let mut waiting: Vec<Device> = Vec::new();
+        let mut i = 0;
+        while let Some(pending) = self.pending.get(i) {
+            let device = pending.speech.device.clone();
+            if pending.asked.elapsed() >= pending.speech.expires_in {
+                info!(
+                    origin = %pending.speech.origin,
+                    %device,
+                    waited_ms = pending.asked.elapsed().as_millis() as u64,
+                    "speech on its own dropped: the device was never free"
+                );
+                self.pending.remove(i);
+                continue;
+            }
+            if waiting.contains(&device) || !self.free(&device) {
+                waiting.push(device);
+                i += 1;
+                continue;
+            }
+            if let Some(pending) = self.pending.remove(i) {
+                self.speak(pending);
+            }
+            // Busy now, with its own speech.
+            waiting.push(device);
+        }
+    }
+
+    /// Says a speech on Emory's own, in a turn of its own, like an answer.
+    fn speak(&mut self, pending: Pending) {
+        let Speech {
+            device,
+            text,
+            origin,
+            chime,
+            ..
+        } = pending.speech;
+        let turn = TurnId::new();
+        let gate = Arc::new(Gate::default());
+        let (done, task) = Running::new();
+        let mut splitter = Splitter::new();
+        let mut sentences = splitter.push(&text);
+        sentences.extend(splitter.finish());
+        info!(
+            %origin,
+            %device,
+            %turn,
+            waited_ms = pending.asked.elapsed().as_millis() as u64,
+            chars = text.chars().count(),
+            sentences = sentences.len(),
+            chime,
+            "speaking on its own"
+        );
+        let mail = self.mail.clone();
+        let mut sayer = Sayer {
+            mail: self.mail.clone(),
+            device: device.clone(),
+            turn,
+            gate: gate.clone(),
+            index: 0,
+            last_sent: false,
+            received: Instant::now(),
+            waiter: self.waiter.clone(),
+        };
+        let sending = gate.clone();
+        let to = device.clone();
+        tokio::spawn(async move {
+            let _done = done;
+            if chime {
+                {
+                    let gate = sending.lock();
+                    if gate.stopped {
+                        return;
+                    }
+                    mail.send(Message::Cue(Cue {
+                        turn,
+                        device: to,
+                        kind: CueKind::Tone,
+                        text: None,
+                    }));
+                }
+                tokio::time::sleep(CHIME_LEAD).await;
+            }
+            let count = sentences.len();
+            for (i, sentence) in sentences.into_iter().enumerate() {
+                sayer.publish(sentence, i + 1 == count);
+            }
+        });
+        let state = self.state(&device);
+        state.own.push_back((Instant::now(), text));
+        while state.own.len() > OWN_KEPT {
+            state.own.pop_front();
+        }
+        state.answer = Some(Answer {
+            turn,
+            gate,
+            task,
+            own: true,
+        });
     }
 
     /// Closes the conversations without an exchange for the idle time, once their answer is over.
@@ -644,6 +889,8 @@ struct Job<B, M> {
     device: Device,
     turn: TurnId,
     text: String,
+    /// What Emory said on her own since the last request of the device.
+    own: Vec<String>,
     searches: Vec<JoinHandle<Vec<Found>>>,
     link: Arc<Mutex<Link>>,
     conversation: ConversationKey,
@@ -721,7 +968,7 @@ impl<B: Brain, M: Memory> Job<B, M> {
             }
         };
         let heads_up = opened.heads_up.as_deref().filter(|_| tell);
-        let text = request::build(contract::now(), heads_up, &found, &self.text);
+        let text = request::build(contract::now(), heads_up, &self.own, &found, &self.text);
         let mut events = {
             let mut gate = self.gate.lock();
             if gate.stopped {

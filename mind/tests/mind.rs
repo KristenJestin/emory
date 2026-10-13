@@ -1,5 +1,6 @@
 //! The relay with a fake LLM, a fake memory and the sentences recorded instead of published: the
-//! streaming cut, `last`, the routing, the pre-search and its timeout, the barge-in, the idle close.
+//! streaming cut, `last`, the routing, the pre-search and its timeout, the barge-in, the idle close,
+//! Emory speaking on her own.
 
 use std::{
     collections::HashMap,
@@ -10,12 +11,13 @@ use std::{
     time::Duration,
 };
 
-use contract::{Button, Device, Say, Sentence, State, Stop, Turn, TurnId, Wake};
+use contract::{Button, Cue, CueKind, Device, Say, Sentence, State, Stop, Turn, TurnId, Wake};
 use mind::{
     brain::{Brain, Event, SessionId},
     conversations::{ConversationKey, Conversations},
     memory::{Found, Memory},
-    mind::{Input, Mind, Outbox, Settings},
+    mind::{CHIME_LEAD, HELD_LIMIT, Input, Mind, Outbox, Settings},
+    speech::{Origin, Speech},
 };
 use tokio::sync::{Notify, mpsc};
 
@@ -170,6 +172,7 @@ impl Memory for FakeMemory {
 enum Out {
     Say(Say),
     Stop(Stop),
+    Cue(Cue),
 }
 
 #[derive(Default)]
@@ -190,6 +193,12 @@ impl Outbox for Recorder {
         self.changed.notify_waiters();
         Ok(())
     }
+
+    async fn cue(&self, cue: Cue) -> anyhow::Result<()> {
+        self.out.lock().unwrap().push(Out::Cue(cue));
+        self.changed.notify_waiters();
+        Ok(())
+    }
 }
 
 impl Recorder {
@@ -202,7 +211,7 @@ impl Recorder {
             .into_iter()
             .filter_map(|o| match o {
                 Out::Say(s) => Some((s.device.to_string(), s.index, s.text, s.last)),
-                Out::Stop(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -1056,4 +1065,240 @@ async fn an_empty_answer_says_it_failed() {
         b.out.says(),
         [("office".into(), 0, mind::mind::FAILURE.into(), true)]
     );
+}
+
+// Emory speaking on her own (`specs/events.md`, E1). The clock is paused: the voice is guessed to
+// speak for the estimated length of what was queued.
+
+const OWN: &str = "Le minuteur est fini.";
+
+fn speech(name: &str, chime: bool) -> Input {
+    Input::Speak(Speech::new(device(name), OWN, Origin::Timer).chime(chime))
+}
+
+fn release(name: &str, turn: TurnId) -> Input {
+    Input::Button(
+        device(name),
+        Button {
+            turn,
+            state: State::End,
+            at: contract::now(),
+        },
+    )
+}
+
+impl Bench {
+    /// Lets the time pass, then lets the mind look at its waiting speeches.
+    async fn after(&mut self, wait: Duration) {
+        tokio::time::sleep(wait).await;
+        self.mind.handle(Input::Tick).await;
+        settle().await;
+    }
+
+    /// The sentences said on Emory's own (`OWN`), with their turn.
+    fn own(&self) -> Vec<Say> {
+        self.out
+            .all()
+            .into_iter()
+            .filter_map(|o| match o {
+                Out::Say(s) if s.text == OWN => Some(s),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_free_device_hears_the_tone_then_the_sentence_in_a_turn_of_its_own() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(speech("office", true)).await;
+    settle().await;
+    let all = b.out.all();
+    let [Out::Cue(cue)] = all.as_slice() else {
+        panic!("the tone first, alone: {all:?}");
+    };
+    assert_eq!(cue.kind, CueKind::Tone);
+    b.after(CHIME_LEAD).await;
+    let all = b.out.all();
+    assert_eq!(
+        all[1],
+        Out::Say(Say {
+            turn: cue.turn,
+            device: device("office"),
+            index: 0,
+            text: OWN.into(),
+            last: true
+        })
+    );
+    assert_eq!(all.len(), 2);
+    // No LLM, no conversation.
+    assert_eq!(*b.brain.opened.lock().unwrap(), 0);
+    assert!(!b.mind.has_conversation(&device("office")));
+    assert!(!b.mind.has_pending_speech());
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_the_chime_only_the_sentence_goes() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(speech("office", false)).await;
+    settle().await;
+    assert_eq!(b.out.says(), [("office".into(), 0, OWN.into(), true)]);
+    assert!(!b.out.all().iter().any(|o| matches!(o, Out::Cue(_))));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_long_text_is_cut_into_sentences_the_last_marked() {
+    let mut b = bench(FakeMemory::default());
+    let text = "La sauvegarde a échoué. Le disque est plein.";
+    b.mind
+        .handle(Input::Speak(
+            Speech::new(device("office"), text, Origin::Event).chime(false),
+        ))
+        .await;
+    settle().await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "La sauvegarde a échoué.".into(), false),
+            ("office".into(), 1, "Le disque est plein.".into(), true)
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn it_waits_for_the_end_of_an_answer_and_for_the_voice_to_say_it() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["raconte"]).await;
+    prompt.events.send(text("Il était une fois.")).unwrap();
+    settle().await;
+    b.mind.handle(speech("office", false)).await;
+    b.after(Duration::from_secs(30)).await;
+    assert!(b.own().is_empty(), "spoken during the answer");
+
+    prompt.events.send(text(" Fin.")).unwrap();
+    prompt.events.send(done()).unwrap();
+    settle().await;
+    b.mind.handle(Input::Tick).await;
+    settle().await;
+    assert!(b.own().is_empty(), "spoken while the voice says the answer");
+    // The answer is over and said (as far as the mind can tell): Emory speaks at once.
+    b.after(Duration::from_secs(5)).await;
+    let says = b.out.says();
+    assert_eq!(says.len(), 3);
+    assert_eq!(says[2], ("office".into(), 0, OWN.into(), true));
+}
+
+#[tokio::test(start_paused = true)]
+async fn it_waits_for_the_button_and_the_turn_heard() {
+    let mut b = bench(FakeMemory::default());
+    let id = new_turn();
+    b.mind.handle(press("office", id)).await;
+    b.mind.handle(speech("other", false)).await;
+    b.mind.handle(speech("office", false)).await;
+    settle().await;
+    // Another device is free.
+    assert_eq!(b.out.says(), [("other".into(), 0, OWN.into(), true)]);
+    b.after(Duration::from_secs(10)).await;
+    assert_eq!(b.own().len(), 1, "spoken while the button is held");
+    b.mind.handle(release("office", id)).await;
+    b.after(Duration::from_secs(1)).await;
+    assert_eq!(b.own().len(), 1, "spoken before the turn is heard");
+    // Nothing in the turn: Emory says so, then her own sentence, once the voice is done.
+    b.mind.handle(turn("office", id, "")).await;
+    settle().await;
+    assert_eq!(b.own().len(), 1, "spoken over the answer");
+    b.after(Duration::from_secs(5)).await;
+    let says = b.out.says();
+    assert_eq!(says[1], ("office".into(), 0, NOTHING_HEARD.into(), true));
+    assert_eq!(says[2], ("office".into(), 0, OWN.into(), true));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_release_does_not_silence_her_for_good() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(press("office", new_turn())).await;
+    b.mind.handle(speech("office", false)).await;
+    b.after(HELD_LIMIT - Duration::from_secs(1)).await;
+    assert!(b.own().is_empty());
+    b.after(Duration::from_secs(2)).await;
+    assert_eq!(b.own().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_speech_that_waits_too_long_is_dropped() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(press("office", new_turn())).await;
+    b.mind
+        .handle(Input::Speak(
+            Speech::new(device("office"), OWN, Origin::Event)
+                .chime(false)
+                .expires_in(Duration::from_secs(30)),
+        ))
+        .await;
+    b.after(Duration::from_secs(31)).await;
+    assert!(!b.mind.has_pending_speech());
+    b.after(HELD_LIMIT).await;
+    assert!(b.own().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_press_stops_it_whatever_the_order_of_the_turns() {
+    let mut b = bench(FakeMemory::default());
+    // Drawn before the mind draws its own: an ear whose clock is behind.
+    let early = new_turn();
+    b.mind.handle(speech("office", false)).await;
+    settle().await;
+    let said = b.own();
+    assert_eq!(said.len(), 1);
+    b.mind.handle(press("office", early)).await;
+    settle().await;
+    assert_eq!(
+        b.out.all().last(),
+        Some(&Out::Stop(Stop {
+            turn: said[0].turn,
+            device: device("office")
+        }))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_press_during_the_tone_means_no_sentence() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(speech("office", true)).await;
+    settle().await;
+    b.mind.handle(press("office", new_turn())).await;
+    b.after(CHIME_LEAD * 2).await;
+    let all = b.out.all();
+    assert!(matches!(&all[..], [Out::Cue(_), Out::Stop(_)]), "{all:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_next_request_carries_what_she_said_once() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(speech("office", false)).await;
+    settle().await;
+    b.after(Duration::from_secs(5)).await;
+    let (_, prompt) = b.ask("office", &["relance-le"]).await;
+    assert!(
+        prompt
+            .text
+            .contains(&format!("[Tu as dit de toi-même]\n- {OWN}\n")),
+        "{}",
+        prompt.text
+    );
+    prompt.events.send(text("D'accord.")).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.after(Duration::from_secs(5)).await;
+    let (_, again) = b.ask("office", &["merci"]).await;
+    assert!(!again.text.contains("[Tu as dit de toi-même]"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn what_she_said_is_forgotten_after_half_an_hour() {
+    let mut b = bench(FakeMemory::default());
+    b.mind.handle(speech("office", false)).await;
+    settle().await;
+    b.after(Duration::from_secs(31 * 60)).await;
+    let (_, prompt) = b.ask("office", &["bonjour"]).await;
+    assert!(!prompt.text.contains("[Tu as dit de toi-même]"));
 }
