@@ -7,6 +7,7 @@ mode = "acp"
 command = "npx"
 args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
 model = "claude-haiku-5-5"
+thinking = "off"
 system_prompt = "mind/prompts/system.fr.md"
 
 [owner]
@@ -22,11 +23,12 @@ token_file = "~/.krisnet/hippocampe-prod-readonly.token"
 # the soft pulse of the `tone` mode in the silences, until the first word.
 # To try the other kind: mode = "tone" (see mind/examples/mind.toml).
 [waiting]
-mode = "speech"
-source = "both"
-speech_delay_ms = 100
-phrases = "dev/waiting.fr.toml"
-phrase_spacing_ms = 800
-phrase_spacing_from = "end"
-pulse_after_speech = true
-pulse_delay_ms = 600
+mode = "off"
+# Essayé le 2026-10-13, à remettre pour comparer (mode = "speech") :
+# source = "both"
+# speech_delay_ms = 100
+# phrases = "dev/waiting.fr.toml"
+# phrase_spacing_ms = 800
+# phrase_spacing_from = "end"
+# pulse_after_speech = true
+# pulse_delay_ms = 600
