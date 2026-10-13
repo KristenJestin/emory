@@ -441,14 +441,16 @@ Les choix :
   modèle qui ne l'a pas, budget de réflexion sous 1024 pour Anthropic, `base_url` sans `/` final.
 - **La réflexion** : en `acp`, elle passe dans les options du SDK (`disabled`, `adaptive`,
   `enabled` avec `budgetTokens`). En `api` avec Anthropic, `off` envoie `thinking: disabled`
-  (Haiku l'accepte) sauf pour Sonnet 5 et 5.5, qui le refusent (mesuré le 2026-10-13) et reçoivent
+  (Haiku l'accepte) sauf pour Sonnet 5.5, qui le refuse (mesuré le 2026-10-13), et par prudence
+  Sonnet 5 : ils reçoivent
   `between_tools` ; Opus en `off` n'a pas été essayé. Gemini reçoit son budget de 0 ; les autres
   fournisseurs ne reçoivent rien (un modèle sans raisonnement refuserait le paramètre). `adaptive`
   passe par l'effort (`effort` obligatoire hors Anthropic).
 - **Le cache** (Anthropic) : un point sur les consignes (qui couvre les outils) et un point qui
   suit le dernier message. Essayé en vrai : chaque tour lit du cache tout l'historique précédent
   (7 071 tokens au 2e tour, 17 966 au 6e) et n'écrit que le nouveau (1 500 à 2 200 tokens) ; au
-  second appel d'un tour à outil, le résultat de l'outil est déjà lu du cache. Gardé : sans lui,
+  second appel d'un tour à outil, tout ce que le premier avait envoyé est lu du cache (15 744
+  tokens), seul le résultat de l'outil est nouveau. Gardé : sans lui,
   tout l'historique serait facturé en entrée pleine à chaque tour.
 - **L'interruption** : la requête s'arrête et la connexion est lâchée ; le tour reste dans
   l'historique avec ce qui en a été dit (les appels d'outils sans résultat en sont retirés, sinon
