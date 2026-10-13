@@ -218,7 +218,7 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     device: device.clone(),
                     turn,
                     index,
-                    text,
+                    text: text::clean(&text, &cx.config.text),
                     received,
                     seq,
                 };
@@ -229,7 +229,6 @@ async fn apply(effects: Vec<Effect>, cx: Context<'_>, job: &mut Option<Job>) {
                     cx.engine.clone(),
                     cx.config.chunk_ms,
                     Gain::new(cx.config.gain),
-                    cx.config.text.clone(),
                     cx.own.clone(),
                     cancelled.clone(),
                 ));
@@ -243,6 +242,7 @@ struct Sentence {
     device: Device,
     turn: TurnId,
     index: u32,
+    /// What the engine reads: the text already through `text::clean` (whitespace, lexicon).
     text: String,
     received: Instant,
     seq: u32,
@@ -332,7 +332,6 @@ async fn say(
     engine: Engine,
     chunk_ms: u32,
     gain: Gain,
-    lexicon: Arc<text::Lexicon>,
     inbox: Inbox,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -362,7 +361,7 @@ async fn say(
     let mut engine_first = None;
     let streamed = stream(
         &engine,
-        &text::clean(&text, &lexicon),
+        &text,
         chunk_ms,
         &mut sender,
         &mut chunker,

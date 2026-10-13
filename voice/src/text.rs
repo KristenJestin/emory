@@ -568,6 +568,18 @@ mod tests {
     }
 
     #[test]
+    fn the_example_of_the_readme_parses() {
+        let l = lexicon(
+            "not_spelled = [\"NASA\", \"RAM\"]\n[replace]\nGitHub = \"guite-heub\"\n\"Wi-Fi\" = \"ouifi\"\n\
+             [replace_any_case]\nokay = \"oké\"\n[letters]\nR = \"èrre\"\n",
+        );
+        assert_eq!(
+            l.apply("Wi-Fi, OKAY, RAM et RGB"),
+            "ouifi, oké, RAM et èrre-jé-bé"
+        );
+    }
+
+    #[test]
     fn an_unreadable_file_is_an_error_with_its_path() {
         let error = format!(
             "{:#}",
