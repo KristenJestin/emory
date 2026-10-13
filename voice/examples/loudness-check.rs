@@ -5,6 +5,8 @@
 //! loudness-check sentences RAW_DIR OUT_DIR [--loudness 'target = -16'] [--keep 0,2,5]
 //!     the peak, RMS, loudness and crest of every s*.wav of RAW_DIR as it comes, with `gain` 2, 3
 //!     and 5, and with the stage; the WAV of the sentences listed by --keep go to OUT_DIR
+//! loudness-check measure FILE.wav…
+//!     the same figures for files as they are (what `voice` sent, for instance)
 //! loudness-check tones [--loudness '…']
 //!     distortion of tones and tone bursts: the stage against the old gain with its soft limiter
 //! loudness-check timing RAW_DIR [--loudness '…']
@@ -48,6 +50,27 @@ fn main() -> anyhow::Result<()> {
     }
     match args.first().map(String::as_str) {
         Some("sentences") => sentences(&args[1..], &settings, &keep),
+        Some("measure") => {
+            println!(
+                "{:<28} {:>6} {:>7} {:>7} {:>7} {:>6} {:>7}",
+                "file", "s", "peak", "RMS", "LUFS", "crest", "@peak"
+            );
+            for file in &args[1..] {
+                let samples = read_wav(Path::new(file))?;
+                let m = measure(&samples);
+                println!(
+                    "{:<28} {:>6.2} {:>7.1} {:>7.1} {:>7.1} {:>6.1} {:>7}",
+                    Path::new(file).file_name().unwrap().to_string_lossy(),
+                    samples.len() as f64 / RATE as f64,
+                    m.peak_db,
+                    m.rms_db,
+                    m.lufs,
+                    m.crest,
+                    m.at_peak
+                );
+            }
+            Ok(())
+        }
         Some("tones") => {
             tones(&settings);
             Ok(())
@@ -109,8 +132,14 @@ fn with_gain(samples: &[i16], gain: f32) -> Vec<i16> {
     samples_of(&bytes)
 }
 
-/// The new path, as `voice` does it: chunk by chunk, then the end of the sentence.
-fn with_stage_level(samples: &[i16], settings: &LoudnessSettings) -> (Vec<i16>, Option<f32>, f32) {
+/// What the new path gives for a sentence, as `voice` does it: chunk by chunk, then the end of
+/// the sentence.
+struct StageRun {
+    samples: Vec<i16>,
+    limited: f32,
+}
+
+fn run_stage(samples: &[i16], settings: &LoudnessSettings) -> StageRun {
     let mut stage = Loudness::new(settings, RATE, 1);
     let mut out = Vec::new();
     for chunk in bytes_of(samples).chunks(RATE as usize * CHUNK_MS / 1000 * 2) {
@@ -118,11 +147,14 @@ fn with_stage_level(samples: &[i16], settings: &LoudnessSettings) -> (Vec<i16>, 
     }
     out.extend(stage.finish());
     assert_eq!(stage.clipped(), 0, "the safety clamp was needed");
-    (samples_of(&out), stage.level(), stage.limited())
+    StageRun {
+        samples: samples_of(&out),
+        limited: stage.limited(),
+    }
 }
 
 fn with_stage(samples: &[i16], settings: &LoudnessSettings) -> Vec<i16> {
-    with_stage_level(samples, settings).0
+    run_stage(samples, settings).samples
 }
 
 struct Measure {
@@ -206,7 +238,8 @@ fn sentences(args: &[String], settings: &LoudnessSettings, keep: &[usize]) -> an
     for (i, file) in files.iter().enumerate() {
         let original = read_wav(file)?;
         let name = file.file_stem().unwrap().to_string_lossy().into_owned();
-        let (staged, _, limited) = with_stage_level(&original, settings);
+        let run = run_stage(&original, settings);
+        let (staged, limited) = (run.samples, run.limited);
         let variants: Vec<(String, Vec<i16>, f32)> = vec![
             ("gain 1".into(), original.clone(), 0.0),
             ("gain 2".into(), with_gain(&original, 2.0), 0.0),
