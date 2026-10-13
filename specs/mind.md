@@ -70,11 +70,13 @@ module, et ce qui s'ajoutera (les mains, les yeux) devient un module de plus :
 
 - **Hippocampe** : `mind` relaie les outils d'Hippocampe (lire, chercher, écrire…), avec la clé
   `emory` ;
-- **le temps** : minuteurs et rappels ;
-- **le web** : chercher et lire une page. La recherche passe par une instance SearXNG sur le
-  serveur, en local, sans clé ni abonnement ;
-- **la musique** : chercher dans Navidrome par l'API Subsonic, un module de l'`emory-hands` du
-  serveur (appareil `server`) ;
+- **le temps** : minuteurs et rappels (voir [`time.md`](time.md)) ;
+- **le web** : chercher et lire une page, la météo, Wikipédia. Changé le 2026-10-13 : pas de
+  SearXNG (trop gros pour commencer), la recherche passe par la page HTML de DuckDuckGo (voir
+  [`web.md`](web.md)) ;
+- **la musique** : changé le 2026-10-13, sur le PC elle passe par `poste music`, déclaré dans le
+  module `commands` de l'`emory-hands` du PC (voir [`hands.md`](hands.md)) ; un module Subsonic
+  sur le serveur reste pour plus tard ;
 - **les mains** : les actions annoncées par l'`emory-hands` de chaque appareil (MPRIS sur le PC) ;
 - **le dictionnaire** : ajouter un mot au vocabulaire de la transcription, après le oui de
   l'utilisateur (construit le 2026-10-13, voir « Le dictionnaire » à la fin) ;
@@ -689,3 +691,170 @@ le numéro suivant, une phrase entre deux pulsations est dite, la pulsation s'ar
 
 **Pas vérifié.** Jamais écouté. Pas de bout en bout avec `voice` et un haut-parleur, ni avec un vrai
 appel d'outil du LLM. L'estimation de la fin des phrases vient d'une seule mesure (neuf caractères).
+
+## La suite : écrire, le web, le temps, les mains (2026-10-13)
+
+Brouillon du 2026-10-13, à relire avec Kris section par section. Les décisions prises avec lui ce
+jour-là sont écrites comme décidées ; le reste est proposé, avec sa raison.
+
+Quatre blocs. Le web, le temps et l'entrée interne ont chacun leur fichier, parce que ce fichier
+dépasse 700 lignes et que chacun se lit et se construit seul : [`web.md`](web.md),
+[`time.md`](time.md), [`events.md`](events.md) (l'entrée interne et la parole d'elle-même, qui sert
+aussi aux minuteurs). Les mains sont dans [`hands.md`](hands.md). Écrire dans Hippocampe et la
+tâche de fond restent ici : c'est le cœur de `mind`, et ils touchent à ce qui est déjà écrit
+plus haut (« Hippocampe »).
+
+### Écrire dans Hippocampe
+
+**Décidé le 2026-10-13.** `mind` utilise sa propre clé `emory` (droits `read,write`) sur
+l'instance **de production** d'Hippocampe. Pourquoi c'est sans danger :
+
+- les sauvegardes : un `pg_dump` chaque nuit, gardé par Borg (7 jours, 4 semaines, 6 mois) ;
+- Hippocampe n'efface rien : il archive, et garde l'historique de chaque changement ;
+- tout ce qu'Emory écrit est signé de sa clé et se liste avec `by: emory`.
+
+C'est déjà branché dans `dev/mind.toml` : les outils `search`, `read`, `write`, `link` et `types`
+sont relayés (`hippocampe_*`).
+
+**Ce qu'Emory écrit, sur demande.**
+
+- « Note que j'ai prêté la perceuse à Marc. »
+- « Retiens que le code du portail change le premier novembre. »
+- « Ajoute à ma fiche sur le déménagement que le camion est réservé. »
+
+Le chemin, tenu par les consignes et par les descriptions des outils d'Hippocampe (qui sont son
+contrat, voir le [README](README.md)) :
+
+1. Chercher d'abord (`hippocampe_search`) : la fiche existe-t-elle (Marc, la perceuse, le
+   déménagement) ? Une fiche qui existe est mise à jour (`entry`, et `edits` pour quelques mots),
+   jamais doublée.
+2. Écrire (`hippocampe_write`) avec la provenance du [README](README.md) : ce que l'utilisateur dit
+   a pour source `{ said_by: "owner", on: <jour> }` et est `extracted` (connu) ; ce qu'Emory en
+   déduit est `inferred` ; ce qu'Emory a fait ou vu elle-même a pour source `{ seen_by: "writer" }`.
+   Un fait durable va dans la fiche qu'il concerne ; un moment qui compte est une fiche à lui, du
+   type daté que les descriptions d'Hippocampe donnent pour ça.
+3. Relier ce qui se nomme (`hippocampe_link`, ou le `parent`) quand les fiches existent.
+4. Le dire en une phrase, sans identifiant : « C'est noté dans ta fiche sur la perceuse. »
+
+Une entrée écrite par Emory n'attend aucune validation (décidé le 2026-10-11) ; ce qui est
+`inferred` se retrouve dans la liste de ce qui attend d'Hippocampe (`supposed: true`), que Kris
+confirme quand il veut.
+
+**Retrouver et défaire ce qu'Emory a écrit.**
+
+- À la voix : « Qu'est-ce que tu as noté aujourd'hui ? » : `hippocampe_search` avec `by: emory`
+  et `since` ; Emory dit les titres. « Annule ce que tu viens de noter » : dans la conversation, le
+  LLM sait ce qu'il a écrit (ses appels d'outils sont dans l'historique). Une fiche qu'il a créée
+  est archivée (`archive`, avec la raison « annulé à la demande ») ; une modification de quelques
+  mots est défaite par les `edits` inverses. Une autre modification (un corps réécrit en entier)
+  ne se défait pas à la voix : Emory le dit, et Kris passe par l'historique d'Hippocampe.
+- Hors de la voix : la recherche d'Hippocampe avec `by: emory` (ligne de commande ou web),
+  l'historique de chaque fiche, l'archive. Et, en dernier recours, la clé `emory` se révoque d'une
+  commande.
+- **Un besoin pour Hippocampe**, à écrire comme un ticket général (jamais « pour Emory ») : un
+  outil qui remet une fiche dans l'état d'une version de son historique. Avec lui, tout se défait
+  à la voix.
+
+**Ce qui change dans `mind`** : rien dans le code pour écrire (les outils sont relayés). Deux
+lignes aux consignes : chercher avant d'écrire, et dire d'où vient ce qui est écrit
+(`said_by` pour ce que dit l'utilisateur, `inferred` pour ce qu'on suppose) ; et « pour défaire
+une note, archive ce que tu as créé ou défais tes modifications ». La phrase actuelle (« Quand on
+te demande de noter quelque chose, écris-le dans la mémoire si un outil d'écriture existe… ») reste.
+
+**La sécurité.** Une page web lue (voir [`web.md`](web.md)) ou une fiche peut contenir des
+consignes. Garde-fous : le contenu d'une page est marqué comme des données ; `web_read` ne lit que
+des adresses trouvées ; et l'écriture n'est faite que quand l'utilisateur le demande (consigne),
+ce qui reste une consigne au LLM, pas une règle de `mind`. Le pire cas est une fiche de trop,
+signée `emory`, archivable. Les tests du dépôt n'écrivent jamais dans la production : un faux
+Hippocampe, ou l'instance de développement.
+
+### La tâche de fond (une phase plus tard)
+
+Prévue depuis le 2026-10-11 (plus haut, « Deux parties ») ; **pas nécessaire d'abord**, parce
+qu'Emory écrit déjà sur demande. Proposée ici pour qu'elle ne surprenne pas.
+
+**Ce qu'elle fait.** Quand une conversation se ferme (après `conversation.idle_minutes` sans
+échange), `mind` demande au LLM ce qui mérite d'être gardé, et l'écrit. Pas pendant la
+conversation, **jamais pendant une réponse** : elle attend qu'aucun appareil ne soit occupé, et
+s'arrête (sans rien écrire) si un tour commence.
+
+**Ce qu'elle garde** : ce que l'utilisateur a dit de sa vie (un fait, une décision, une date) et
+qui n'est pas déjà dans Hippocampe ; un moment qui compte, une fiche datée. **Pas** : ce qu'Emory
+a déjà écrit dans la conversation (`mind` lui en donne la liste, tirée des appels à
+`hippocampe_write` qu'il a vus passer), la discussion générale, ce qu'Emory a dit d'elle-même, la
+voix (jamais d'empreinte ni de son).
+
+**Comment** : une session à part, sans l'historique de la conversation mais avec sa transcription
+(les tours de l'utilisateur et les réponses d'Emory, sans les résultats d'outils), avec des
+consignes à elle (`mind/prompts/background.fr.md`). Deux modes :
+
+- `inbox` (**à commencer par lui**) : chaque chose à garder part dans la boîte d'arrivée
+  d'Hippocampe (`inbox_add`, relayé pour cette session seulement) comme une proposition ; Kris accepte ou jette. Rien n'entre dans les
+  fiches sans lui. Raison : on ne sait pas encore ce que le LLM jugera bon à garder, et une boîte
+  pleine de bruit se voit sans abîmer la mémoire.
+- `write` : les fiches sont écrites directement, `inferred` sauf ce que l'utilisateur a dit mot
+  pour mot. Quand le mode `inbox` aura montré qu'il trie bien.
+
+Au plus `max_items` choses par conversation ; seulement après `min_user_turns` tours de
+l'utilisateur avec des mots ; une seule fois par conversation. Elle prend sur le quota du LLM :
+une demande, parfois deux avec les recherches.
+
+```toml
+[background]
+enabled = false          # par défaut, rien ne tourne
+mode = "inbox"           # "inbox" ou "write"
+min_user_turns = 2
+max_items = 5
+delay_s = 60             # après la fermeture de la conversation
+timeout_s = 120
+prompt = "mind/prompts/background.fr.md"
+```
+
+### Les modules du serveur MCP d'Emory, après ces blocs
+
+| Module | Outils | Spec |
+|---|---|---|
+| `hippocampe` | `search`, `read`, `write`, `link`, `types` (relayés) | ici |
+| `dictionary` | `propose`, `add` | ici, « Le dictionnaire » |
+| `web` | `weather`, `wikipedia`, `search`, `read` | [`web.md`](web.md) |
+| `time` | `timer`, `reminder`, `list`, `cancel` | [`time.md`](time.md) |
+| `hands` | une par action annoncée : `hands_<module>_<action>` | [`hands.md`](hands.md) |
+
+L'entrée interne n'est pas un module : aucun outil ne l'atteint.
+
+### L'ordre de construction, pour tous les blocs
+
+Une unité par fil de travail ; le détail et les vérifications de chacune sont dans sa spec.
+
+1. **M1. Écrire sur demande** : les lignes des consignes, des tests avec un faux Hippocampe (le LLM
+   faux appelle `hippocampe_write`, la provenance passe telle quelle), puis un essai en vrai par
+   Kris (« note que… », « qu'est-ce que tu as noté aujourd'hui ? », « annule ça »).
+2. **W1, W2. Wikipédia, puis la météo** ([`web.md`](web.md)) : les questions les plus fréquentes,
+   sans risque.
+3. **E1. La parole d'elle-même** ([`events.md`](events.md)), **T1, T2. Les minuteurs**
+   ([`time.md`](time.md)).
+4. **W3, W4, W5. La recherche, la lecture d'une page, les consignes** ([`web.md`](web.md)).
+5. **H1 à H6. Les mains** ([`hands.md`](hands.md)) : `emory-hands`, les mains dans `mind`,
+   `commands`, la confirmation commune, MPRIS, la configuration de Kris.
+6. **E2, E3. L'entrée interne `say`, puis `task`** ([`events.md`](events.md)).
+7. **M2. La tâche de fond**, en mode `inbox` : sa session, ses consignes, la liste des écritures de
+   la conversation, l'attente qu'aucun appareil ne soit occupé. Vérifié : faux LLM et faux
+   Hippocampe (rien d'écrit si un tour commence, rien en double avec ce qui est déjà écrit), puis
+   une semaine d'usage regardée avec Kris avant de passer à `write`.
+
+Raison de l'ordre : d'abord ce qui sert chaque jour et ne touche à rien (écrire, la météo,
+Wikipédia, les minuteurs) ; puis ce qui demande un nouveau programme (les mains) ; l'entrée
+interne et la tâche de fond en dernier, parce qu'elles font parler ou écrire Emory sans qu'on le
+lui demande.
+
+### Questions ouvertes
+
+1. Écrire sur la production dès le premier essai de M1 ? Recommandation : oui, c'est décidé et
+   tout se défait ; les tests automatiques, eux, ne touchent jamais la production.
+2. Faut-il qu'Emory dise ce qu'elle a écrit avant de l'écrire (« Je note : … ») ? Recommandation :
+   non, elle le dit après, en une phrase ; une confirmation à chaque note serait pénible, et tout
+   s'annule.
+3. La tâche de fond : commencer en `inbox` ? Recommandation : oui ; passer à `write` après une
+   semaine regardée ensemble.
+4. Le ticket pour Hippocampe (revenir à une version de l'historique) : recommandation, l'écrire
+   maintenant, en termes généraux, pour que « annule ça » marche sur toute modification.

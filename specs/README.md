@@ -22,6 +22,11 @@ restent en français ; les noms qu'elles citent sont ceux du code.
 
 Les sujets du bus et le format des messages : [`contract.md`](contract.md).
 
+Ce que l'esprit sait faire de plus, chacun un module de son serveur MCP (brouillons du
+2026-10-13) : le web ([`web.md`](web.md)), les minuteurs et rappels ([`time.md`](time.md)), et
+l'entrée interne, par laquelle un programme et jamais la voix fait parler Emory
+([`events.md`](events.md)). Écrire dans Hippocampe est dans [`mind.md`](mind.md).
+
 ## Sur chaque appareil : l'oreille, la bouche et les mains
 
 **Toute l'intelligence vit sur le serveur ; un appareil ne fait que recevoir, envoyer et
@@ -90,7 +95,10 @@ passe sur une connexion dédiée (WebSocket, WebRTC) sans toucher au reste.
 appareil n'a qu'une bibliothèque cliente, et c'est lui qui se connecte : rien n'est ouvert sur le
 PC. Toutes les connexions sont en TLS ; chaque appareil et chaque organe a sa propre clé (nkey),
 avec des droits par sujet : l'oreille de l'appareil `office` ne publie que sur `ear.office.*`, les mains de l'appareil
-`office` n'écoutent que `hands.office.*`, seul `mind` publie sur `hands.*`. Un appareil volé ou
+`office` n'écoutent que `hands.office.>`, seul `mind` publie sur `hands.*`. Un programme qui
+réveille l'esprit (un script, un service) a sa clé à lui, qui ne publie que sur
+`mind.event.<source>` ; aucun organe n'y a de droit, l'oreille non plus (précisé le 2026-10-13,
+voir [`events.md`](events.md)). Un appareil volé ou
 compromis ne sort pas de ses sujets.
 
 Un échange, avec l'oreille à bouton :
@@ -126,7 +134,8 @@ Le langage d'un moteur n'est donc pas un critère de choix ; à qualité égale,
 dans le binaire, pour un conteneur de moins. Changer de moteur ne touche qu'un adaptateur.
 
 **Tout tourne en local, sauf l'esprit**, pour lequel il n'y aura sans doute pas le choix (décidé
-le 2026-10-11).
+le 2026-10-11). Le web est la seconde exception (2026-10-13) : les recherches partent chez
+DuckDuckGo, Wikipédia et Open-Meteo, et rien d'autre (voir [`web.md`](web.md)).
 
 ## Le dépôt
 
