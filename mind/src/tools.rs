@@ -376,8 +376,10 @@ mod tests {
         );
     }
 
+    type Call = (Option<ConversationKey>, String, Option<JsonObject>);
+
     #[derive(Default)]
-    struct Calls(std::sync::Mutex<Vec<(Option<ConversationKey>, String, Option<JsonObject>)>>);
+    struct Calls(std::sync::Mutex<Vec<Call>>);
 
     impl Observer for Calls {
         fn called(

@@ -47,6 +47,23 @@ address = "une femme ; tu la tutoies"   # free text, in the language of the inst
 enabled = true
 timeout_ms = 2000   # how long to wait for the hearing's reply
 
+# What the owner hears while the answer is prepared (1 to 2 s without a tool, 3 to 5 s when the LLM
+# reads the memory). One of three modes; the sounds themselves are drawn by the voice (`[cue]` in
+# its configuration: volume, shape of the tone, time between pulses).
+[waiting]
+# "off": nothing (the default). "tone": a short tone of two rising notes as soon as the owner's
+# turn is closed, then, if no answer has started after `pulse_delay_ms`, a soft pulse that stops
+# the moment the first word plays. "speech": a short phrase said by the voice while the LLM works.
+mode = "off"
+pulse_delay_ms = 1500   # tone: how long without an answer before the pulse starts
+# For `mode = "speech"`:
+# speech_delay_ms = 800        # how long without an answer before a pre-written phrase
+# source = "both"              # "prewritten": only after the delay; "contextual": only at a tool
+#                              # call, about what is searched; "both": a tool call gives the
+#                              # contextual phrase, the delay a pre-written one
+# max_phrases = 2              # at most this many per turn, 2.5 s apart at least
+# phrases = "mind/prompts/waiting.fr.toml"   # the file of phrases; the built-in ones without it
+
 # Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
 [tools]
 bind = "127.0.0.1:0"
