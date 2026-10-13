@@ -195,3 +195,49 @@ impl ActionReply {
         }
     }
 }
+
+/// A word to add to the vocabulary of the hearing (`hearing.vocabulary.add`), a request with a
+/// reply ([`VocabularyReply`]). The mind sends it only once the user has confirmed the word.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VocabularyAdd {
+    /// The word or name, written as it should come out (`Hemera`).
+    pub word: String,
+    /// What the transcription gave instead, when it is known (`et mera`): kept beside the word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heard_as: Option<String>,
+}
+
+/// The answer of the hearing to [`VocabularyAdd`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VocabularyReply {
+    pub ok: bool,
+    /// The word was there already: nothing was written, and it is still a success.
+    #[serde(default)]
+    pub known: bool,
+    /// The transcription uses the word from the next sentence on. `false` when the hearing runs
+    /// the greedy search, which takes no vocabulary: the word is used from its next start.
+    #[serde(default)]
+    pub in_use: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl VocabularyReply {
+    pub fn success(known: bool, in_use: bool) -> Self {
+        Self {
+            ok: true,
+            known,
+            in_use,
+            error: None,
+        }
+    }
+
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            known: false,
+            in_use: false,
+            error: Some(error.into()),
+        }
+    }
+}
