@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 /// # engine_idle_timeout = 5          # seconds without a packet from the engine
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
+/// # gain = 1.0                       # loudness of the voice, 0.1 to 8: 1 = as the engine says it
 ///
 /// # [cue]                            # the waiting cue (tone, pulse), these are the defaults
 /// # volume = 0.3                     # peak of the tone, 0 to 1
@@ -69,6 +70,11 @@ pub struct Config {
     /// How many sentences the engine synthesises at once, all devices together: one semaphore.
     #[serde(default = "default_engine_concurrency")]
     pub engine_concurrency: usize,
+    /// The loudness of the voice (not of the cue, which has its own `[cue] volume`): a factor on
+    /// the amplitude of the engine's audio, whatever the engine. 1 sends it as it comes, 2 is
+    /// twice the amplitude (about +6 dB). What would go past full scale is eased, not clipped.
+    #[serde(default = "default_gain")]
+    pub gain: f32,
 }
 
 /// The voice engines `voice` knows how to call.
@@ -164,6 +170,10 @@ fn default_engine_concurrency() -> usize {
     1
 }
 
+fn default_gain() -> f32 {
+    1.0
+}
+
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text =
@@ -214,6 +224,10 @@ impl std::str::FromStr for Config {
             "engine_concurrency must be between 1 and 64"
         );
         anyhow::ensure!(
+            (0.1..=8.0).contains(&config.gain),
+            "gain must be between 0.1 and 8"
+        );
+        anyhow::ensure!(
             (0.0..=1.0).contains(&config.cue.volume),
             "cue.volume must be between 0 and 1"
         );
@@ -260,6 +274,27 @@ mod tests {
         assert_eq!(c.engine_idle_timeout(), Duration::from_secs(5));
         assert_eq!(c.missing_sentence_timeout(), Duration::from_secs(3));
         assert_eq!(c.engine_concurrency, 1);
+        assert_eq!(c.gain, 1.0);
+    }
+
+    #[test]
+    fn the_gain_is_set_and_checked() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        let c: Config = format!("{base}gain = 2.5\n").parse().unwrap();
+        assert_eq!(c.gain, 2.5);
+        for ok in ["gain = 0.1", "gain = 8", "gain = 1"] {
+            assert!(format!("{base}{ok}\n").parse::<Config>().is_ok(), "{ok}");
+        }
+        for bad in [
+            "gain = 0",
+            "gain = -1",
+            "gain = 0.09",
+            "gain = 8.5",
+            "gain = nan",
+            "gain = \"2\"",
+        ] {
+            assert!(format!("{base}{bad}\n").parse::<Config>().is_err(), "{bad}");
+        }
     }
 
     #[test]

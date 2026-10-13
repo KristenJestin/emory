@@ -7,6 +7,7 @@ pub mod config;
 pub mod cue;
 pub mod device;
 pub mod engine;
+pub mod gain;
 pub mod nats;
 pub mod queue;
 pub mod text;

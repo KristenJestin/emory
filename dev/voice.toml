@@ -2,6 +2,9 @@ nats_url = "nats://127.0.0.1:4222"
 engine_url = "http://127.0.0.1:8000"
 voice = "estelle"
 
+# The loudness of the voice: Pocket peaks around 0.3 to 0.4 as it comes, about 0.6 to 0.9 with 2.
+gain = 2.0
+
 # The sounds of the waiting cue (the mind decides when, `[waiting]` in dev/mind.toml).
 [cue]
 volume = 0.1
