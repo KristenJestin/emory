@@ -17,7 +17,7 @@
 # - Le plus long gagne : « Wi-Fi 6 » avant « Wi-Fi ». Une entrée l'emporte sur la règle des sigles.
 # - Un mot qui n'est pas que des lettres s'écrit entre guillemets à gauche : "Wi-Fi", "C++".
 # - Un sigle (2 à 6 majuscules ou chiffres : SSH, MP3, 4G) qui n'a pas d'entrée est épelé avec les
-#   noms des lettres : SSH devient « èsse èsse ache ». Avec un « s » en plus (PCs), le « s » tombe.
+#   noms des lettres, reliés par des traits d'union : SSH devient « èsse-èsse-ache ». Avec un « s » en plus (PCs), le « s » tombe.
 #   Pour qu'un sigle soit dit comme un mot, l'ajouter à `not_spelled` ; pour le dire autrement,
 #   lui donner une entrée.
 # - Un moteur ne lit pas toujours comme un autre : si une lettre sonne faux, `[letters]` change

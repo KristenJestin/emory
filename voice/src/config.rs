@@ -449,7 +449,7 @@ mod tests {
         let c: Config = base.parse().unwrap();
         assert!(c.lexicon_enabled && c.lexicon.is_none());
         assert!(c.text.is_enabled());
-        assert_eq!(c.text.apply("SSH"), "èsse èsse ache");
+        assert_eq!(c.text.apply("SSH"), "èsse-èsse-ache");
         assert_eq!(c.text.len(), crate::text::Lexicon::builtin().unwrap().len());
     }
 

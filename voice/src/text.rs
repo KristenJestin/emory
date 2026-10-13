@@ -9,7 +9,7 @@
 //!    a word stays. An entry wins over rule 2.
 //! 2. **The spelled acronyms**: a word of 2 to 6 capitals (digits allowed: « MP3 », « 4G »), which
 //!    no entry covers and which is not in the list of acronyms read as words, is spelled with the
-//!    French names of the letters and digits: « SSH » → « èsse èsse ache ».
+//!    French names of the letters and digits: « SSH » → « èsse-èsse-ache ».
 //!
 //! Neither rule rescans what the other wrote, and a word inside another (« GitHubber », « SSHD ») is
 //! never touched. The file format is described in `data/lexicon.fr.toml`, the built-in lexicon.
@@ -34,7 +34,7 @@ const LETTERS: [&str; 26] = [
     "dé",
     "eu",
     "èf",
-    "gé",
+    "jé",
     "ache",
     "i",
     "ji",
@@ -52,9 +52,15 @@ const LETTERS: [&str; 26] = [
     "vé",
     "double vé",
     "ix",
-    "i grec",
+    "i-grec",
     "zède",
 ];
+
+/// What joins the names of the letters of a spelled acronym: « èsse-èsse-ache ». Measured with
+/// Pocket (see `specs/voice.md`): joined by hyphens the letters are read as an acronym, at the pace
+/// of a person spelling; with spaces two equal letters merge and the names are heard as words
+/// (« a pé i » as « à payer »); with commas each letter gets a pause and the acronym is slow.
+const SEPARATOR: &str = "-";
 
 /// The names of the digits 0 to 9.
 const DIGITS: [&str; 10] = [
@@ -274,7 +280,7 @@ impl Lexicon {
             return None;
         }
         let names: Vec<&str> = base.chars().map(|c| self.letters[&c].as_str()).collect();
-        Some(names.join(" "))
+        Some(names.join(SEPARATOR))
     }
 }
 
@@ -365,20 +371,20 @@ mod tests {
     #[test]
     fn acronyms_are_spelled() {
         let l = bare();
-        assert_eq!(l.apply("SSH"), "èsse èsse ache");
-        assert_eq!(l.apply("Je lance MCP."), "Je lance èm cé pé.");
-        assert_eq!(l.apply("(API) et API,"), "(a pé i) et a pé i,");
-        assert_eq!(l.apply("HTTPS"), "ache té té pé èsse");
-        assert_eq!(l.apply("OK"), "o ka");
+        assert_eq!(l.apply("SSH"), "èsse-èsse-ache");
+        assert_eq!(l.apply("Je lance MCP."), "Je lance èm-cé-pé.");
+        assert_eq!(l.apply("(API) et API,"), "(a-pé-i) et a-pé-i,");
+        assert_eq!(l.apply("HTTPS"), "ache-té-té-pé-èsse");
+        assert_eq!(l.apply("OK"), "o-ka");
     }
 
     #[test]
     fn acronyms_with_digits_say_the_digits() {
         let l = bare();
-        assert_eq!(l.apply("MP3"), "èm pé trois");
-        assert_eq!(l.apply("la 4G"), "la quatre gé");
-        assert_eq!(l.apply("H264"), "ache deux six quatre");
-        assert_eq!(l.apply("A4"), "a quatre");
+        assert_eq!(l.apply("MP3"), "èm-pé-trois");
+        assert_eq!(l.apply("la 4G"), "la quatre-jé");
+        assert_eq!(l.apply("H264"), "ache-deux-six-quatre");
+        assert_eq!(l.apply("A4"), "a-quatre");
     }
 
     #[test]
@@ -396,10 +402,10 @@ mod tests {
     #[test]
     fn a_plural_acronym_loses_its_s() {
         let l = bare();
-        assert_eq!(l.apply("des PCs."), "des pé cé.");
-        assert_eq!(l.apply("les APIs"), "les a pé i");
+        assert_eq!(l.apply("des PCs."), "des pé-cé.");
+        assert_eq!(l.apply("les APIs"), "les a-pé-i");
         // Not a plural: an upper case S is a letter of the acronym, a longer word is a word.
-        assert_eq!(l.apply("PCS"), "pé cé èsse");
+        assert_eq!(l.apply("PCS"), "pé-cé-èsse");
         assert_eq!(l.apply("PCsx"), "PCsx");
     }
 
@@ -408,7 +414,7 @@ mod tests {
         let l = lexicon(r#"not_spelled = ["NASA", "RAM"]"#);
         assert_eq!(
             l.apply("La NASA et la RAM, pas le CPU."),
-            "La NASA et la RAM, pas le cé pé u."
+            "La NASA et la RAM, pas le cé-pé-u."
         );
         assert_eq!(l.apply("des RAMs"), "des RAMs");
     }
@@ -416,7 +422,7 @@ mod tests {
     #[test]
     fn the_letters_can_be_changed() {
         let l = lexicon("[letters]\nS = \"ès\"\n4 = \"quatre !\"\n");
-        assert_eq!(l.apply("SSH 4G"), "ès ès ache quatre ! gé");
+        assert_eq!(l.apply("SSH 4G"), "ès-ès-ache quatre !-jé");
     }
 
     #[test]
@@ -435,7 +441,7 @@ mod tests {
         let l = lexicon("[replace]\nJSON = \"djéïzone\"\nOK = \"okay\"\n");
         assert_eq!(
             l.apply("Du JSON, OK, et du XML."),
-            "Du djéïzone, okay, et du ix èm èl."
+            "Du djéïzone, okay, et du ix-èm-èl."
         );
     }
 
@@ -471,7 +477,7 @@ mod tests {
             assert_eq!(l.apply(text), text, "{text}");
         }
         // The acronym rule still reads « SSH2 » as an acronym, and the lexicon is not asked.
-        assert_eq!(l.apply("SSH2"), "èsse èsse ache deux");
+        assert_eq!(l.apply("SSH2"), "èsse-èsse-ache-deux");
         assert_eq!(l.apply("Git-hub"), "guite-hub");
     }
 
@@ -480,7 +486,7 @@ mod tests {
         let l = lexicon("[replace]\n\"C++\" = \"cé plus plus\"\n\".NET\" = \"dot nète\"\n");
         assert_eq!(l.apply("Du C++, du .NET."), "Du cé plus plus, du dot nète.");
         // Inside a word, an entry does not start: « ABC » is spelled, then the plusses stay.
-        assert_eq!(l.apply("ABC++"), "a bé cé++");
+        assert_eq!(l.apply("ABC++"), "a-bé-cé++");
     }
 
     #[test]
@@ -551,7 +557,7 @@ mod tests {
             BUILTIN.starts_with('#'),
             "a French header explains the file"
         );
-        assert_eq!(l.apply("SSH"), "èsse èsse ache");
+        assert_eq!(l.apply("SSH"), "èsse-èsse-ache");
         assert_ne!(l.apply("GitHub"), "GitHub");
         assert_eq!(l.apply("la NASA"), "la NASA");
         assert_eq!(l.apply("Bonjour, 12 % de 2024."), "Bonjour, 12 % de 2024.");
