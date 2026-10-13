@@ -23,7 +23,7 @@ use tracing::{debug, warn};
 
 use crate::{
     config::{ModelsConfig, TranscriptionConfig, VadConfig},
-    hotwords::{Decoding, HotwordsFile},
+    hotwords::{Decoding, Vocabulary},
 };
 
 const SAMPLE_RATE: i32 = 16_000;
@@ -289,24 +289,26 @@ pub struct Transcriber {
     queue: Arc<JobQueue<Job>>,
     stopped: watch::Receiver<bool>,
     _closer: Arc<Closer>,
+    takes_words: bool,
 }
 
 impl Transcriber {
-    /// Loads Parakeet, warms it up on a second of silence, then starts the thread.
-    pub fn start(models: &ModelsConfig, settings: &TranscriptionConfig) -> Result<Self> {
+    /// Loads Parakeet, warms it up on a second of silence, then starts the thread. With the beam
+    /// search, each sentence is transcribed with the words of `vocabulary` as they are when it
+    /// starts: a word added while the hearing runs counts from the next sentence.
+    pub fn start(
+        models: &ModelsConfig,
+        settings: &TranscriptionConfig,
+        vocabulary: Arc<Vocabulary>,
+    ) -> Result<Self> {
         settings.provider.check()?;
         let folder = models.parakeet.as_ref();
-        let decoding = Decoding::read(
-            settings.decoding_method,
-            settings.hotwords.as_ref().map(AsRef::as_ref),
-        )?;
-        let vocabulary = !decoding.hotwords.is_empty();
-        // sherpa-onnx reads the words from a file, and needs the model's BPE vocabulary to cut
-        // them into tokens.
-        let hotwords_file = vocabulary
-            .then(|| HotwordsFile::write(&decoding.hotwords))
-            .transpose()?;
-        let bpe_vocab = match (&settings.bpe_vocab, vocabulary) {
+        let decoding = Decoding::settle(settings.decoding_method, &vocabulary.words().list)?;
+        let takes_words = decoding.takes_words();
+        // The words are given with each sentence (a stream with its own hotwords), not from a
+        // file read once: sherpa-onnx cuts them into tokens with the model's BPE vocabulary,
+        // which the beam search therefore always loads.
+        let bpe_vocab = match (&settings.bpe_vocab, takes_words) {
             (Some(path), true) => Some(path_string(path.as_ref())?),
             (None, true) => Some(path_string(&folder.join("bpe.vocab"))?),
             (_, false) => None,
@@ -322,15 +324,11 @@ impl Transcriber {
                 num_threads: settings.threads.max(1),
                 provider: Some(settings.provider.name().to_owned()),
                 model_type: Some("nemo_transducer".to_owned()),
-                modeling_unit: vocabulary.then(|| "bpe".to_owned()),
+                modeling_unit: takes_words.then(|| "bpe".to_owned()),
                 bpe_vocab,
                 ..OfflineModelConfig::default()
             },
             decoding_method: Some(decoding.method.name().to_owned()),
-            hotwords_file: hotwords_file
-                .as_ref()
-                .map(|file| path_string(file.path()))
-                .transpose()?,
             hotwords_score: settings.hotwords_score,
             ..OfflineRecognizerConfig::default()
         };
@@ -338,15 +336,18 @@ impl Transcriber {
         let recognizer = OfflineRecognizer::create(&config)
             .ok_or_else(|| anyhow!("Parakeet did not start ({})", folder.display()))?;
         let load = started.elapsed();
-        // The recognizer has read the words: the copy is not needed any more.
-        drop(hotwords_file);
+        let words = takes_words.then(|| vocabulary.clone());
         let warm_up = Instant::now();
-        transcribe(&recognizer, &vec![0.0; SAMPLE_RATE as usize])?;
+        transcribe(
+            &recognizer,
+            words.as_deref(),
+            &vec![0.0; SAMPLE_RATE as usize],
+        )?;
         tracing::info!(
             provider = settings.provider.name(),
             threads = settings.threads,
             decoding = decoding.method.name(),
-            hotwords = decoding.hotwords.len(),
+            hotwords = vocabulary.words().list.len(),
             load_ms = load.as_millis() as u64,
             warm_up_ms = warm_up.elapsed().as_millis() as u64,
             "Parakeet ready"
@@ -356,7 +357,7 @@ impl Transcriber {
         let stopped = spawn_worker("transcription", queue.clone(), move |job: Job| {
             let wait = job.queued.elapsed();
             let started = Instant::now();
-            let result = transcribe(&recognizer, &job.samples)
+            let result = transcribe(&recognizer, words.as_deref(), &job.samples)
                 .map(|text| Transcription {
                     text,
                     duration: started.elapsed(),
@@ -372,6 +373,7 @@ impl Transcriber {
             _closer: Arc::new(Closer(queue.clone())),
             queue,
             stopped,
+            takes_words,
         })
     }
 
@@ -402,6 +404,12 @@ impl Transcriber {
         wait
     }
 
+    /// Whether a word added to the vocabulary is used from the next sentence (the beam search),
+    /// or only from the next start (the greedy search takes no words).
+    pub fn takes_words(&self) -> bool {
+        self.takes_words
+    }
+
     /// Resolves when the transcription thread has ended (it panicked): the service is deaf from
     /// then on.
     pub async fn stopped(&self) {
@@ -413,8 +421,19 @@ impl Transcriber {
 
 const BACKLOG_FULL: &str = "dropped, the transcription backlog is full";
 
-fn transcribe(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String> {
-    let stream = recognizer.create_stream();
+/// Transcribes a sentence; with `vocabulary`, with its words as they are now.
+fn transcribe(
+    recognizer: &OfflineRecognizer,
+    vocabulary: Option<&Vocabulary>,
+    samples: &[f32],
+) -> Result<String> {
+    let words = vocabulary.map(Vocabulary::words);
+    let stream = match words.as_deref() {
+        Some(words) if !words.joined.is_empty() => {
+            recognizer.create_stream_with_hotwords(&words.joined)
+        }
+        _ => recognizer.create_stream(),
+    };
     stream.accept_waveform(SAMPLE_RATE, samples);
     recognizer.decode(&stream);
     let result = stream

@@ -99,14 +99,16 @@ pub struct TranscriptionConfig {
     /// The number of Parakeet compute threads.
     #[serde(default = "default_threads")]
     pub threads: i32,
-    /// The corrections table (TSV), applied after the transcription.
+    /// The corrections table (TSV), applied after the transcription. Default: `corrections.tsv`
+    /// in the data folder ([`data_dir`]), and no table if it is not there.
     pub corrections: Option<ConfigPath>,
     /// How Parakeet searches. Absent: `modified_beam_search` when there are hotwords,
     /// `greedy_search` (faster) when there are none.
     pub decoding_method: Option<DecodingMethod>,
     /// The vocabulary: one name per line (`#` starts a comment), that Parakeet favours when it
-    /// hesitates. An empty file is no vocabulary. Needs `modified_beam_search` and the
-    /// `bpe.vocab` that `scripts/download-models.sh` writes.
+    /// hesitates, and where the words the mind adds are written. Default: `hotwords.txt` in the
+    /// data folder ([`data_dir`]). An empty or absent file is no vocabulary. Needs
+    /// `modified_beam_search` and the `bpe.vocab` that `scripts/download-models.sh` writes.
     pub hotwords: Option<ConfigPath>,
     /// How much a hotword is favoured. Too high and words are invented (3 does).
     #[serde(default = "default_hotwords_score")]
@@ -163,6 +165,40 @@ impl DecodingMethod {
             Self::ModifiedBeamSearch => "modified_beam_search",
         }
     }
+}
+
+impl TranscriptionConfig {
+    /// The vocabulary file, given or by default.
+    pub fn hotwords_path(&self) -> PathBuf {
+        match &self.hotwords {
+            Some(path) => path.0.clone(),
+            None => data_dir().join("hotwords.txt"),
+        }
+    }
+
+    /// The corrections table, given or by default; `true` when it was given (then it must exist).
+    pub fn corrections_path(&self) -> (PathBuf, bool) {
+        match &self.corrections {
+            Some(path) => (path.0.clone(), true),
+            None => (data_dir().join("corrections.tsv"), false),
+        }
+    }
+}
+
+/// The folder of the user's own data (the vocabulary, the corrections), outside the repository:
+/// `$XDG_DATA_HOME/emory`, else `~/.local/share/emory`. On the server, a volume mounted there, or
+/// the paths given in the configuration.
+pub fn data_dir() -> PathBuf {
+    data_dir_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+fn data_dir_from(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
+    let base = match (xdg.filter(|x| Path::new(x).is_absolute()), home) {
+        (Some(xdg), _) => PathBuf::from(xdg),
+        (None, Some(home)) => PathBuf::from(home).join(".local/share"),
+        (None, None) => PathBuf::from("."),
+    };
+    base.join("emory")
 }
 
 fn default_hotwords_score() -> f32 {
@@ -419,6 +455,40 @@ mod tests {
                 "[models]\nvad = \"v\"\nparakeet = \"p\"\n[transcription]\ndecoding_method = \"beam\"\n"
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn the_user_data_is_in_the_xdg_data_folder_by_default() {
+        let (xdg, home) = (Some("/data".into()), Some("/home/u".into()));
+        assert_eq!(
+            data_dir_from(xdg, home.clone()),
+            PathBuf::from("/data/emory")
+        );
+        assert_eq!(
+            data_dir_from(None, home.clone()),
+            PathBuf::from("/home/u/.local/share/emory")
+        );
+        // A relative XDG_DATA_HOME is invalid by the specification: ignored.
+        assert_eq!(
+            data_dir_from(Some("rel".into()), home),
+            PathBuf::from("/home/u/.local/share/emory")
+        );
+        let config = TranscriptionConfig::default();
+        assert_eq!(config.hotwords_path(), data_dir().join("hotwords.txt"));
+        assert_eq!(
+            config.corrections_path(),
+            (data_dir().join("corrections.tsv"), false)
+        );
+        let given = TranscriptionConfig {
+            hotwords: Some(ConfigPath("/v/words.txt".into())),
+            corrections: Some(ConfigPath("/v/fix.tsv".into())),
+            ..TranscriptionConfig::default()
+        };
+        assert_eq!(given.hotwords_path(), PathBuf::from("/v/words.txt"));
+        assert_eq!(
+            given.corrections_path(),
+            (PathBuf::from("/v/fix.tsv"), true)
         );
     }
 
