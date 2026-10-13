@@ -207,7 +207,7 @@ impl Module for Web {
                         "properties": {
                             "place": {
                                 "type": "string",
-                                "description": "le lieu : une ville, suivie du pays si le nom est ambigu (« Brest, France »)"
+                                "description": "le lieu : une ville, suivie du pays si le nom est ambigu (« Lyon, France »)"
                             },
                             "days": {
                                 "type": "integer",

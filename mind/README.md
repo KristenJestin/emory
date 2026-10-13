@@ -55,7 +55,7 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
 - **The web** (`src/web/`, `[web]`, `specs/web.md`): the module `web`, with one HTTP client kept
   open for its tools. `web_weather(place?, days?)`: the weather now and in the next days (1 to 7, 2 by
   default) from Open-Meteo, for the place asked or the owner's (`[web.weather] place`, a name found
-  by Open-Meteo: `"Brest, France"` when the name is shared by cities of several countries;
+  by Open-Meteo: `"Lyon, France"` when the name is shared by cities of several countries;
   optionally `latitude` and `longitude`), in whole degrees, the sky in French words (the WMO codes
   are in `prompts/weather.fr.toml`) and the days named; a forecast is kept `cache_minutes`.
   `web_wikipedia(query)`: searches the title on Wikipedia (French

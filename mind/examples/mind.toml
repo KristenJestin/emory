@@ -78,7 +78,7 @@ timeout_ms = 5000      # for one call to an API
 
 [web.weather]
 enabled = true
-place = ""             # your place, by its name (Open-Meteo finds it): "Lyon", or "Brest, France" when
+place = ""             # your place, by its name (Open-Meteo finds it): "Lyon", and "Lyon, France" when
 #                      # a name is shared by cities of several countries. Empty: the LLM is given none
 # latitude = 45.75     # optional, both or none: they save the lookup of the name
 # longitude = 4.85

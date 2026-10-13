@@ -27,7 +27,7 @@ pub struct WeatherConfig {
     pub enabled: bool,
     /// The place of the owner, used when the LLM gives none: a name, which Open-Meteo finds
     /// (`"Lyon"`; a name shared by cities of several countries takes the country after a comma,
-    /// `"Brest, France"`). Empty: the LLM must be given a place.
+    /// `"Lyon, France"`). Empty: the LLM must be given a place.
     pub place: String,
     /// The coordinates of `place`, which save the lookup of its name. Both or none.
     pub latitude: Option<f64>,

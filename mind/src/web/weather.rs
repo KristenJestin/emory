@@ -355,7 +355,7 @@ impl Weather {
             answer.insert("place".to_owned(), json!(name));
         }
         // The owner knows the country of their own place; a place they named may be another one
-        // than the one meant (« Brest » is in Belarus too), and the LLM can say it.
+        // than the one meant (a name is often shared by cities of several countries), and the LLM can say it.
         if let Some(country) = place.country.as_ref().filter(|_| asked) {
             answer.insert("country".to_owned(), json!(country));
         }
