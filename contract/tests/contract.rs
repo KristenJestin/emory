@@ -78,6 +78,16 @@ fn say_stop_speaking() {
 }
 
 #[test]
+fn cues() {
+    round_trip::<Cue>(json!({ "turn": TURN, "device": "office", "kind": "tone" }));
+    round_trip::<Cue>(json!({ "turn": TURN, "device": "office", "kind": "pulse" }));
+    round_trip::<Cue>(json!({
+        "turn": TURN, "device": "office", "kind": "speech", "text": "Je regarde."
+    }));
+    assert_eq!(subjects::CUE, "voice.cue");
+}
+
+#[test]
 fn say_without_last_is_not_the_last() {
     let say: Say = serde_json::from_value(json!({
         "turn": TURN, "device": "office", "index": 0, "text": "Bonjour."

@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 /// # missing_sentence_timeout = 3     # seconds waiting for a missing sentence
 /// # engine_concurrency = 1           # sentences the engine synthesises at once
 ///
+/// # [cue]                            # the waiting cue (tone, pulse), these are the defaults
+/// # volume = 0.3                     # peak of the tone, 0 to 1
+/// # tone = "rising"                  # "rising", "bright", "warm" or "single"
+/// # pulse_interval_ms = 1600         # between two pulses while the answer is awaited
+///
 /// # [kyutai]                         # the settings of a Kyutai sentence, these are the defaults
 /// # padding_bonus = -3.0
 /// # max_padding = 8
@@ -41,6 +46,9 @@ pub struct Config {
     /// The settings of a Kyutai sentence; ignored by Pocket.
     #[serde(default)]
     pub kyutai: KyutaiSettings,
+    /// The sounds of the waiting cue (what the mind asks with `voice.cue`).
+    #[serde(default)]
+    pub cue: CueSettings,
     /// The target size of a chunk of audio sent to the mouth, in milliseconds.
     #[serde(default = "default_chunk_ms")]
     pub chunk_ms: u32,
@@ -104,6 +112,35 @@ impl Default for KyutaiSettings {
             temp: 0.6,
             cfg_coef: 2.0,
         }
+    }
+}
+
+/// How the waiting cue sounds. The mind decides when (`[waiting]` in its configuration); the voice
+/// draws the sounds.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CueSettings {
+    /// The peak of the tone, as a fraction of the maximum (0 to 1). The pulse is quieter still.
+    pub volume: f32,
+    /// The shape of the tone.
+    pub tone: crate::cue::Tone,
+    /// Milliseconds between two pulses, while the answer is awaited.
+    pub pulse_interval_ms: u64,
+}
+
+impl Default for CueSettings {
+    fn default() -> Self {
+        Self {
+            volume: 0.3,
+            tone: crate::cue::Tone::default(),
+            pulse_interval_ms: 1600,
+        }
+    }
+}
+
+impl CueSettings {
+    pub fn pulse_interval(&self) -> Duration {
+        Duration::from_millis(self.pulse_interval_ms)
     }
 }
 
@@ -175,6 +212,14 @@ impl std::str::FromStr for Config {
         anyhow::ensure!(
             (1..=64).contains(&config.engine_concurrency),
             "engine_concurrency must be between 1 and 64"
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&config.cue.volume),
+            "cue.volume must be between 0 and 1"
+        );
+        anyhow::ensure!(
+            (300..=60_000).contains(&config.cue.pulse_interval_ms),
+            "cue.pulse_interval_ms must be between 300 and 60000"
         );
         let k = &config.kyutai;
         anyhow::ensure!(
@@ -272,6 +317,30 @@ mod tests {
                 .parse::<Config>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_cue_has_defaults_and_is_checked() {
+        let base = "nats_url = \"a\"\nengine_url = \"b\"\n";
+        let c: Config = base.parse().unwrap();
+        assert_eq!(c.cue, super::CueSettings::default());
+        assert_eq!(c.cue.pulse_interval(), Duration::from_millis(1600));
+        let c: Config = format!("{base}[cue]\nvolume = 0.5\ntone = \"warm\"\n")
+            .parse()
+            .unwrap();
+        assert_eq!((c.cue.volume, c.cue.tone), (0.5, crate::cue::Tone::Warm));
+        for bad in [
+            "volume = 1.5",
+            "volume = -0.1",
+            "tone = \"loud\"",
+            "pulse_interval_ms = 100",
+            "nope = 1",
+        ] {
+            assert!(
+                format!("{base}[cue]\n{bad}\n").parse::<Config>().is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
