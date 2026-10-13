@@ -391,3 +391,112 @@ Ce que cela veut dire :
   fois à Sonnet effort bas (il a appelé `dictionary_add` d'emblée, refusé, puis proposé).
 - Limite de `genai` : il envoie `thinking: disabled`, que Sonnet 5.5 refuse (il veut `between_tools`,
   mis à la main dans le corps). Haiku 5.5 l'accepte.
+
+## Le choix du moteur : ACP ou appel direct, par la configuration (2026-10-13)
+
+Kris veut essayer, une fois installé, quel chemin parle le plus vite, sans toucher au code. `mind`
+a donc deux implémentations du `Brain` (le trait qui existait déjà) et `[llm] mode` choisit :
+
+- `mode = "acp"` (par défaut, les fichiers d'avant marchent tels quels) : l'adaptateur ACP comme
+  avant (`command`, `args`), le serveur MCP d'Emory sur la boucle locale ;
+- `mode = "api"` : `mind` appelle lui-même l'API du fournisseur avec la crate `genai`
+  (0.7.0-rc.4, désormais une vraie dépendance de `mind`) : réponse en flux, outils d'Emory donnés
+  comme définitions de fonctions et exécutés dans le processus par les mêmes modules que le
+  serveur MCP, avec la clé de la conversation (la règle du dictionnaire tient de la même façon),
+  historique de la conversation gardé par `mind`, interruption qui coupe la connexion aussitôt.
+  Pas de serveur MCP dans ce mode.
+
+La configuration :
+
+```toml
+[llm]
+mode = "api"
+provider = "anthropic"          # voir la liste plus bas
+model = "claude-haiku-5-5"
+key_file = "~/.cles/anthropic.key"   # relue à chaque requête, jamais journalisée
+# base_url = "https://api.cerebras.ai/v1/"   # une autre adresse ; obligatoire pour openai_compatible
+thinking = "off"                # "off", "adaptive" ou un budget de tokens (2048)
+# effort = "low"                # Anthropic : output_config.effort ; autres : profondeur de réflexion
+# max_tokens = 2048
+# cache = true                  # cache des prompts (Anthropic)
+# fast = false
+system_prompt = "mind/prompts/system.fr.md"
+```
+
+```toml
+[llm]
+mode = "acp"
+command = "npx"
+args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
+model = "claude-haiku-5-5"
+effort = "low"
+thinking = "off"
+system_prompt = "mind/prompts/system.fr.md"
+```
+
+Les choix :
+
+- **Vérifié au démarrage**, avec le nom de l'option fautive : fournisseur inconnu, clé absente,
+  option sans sens dans le mode (`command` en `api`, `key_file` en `acp`…), mode rapide sur un
+  modèle qui ne l'a pas, budget de réflexion sous 1024 pour Anthropic, `base_url` sans `/` final.
+- **La réflexion** : en `acp`, elle passe dans les options du SDK (`disabled`, `adaptive`,
+  `enabled` avec `budgetTokens`). En `api` avec Anthropic, `off` envoie `thinking: disabled`
+  (Haiku l'accepte) sauf pour Sonnet 5 et 5.5, qui le refusent (mesuré le 2026-10-13) et reçoivent
+  `between_tools` ; Opus en `off` n'a pas été essayé. Gemini reçoit son budget de 0 ; les autres
+  fournisseurs ne reçoivent rien (un modèle sans raisonnement refuserait le paramètre). `adaptive`
+  passe par l'effort (`effort` obligatoire hors Anthropic).
+- **Le cache** (Anthropic) : un point sur les consignes (qui couvre les outils) et un point qui
+  suit le dernier message. Essayé en vrai : chaque tour lit du cache tout l'historique précédent
+  (7 071 tokens au 2e tour, 17 966 au 6e) et n'écrit que le nouveau (1 500 à 2 200 tokens) ; au
+  second appel d'un tour à outil, le résultat de l'outil est déjà lu du cache. Gardé : sans lui,
+  tout l'historique serait facturé en entrée pleine à chaque tour.
+- **L'interruption** : la requête s'arrête et la connexion est lâchée ; le tour reste dans
+  l'historique avec ce qui en a été dit (les appels d'outils sans résultat en sont retirés, sinon
+  l'API refuserait la suite). Une requête en échec est retirée de l'historique.
+- **Les fournisseurs** (lus dans les sources de `genai` 0.7.0-rc.4, `adapter_kind.rs` et
+  `all_adapters.rs`) : natifs `anthropic`, `openai`, `openai_resp`, `gemini`, `ollama` (local,
+  sans clé) ; compatibles OpenAI avec leur adresse connue de `genai` : `groq`, `mistral`,
+  `deepseek`, `xai`, `together`, `fireworks`, `open_router` ; `cerebras`, que `genai` ne connaît
+  pas, par le protocole OpenAI à `https://api.cerebras.ai/v1/` ; et `openai_compatible` pour tout
+  autre serveur, avec `base_url`. `genai` en connaît d'autres (cohere, vertex, bedrock, zai,
+  kimi…) : ajoutés à la liste quand il y aura une raison. Seul Anthropic a été appelé en vrai ;
+  les autres ne sont vérifiés que par la configuration.
+
+**Le mode rapide** (`fast = true`), documenté le 2026-10-13, jamais envoyé pour de vrai :
+
+- Ce qu'il est : le même modèle Opus servi plus vite, jusqu'à 2,5 fois plus de tokens de sortie
+  par seconde, **sans gain sur le délai du premier token**. Seulement Opus 5.5, Opus 5 et
+  Opus 4.8 ; ni Haiku ni Sonnet. Pour un locuteur, qui attend surtout le premier mot, le gain
+  serait faible.
+- Par l'API : `speed: "fast"` dans le corps et l'en-tête `anthropic-beta: fast-mode-2026-02-01`.
+  Aperçu de recherche : l'organisation doit avoir l'accès ouvert (sinon 429). Prix : Opus 5.5
+  8 / 40 USD par million de tokens en entrée / sortie, contre 4 / 20 au tarif normal (le double),
+  avec les multiplicateurs du cache par-dessus. Changer de vitesse invalide le cache.
+- Par ACP (`claude-agent-acp` 0.89.1) : l'option de session `fast`, offerte seulement pour un
+  modèle qui l'a, mise à `on` par `session/set_config_option` à l'ouverture ; `mind` refuse
+  d'ouvrir la session si l'agent ne l'offre pas. Sur l'abonnement, **le mode rapide ne compte pas
+  dans le forfait : il est payé sur les crédits d'usage (usage en plus du forfait), au même prix
+  que l'API**, et seulement si ces crédits sont activés sur le compte.
+
+**Essayé en vrai** le 2026-10-13, sur un bus à part, Haiku 5.5 sans réflexion, une conversation de
+six tours (8 requêtes à l'API, environ 0,004 USD ; temps depuis la fin du tour, recherche des
+fiches pendant la parole comprise) :
+
+| tour | première phrase | fin |
+|---|---|---|
+| « T'as accès à Internet là ? » (ouverture, cache froid) | 1 266 | 1 579 |
+| question sans outil | 950 | 1 349 |
+| question interrompue après sa première phrase | 865 | `voice.stop` aussitôt l'appui |
+| « topo de ma journée » (réponse d'après les fiches trouvées) | 943 | 1 526 |
+| fiche lue avec `hippocampe_read` | 2 164 | 2 969 |
+| « la première chose que je t'ai demandée ? » (historique) | 1 090 | 1 438 |
+
+Même ordre que le banc (1 s sans outil, 2 s avec). Par ACP, deux tours rejoués juste après (2
+requêtes d'abonnement) : 1 337 ms (ouverture de session comprise) et 868 ms. Sur ces deux tours
+sans outil, ACP n'est donc pas plus lent ; l'écart mesuré par le banc (2 s contre 1 s) ne s'est
+pas reproduit sur si peu de mesures. C'est justement ce que la configuration permet à Kris de
+mesurer chez lui, en changeant `mode`.
+
+Le banc (`examples/talker-bench.rs`) reste tel quel : il mesure les tokens et le coût de chaque
+appel, ce que le `Brain` ne remonte pas. La sonde `examples/talker-probe.rs` (ex `acp-probe`) joue
+des tours sur un bus à part quel que soit le mode, appui et phrase compris, et une interruption.
