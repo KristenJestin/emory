@@ -149,7 +149,7 @@ bornes ; le dossier est créé s'il manque.
    relecture, fichier cassé), les quatre outils, les durées et échéances en mots, le fuseau.
    Vérifié : tests unitaires avec une horloge simulée et un dossier temporaire ; relecture après un
    « redémarrage » simulé ; un rappel `at` à travers un changement d'heure.
-2. **T2. La sonnerie** (après E1 de [`events.md`](events.md)) : la tâche qui attend l'échéance la
+2. **T2. La sonnerie** (**construit le 2026-10-13**, voir « Ce qui a été décidé en construisant T2 ») : la tâche qui attend l'échéance la
    plus proche, la parole d'elle-même, la répétition et son arrêt par un appui, le retard au
    démarrage, `mind.timer.changed` et `mind.timer.fired`. Vérifié : temps en pause de tokio, faux
    bus enregistré : la phrase part à l'échéance, attend la fin d'une réponse, se répète puis
@@ -220,11 +220,70 @@ pris au plus simple et réversible :
 - **Les journaux** disent l'`id`, le type, l'échéance et l'appareil, jamais le texte ni le libellé
   (un test le vérifie).
 
+## Ce qui a été décidé en construisant T2 (2026-10-13)
+
+Le code est dans `mind/src/time/ring.rs` (la tâche qui sonne), avec un crochet dans
+`mind/src/speech.rs` et `mind/src/mind.rs`. Les choix, pris au plus simple et réversible :
+
+- **La tâche** : `Time::ringer(...)` la donne, `mind` la lance à côté du module (`lib.rs`). Elle
+  regarde l'échéance la plus proche, dort jusqu'à elle, mais **jamais plus de 30 s** (`RECHECK`) :
+  l'horloge du mur est relue, pour qu'une mise en veille du PC ou une heure remise à l'heure ne
+  laisse pas une échéance attendre sur un sommeil faux. Un outil qui pose ou annule la réveille
+  aussitôt.
+- **La phrase** : les gabarits de `[time]`, sans LLM. Le texte d'un rappel perd son point final
+  (« Rappel : appeler le garage. », jamais « .. »). En retard de plus d'une minute, quel que soit
+  le moment (au démarrage, ou après une mise en veille), elle commence par « Avec du retard : »
+  et sa première lettre passe en minuscule (« Avec du retard : le minuteur pâtes est fini. »).
+  Au-delà de `late_limit_hours`, jetée et journalisée, au démarrage (T1) comme en marche.
+- **L'appareil** : celui de l'élément ; sinon `default_device` ; sinon l'appareil du dernier tour
+  entendu (`Conversations::last_device`, noté à chaque tour). Sans aucun, l'élément est jeté avec
+  un `warn`. **`mind.rs` ouvre désormais la conversation avec son appareil** (`open_on`) : un
+  minuteur posé en parlant au bureau sonne au bureau.
+- **Le crochet « un appui après la sonnerie »** : une parole d'elle-même peut être suivie
+  (`Speech::followed()`, qui rend un canal). `mind` y dit `Said` quand il la dit (le ton, puis la
+  phrase), puis `Pressed` au premier appui sur cet appareil (n'importe quel appui, même d'un tour
+  en retard), et ferme le canal ; ou `Dropped` si elle n'a jamais pu être dite (appareil jamais
+  libre avant son expiration, 600 s). Un appui **avant** que la phrase soit dite (Kris parlait)
+  ne compte pas : la fenêtre de la répétition part du moment où elle est dite, pas de l'échéance.
+  Raison : une phrase qui attend la fin d'une longue réponse ne doit pas être redite aussitôt
+  après.
+- **La répétition** : `repeat_after_s` après qu'elle a été dite, sans appui sur l'appareil, elle
+  est redite (avec le ton si `chime`), `repeat` fois au plus. Un appui sur un autre appareil ne
+  l'arrête pas.
+- **Le fichier** : l'élément en sort quand la phrase est dite la première fois (ou jetée). Si
+  `mind` s'arrête entre l'échéance et ce moment (appareil occupé), il est dit en retard au
+  démarrage suivant. `time_list` ne montrait déjà plus ce qui est échu.
+- **Une annulation pendant que la phrase attend l'appareil** ne la retire pas de la file de
+  `mind` : elle est dite quand même. Cas rare (il faut annuler pendant une réponse, à la seconde
+  de l'échéance), laissé ainsi.
+- **Sur le bus** (`contract`) : `subjects::TIMER_CHANGED` et `TIMER_FIRED`, les types `Timers`,
+  `TimerItem`, `TimerKind`, `TimerFired` (le format de [`contract.md`](contract.md), `late_s` en
+  secondes). `mind.timer.changed` part au démarrage de la tâche, à chaque pose, annulation, et
+  quand un élément sort du fichier (dit ou jeté) ; la liste entière, du plus proche au plus
+  lointain, échus compris tant qu'ils n'ont pas été dits. `mind.timer.fired` part à l'échéance,
+  une fois (pas à chaque répétition). Ils portent le libellé et le texte, comme le contrat le
+  prévoit ; les journaux, jamais.
+- **Les journaux** : `timer or reminder rings` (id, type, appareil, `late_s`), `nobody pressed:
+  said again`, `timer or reminder heard: a press`, `... not said: the device was never free`,
+  `... too late to be said: dropped`, `... with no device to ring on: dropped`.
+- **Vérifié** (`mind/tests/mind.rs`, module `ring`, temps de tokio en pause, l'horloge du module
+  la suit, faux bus enregistré) : la phrase part à l'échéance, avec son ton, sur l'appareil de la
+  conversation ; elle attend la fin d'une réponse ; elle est redite une fois après une minute puis
+  plus ; les répétitions suivent la configuration ; un appui sur l'appareil arrête la répétition,
+  un appui ailleurs non ; un minuteur échu pendant un arrêt de trois heures est dit « Avec du
+  retard » au démarrage, une minute et demie ne l'est pas, treize heures est jeté sans rien dire ;
+  sans appareil, `default_device` puis le dernier tour entendu ; un rappel et un minuteur sans
+  libellé ; un minuteur annulé ne sonne pas ; les messages du bus. Plus le crochet seul (dite,
+  appui, jetée).
+- **Pas vérifié** : rien n'a été joué ni lancé sur le vrai bus. L'essai d'un minuteur d'une minute
+  par Kris reste à faire.
+
 ## Questions ouvertes
 
 1. L'appareil qui sonne : recommandation, celui qui l'a posé (Kris pose un minuteur là où il est),
    avec `default_device` en repli. Quand il y aura plusieurs appareils dans la maison, peut-être
    « là où Kris a parlé en dernier » : à revoir alors.
+   **Décidé le 2026-10-13 avec Kris : celui qui l'a posé, `default_device` en repli.**
 2. Une sonnerie que personne n'entend (appareil éteint) : recommandation, rien en version 1 ; quand
    `emory-mouth` existera, il pourra dire qu'il a joué un tour (un accusé), et `mind` redira la
    phrase au prochain tour de Kris.
@@ -235,3 +294,7 @@ pris au plus simple et réversible :
 4. Un minuteur perdu au-delà de 12 heures de panne : recommandation, le jeter (et le journaliser)
    plutôt que de dire de vieilles choses.
    **Décidé le 2026-10-13 avec Kris : oui, jeté et journalisé.**
+5. Le gabarit sans libellé dit « Le minuteur de une minute est fini. » : « de une » se dit mal
+   (« d'une »). Recommandation : écrire « d'une » quand la durée commence par « une », dans le
+   code, ou changer le gabarit par défaut en « Le minuteur est fini : {duration}. ». À juger à
+   l'oreille.
