@@ -424,10 +424,10 @@ mod tests {
 
     #[test]
     fn the_tilde_stands_for_the_home_folder() {
-        let home = Some("/home/kris".into());
+        let home = Some("/home/user".into());
         assert_eq!(
             expand("~/.cache/emory", home.clone()),
-            PathBuf::from("/home/kris/.cache/emory")
+            PathBuf::from("/home/user/.cache/emory")
         );
         assert_eq!(expand("/abs/x", home), PathBuf::from("/abs/x"));
         assert_eq!(expand("~/x", None), PathBuf::from("~/x"));

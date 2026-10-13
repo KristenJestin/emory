@@ -27,7 +27,7 @@ use contract::{
 use futures_util::StreamExt;
 
 const SENTENCES: [&str; 3] = [
-    "Bonjour Kris, les oreilles sont spécifiées et la bouche parle enfin.",
+    "Bonjour, les oreilles sont spécifiées et la bouche parle enfin.",
     "Je peux dire plusieurs phrases à la suite, sans attendre que tu aies fini de lire.",
     "Et si tu m'interromps, je me tais tout de suite.",
 ];

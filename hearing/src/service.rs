@@ -513,8 +513,8 @@ async fn publish_turn(
         text: texts.join(" "),
         wake: Wake::Button,
         speaker: Some(Speaker {
-            voice: "kris".to_owned(),
-            person: Some("kris".to_owned()),
+            voice: "alex".to_owned(),
+            person: Some("alex".to_owned()),
             origin: Origin::Known,
             confidence: 1.0,
         }),

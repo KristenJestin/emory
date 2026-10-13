@@ -3,8 +3,8 @@
 //! A TSV file, one rule per line: `pattern<TAB>replacement`. The pattern is a regular expression
 //! (`a|b` for several forms), searched case-insensitively and on whole words. Empty lines and
 //! those starting with `#` (possibly after spaces) are ignored, and so is a UTF-8 byte order mark
-//! at the start of the file. The rules apply in the order of the file: « chris net » must come
-//! before « chris ».
+//! at the start of the file. The rules apply in the order of the file: « jean net » must come
+//! before « jean ».
 //!
 //! **Escape mode** (for entries that are generated, from the titles of Hippocampe for instance): a
 //! pattern that starts with `=` is a literal string, not a regex (`=C++` is the text « C++ »).
@@ -17,7 +17,7 @@
 //! The table and the text are both normalised to NFC, so that an accent written as a letter and a
 //! combining mark still matches.
 //!
-//! It must only correct forms that are not French words: « trafic » or « chris » would be
+//! It must only correct forms that are not French words: « trafic » or « jean » would be
 //! rewritten otherwise.
 
 use std::path::Path;
@@ -118,8 +118,8 @@ mod tests {
             "# pattern\treplacement\n\
              hippocamp|hypocamp\tHippocampe\n\
              \n\
-             chris net\tkrisnet\n\
-             chris\tKris\n\
+             jean net\tjeannet\n\
+             jean\tJean\n\
              émery\tEmory\n",
         )
         .unwrap()
@@ -136,17 +136,14 @@ mod tests {
     #[test]
     fn only_corrects_whole_words() {
         let t = table();
-        assert_eq!(t.apply("christophe"), "christophe");
-        assert_eq!(t.apply("anti-chris, chris."), "anti-Kris, Kris.");
+        assert_eq!(t.apply("jeanne"), "jeanne");
+        assert_eq!(t.apply("anti-jean, jean."), "anti-Jean, Jean.");
         assert_eq!(t.apply("hippocampes"), "hippocampes");
     }
 
     #[test]
     fn the_rules_apply_in_the_order_of_the_file() {
-        assert_eq!(
-            table().apply("sur chris net et chris"),
-            "sur krisnet et Kris"
-        );
+        assert_eq!(table().apply("sur jean net et jean"), "sur jeannet et Jean");
     }
 
     #[test]
@@ -165,16 +162,16 @@ mod tests {
     #[test]
     fn comment_lines_may_be_indented() {
         let t =
-            Corrections::from_tsv("  # pattern\treplacement\n\t# another\nchris\tKris\n").unwrap();
+            Corrections::from_tsv("  # pattern\treplacement\n\t# another\njean\tJean\n").unwrap();
         assert_eq!(t.len(), 1);
     }
 
     #[test]
     fn a_byte_order_mark_at_the_start_is_ignored() {
         // Without it, the BOM would stick to the first pattern and it would never match.
-        let t = Corrections::from_tsv("\u{feff}chris\tKris\n").unwrap();
-        assert_eq!(t.apply("chris"), "Kris");
-        let t = Corrections::from_tsv("\u{feff}# comment\nchris\tKris\n").unwrap();
+        let t = Corrections::from_tsv("\u{feff}jean\tJean\n").unwrap();
+        assert_eq!(t.apply("jean"), "Jean");
+        let t = Corrections::from_tsv("\u{feff}# comment\njean\tJean\n").unwrap();
         assert_eq!(t.len(), 1);
     }
 

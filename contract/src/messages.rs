@@ -23,7 +23,7 @@ pub struct Button {
     pub at: Timestamp,
 }
 
-/// A sentence closed by the VAD and transcribed while Kris is speaking (`hearing.sentence`).
+/// A sentence closed by the VAD and transcribed while the owner is speaking (`hearing.sentence`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sentence {
     pub turn: TurnId,
@@ -70,7 +70,7 @@ pub enum Wake {
 /// Who spoke, when the voices are recognised.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Speaker {
-    /// The stable label of the voiceprint (`kris`, `voix-7`).
+    /// The stable label of the voiceprint (`alex`, `voix-7`).
     pub voice: String,
     /// The slug of the person in Hippocampe, when the voice has a name.
     #[serde(default)]
@@ -83,7 +83,7 @@ pub struct Speaker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
-    /// Kris gave the name.
+    /// The owner gave the name.
     Known,
     /// The system deduced it: what the mind writes about it is marked `inferred`.
     Inferred,

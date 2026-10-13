@@ -1,4 +1,4 @@
-//! Tap or hold, like Kris's dictation key: the pure state machine behind the `shortcut` trigger.
+//! Tap or hold, like a dictation key: the pure state machine behind the `shortcut` trigger.
 //!
 //! A press opens a turn at once, so that no word is lost. If the key is let go before the
 //! threshold it was a tap: the turn stays open and the next tap closes it. If it is let go after

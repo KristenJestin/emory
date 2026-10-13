@@ -31,7 +31,7 @@ from moshi.models.tts import DEFAULT_DSM_TTS_REPO, TTSModel
 
 log = logging.getLogger("kyutai")
 
-# The voice Kris chose on 2026-10-12, and its settings (see `specs/voice.md`).
+# The voice chosen on 2026-10-12, and its settings (see `specs/voice.md`).
 DEFAULTS = {
     "voice": "cml-tts/fr/5476_3103_000072-0001.wav",
     "padding_bonus": -3.0,
