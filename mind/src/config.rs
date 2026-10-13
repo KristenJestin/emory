@@ -93,23 +93,82 @@ impl Default for NatsConfig {
     }
 }
 
-/// The LLM, reached through an ACP adapter that `mind` starts and drives over its standard input
-/// and output.
+/// How `mind` talks to the LLM: through an ACP agent it starts as a child process, or straight
+/// to a provider's API.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LlmMode {
+    #[default]
+    Acp,
+    Api,
+}
+
+/// Whether the LLM thinks before it answers: not at all, as much as it judges useful, or within
+/// a budget of tokens. Written `"off"`, `"adaptive"` or a number in the file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Thinking {
+    #[default]
+    Off,
+    Adaptive,
+    Budget(u32),
+}
+
+impl<'de> Deserialize<'de> for Thinking {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Word(String),
+            Budget(u32),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Word(w) if w == "off" => Ok(Self::Off),
+            Raw::Word(w) if w == "adaptive" => Ok(Self::Adaptive),
+            Raw::Word(w) => Err(serde::de::Error::custom(format!(
+                "thinking is \"off\", \"adaptive\" or a budget of tokens, not \"{w}\""
+            ))),
+            Raw::Budget(n) => Ok(Self::Budget(n)),
+        }
+    }
+}
+
+/// The LLM. `mode = "acp"` (the default): an ACP adapter that `mind` starts and drives over its
+/// standard input and output (`command`, `args`). `mode = "api"`: a provider's API, called by
+/// `mind` itself (`provider`, `key_file`, `base_url`, `max_tokens`, `cache`). See
+/// `examples/mind.toml`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
-    /// The adapter's program (`node`).
-    pub command: String,
-    /// Its arguments (the path of `claude-agent-acp`'s `dist/index.js`).
+    #[serde(default)]
+    pub mode: LlmMode,
+    /// acp: the adapter's program (`node`, `npx`).
+    pub command: Option<String>,
+    /// acp: its arguments (the path of `claude-agent-acp`'s `dist/index.js`).
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default = "default_model")]
     pub model: String,
-    #[serde(default = "default_effort")]
-    pub effort: String,
+    /// The effort asked of the model (`low`, `medium`, `high`…). acp: `low` when absent; api: not
+    /// sent when absent.
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub thinking: Thinking,
+    /// Fast mode (Anthropic, Opus models only, billed at a premium: see `specs/mind.md`).
+    #[serde(default)]
+    pub fast: bool,
+    /// api: the provider (see [`crate::api::PROVIDERS`]).
+    pub provider: Option<String>,
+    /// api: the file that holds the key, read at each request, never logged.
+    pub key_file: Option<ConfigPath>,
+    /// api: another address for the provider's API (an OpenAI-compatible server, a proxy).
+    pub base_url: Option<String>,
+    /// api: the longest answer, in tokens, thinking included (2048 when absent).
+    pub max_tokens: Option<u32>,
+    /// api: prompt caching, for the providers that have it (on when absent).
+    pub cache: Option<bool>,
     /// The French instructions of the LLM.
     pub system_prompt: ConfigPath,
-    /// The working folder of the sessions. Claude Code has no tool of its own, so it never
+    /// acp: the working folder of the sessions. Claude Code has no tool of its own, so it never
     /// touches it; by default a folder of the system's temporary directory.
     pub workdir: Option<ConfigPath>,
 }
@@ -118,8 +177,154 @@ fn default_model() -> String {
     "claude-haiku-5-5".to_owned()
 }
 
-fn default_effort() -> String {
-    "low".to_owned()
+/// The models that have a fast mode, by Anthropic's documentation read on 2026-10-13.
+pub const FAST_MODELS: [&str; 3] = ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"];
+
+fn has_fast_mode(model: &str) -> bool {
+    FAST_MODELS
+        .iter()
+        .any(|m| model == *m || model.strip_prefix(m).is_some_and(|r| r.starts_with('-')))
+}
+
+/// The efforts a provider is asked for.
+const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+impl LlmConfig {
+    /// The effort sent through ACP.
+    pub fn acp_effort(&self) -> String {
+        self.effort.clone().unwrap_or_else(|| "low".to_owned())
+    }
+
+    /// Checks that the options fit the mode, before anything starts.
+    fn check(&self) -> Result<()> {
+        let unused = |options: &[(&str, bool)], mode: &str| -> Result<()> {
+            for (name, given) in options {
+                anyhow::ensure!(!given, "llm.{name} has no meaning with mode = \"{mode}\"");
+            }
+            Ok(())
+        };
+        anyhow::ensure!(!self.model.trim().is_empty(), "llm.model must not be blank");
+        if let Thinking::Budget(n) = self.thinking {
+            anyhow::ensure!(n > 0, "llm.thinking: a budget must be above 0 (or \"off\")");
+        }
+        if self.fast {
+            anyhow::ensure!(
+                has_fast_mode(&self.model),
+                "llm.fast: {} has no fast mode (only {})",
+                self.model,
+                FAST_MODELS.join(", ")
+            );
+        }
+        match self.mode {
+            LlmMode::Acp => {
+                anyhow::ensure!(
+                    self.command
+                        .as_deref()
+                        .is_some_and(|c| !c.trim().is_empty()),
+                    "llm.command is needed with mode = \"acp\" (the adapter's program)"
+                );
+                unused(
+                    &[
+                        ("provider", self.provider.is_some()),
+                        ("key_file", self.key_file.is_some()),
+                        ("base_url", self.base_url.is_some()),
+                        ("max_tokens", self.max_tokens.is_some()),
+                        ("cache", self.cache.is_some()),
+                    ],
+                    "acp",
+                )?;
+            }
+            LlmMode::Api => {
+                unused(
+                    &[
+                        ("command", self.command.is_some()),
+                        ("args", !self.args.is_empty()),
+                        ("workdir", self.workdir.is_some()),
+                    ],
+                    "api",
+                )?;
+                let name = self
+                    .provider
+                    .as_deref()
+                    .context("llm.provider is needed with mode = \"api\"")?;
+                let provider = crate::api::Provider::named(name).with_context(|| {
+                    format!(
+                        "llm.provider: unknown provider {name} (known: {})",
+                        crate::api::PROVIDERS
+                            .iter()
+                            .map(|p| p.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+                anyhow::ensure!(
+                    provider.endpoint.is_some() || self.base_url.is_some(),
+                    "llm.base_url is needed with provider {name}"
+                );
+                if let Some(url) = &self.base_url {
+                    anyhow::ensure!(
+                        (url.starts_with("https://") || url.starts_with("http://"))
+                            && url.ends_with('/'),
+                        "llm.base_url must be an http(s) address ending with / (like https://host/v1/)"
+                    );
+                }
+                anyhow::ensure!(
+                    self.key_file.is_some() || !provider.needs_key,
+                    "llm.key_file is needed with provider {name}"
+                );
+                anyhow::ensure!(
+                    self.max_tokens.is_none_or(|n| (64..=64_000).contains(&n)),
+                    "llm.max_tokens must be between 64 and 64000"
+                );
+                if let Some(effort) = &self.effort {
+                    anyhow::ensure!(
+                        EFFORTS.contains(&effort.as_str()),
+                        "llm.effort is one of {}",
+                        EFFORTS.join(", ")
+                    );
+                    anyhow::ensure!(
+                        provider.anthropic || self.thinking == Thinking::Adaptive,
+                        "llm.effort: with provider {name}, the effort is the depth of thinking: \
+                         it needs thinking = \"adaptive\""
+                    );
+                }
+                if !provider.anthropic {
+                    anyhow::ensure!(
+                        self.thinking != Thinking::Adaptive || self.effort.is_some(),
+                        "llm.thinking = \"adaptive\" needs llm.effort with provider {name}"
+                    );
+                }
+                if provider.anthropic
+                    && let Thinking::Budget(n) = self.thinking
+                {
+                    anyhow::ensure!(
+                        n >= 1024,
+                        "llm.thinking: Anthropic wants a budget of at least 1024 tokens"
+                    );
+                }
+                anyhow::ensure!(
+                    !self.fast || provider.anthropic,
+                    "llm.fast: only Anthropic has a fast mode"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks the files the LLM needs at start-up: the key file of the API. Its content is not
+    /// read here.
+    pub fn check_files(&self) -> Result<()> {
+        if self.mode == LlmMode::Api
+            && let Some(key) = &self.key_file
+        {
+            anyhow::ensure!(
+                key.0.is_file(),
+                "llm.key_file: no file at {}",
+                key.0.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -346,6 +551,7 @@ impl std::str::FromStr for Config {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
         let config: Config = toml::from_str(s)?;
+        config.llm.check()?;
         anyhow::ensure!(
             config.conversation.idle_minutes > 0.0
                 && config.conversation.idle_minutes <= 24.0 * 60.0,
@@ -408,7 +614,10 @@ token_file = "~/t.token"
         let c: Config = MINIMAL.parse().unwrap();
         assert_eq!(c.nats.url, "nats://127.0.0.1:4222");
         assert_eq!(c.llm.model, "claude-haiku-5-5");
-        assert_eq!(c.llm.effort, "low");
+        assert_eq!(c.llm.mode, LlmMode::Acp);
+        assert_eq!(c.llm.acp_effort(), "low");
+        assert_eq!(c.llm.thinking, Thinking::Off);
+        assert!(!c.llm.fast);
         assert!(c.llm.args.is_empty() && c.llm.workdir.is_none());
         assert_eq!(c.conversation.idle_timeout(), Duration::from_secs(1800));
         assert_eq!(c.conversation.nothing_heard, "Je n'ai rien entendu.");
@@ -558,5 +767,136 @@ token_file = "~/t.token"
         }
         let limit = MINIMAL.replace("token_file", "search_limit = 0\ntoken_file");
         assert!(limit.parse::<Config>().is_err());
+    }
+
+    fn with_llm(llm: &str) -> Result<Config> {
+        format!(
+            "[llm]\nsystem_prompt = \"p.md\"\n{llm}\n[hippocampe]\nurl = \"https://h/mcp\"\ntoken_file = \"t\"\n"
+        )
+        .parse()
+    }
+
+    #[test]
+    fn the_api_mode_takes_a_provider_a_key_and_its_options() {
+        let c = with_llm(
+            "mode = \"api\"\nprovider = \"anthropic\"\nkey_file = \"/k\"\nthinking = \"off\"\nmax_tokens = 1024\ncache = false",
+        )
+        .unwrap();
+        assert_eq!(c.llm.mode, LlmMode::Api);
+        assert_eq!(c.llm.provider.as_deref(), Some("anthropic"));
+        assert_eq!(c.llm.key_file, Some(ConfigPath("/k".into())));
+        assert_eq!(c.llm.max_tokens, Some(1024));
+        assert_eq!(c.llm.cache, Some(false));
+        let c = with_llm(
+            "mode = \"api\"\nprovider = \"openai_compatible\"\nbase_url = \"https://h/v1/\"\nkey_file = \"/k\"\nmodel = \"m\"\nthinking = 2048\n",
+        )
+        .unwrap();
+        assert_eq!(c.llm.thinking, Thinking::Budget(2048));
+        let c = with_llm(
+            "mode = \"api\"\nprovider = \"anthropic\"\nkey_file = \"/k\"\nmodel = \"claude-opus-5-5\"\nfast = true\nthinking = \"adaptive\"\neffort = \"low\"",
+        )
+        .unwrap();
+        assert!(c.llm.fast && c.llm.thinking == Thinking::Adaptive);
+        // The local server needs no key.
+        assert!(with_llm("mode = \"api\"\nprovider = \"ollama\"\nmodel = \"m\"").is_ok());
+        // Today's files, without a mode, are ACP.
+        let c =
+            with_llm("command = \"npx\"\neffort = \"medium\"\nthinking = \"adaptive\"").unwrap();
+        assert_eq!(c.llm.mode, LlmMode::Acp);
+        assert_eq!(c.llm.acp_effort(), "medium");
+    }
+
+    #[test]
+    fn an_option_the_mode_cannot_honour_is_refused_with_its_name() {
+        let api = "mode = \"api\"\nprovider = \"anthropic\"\nkey_file = \"/k\"\n";
+        for (llm, says) in [
+            ("mode = \"api\"\nkey_file = \"/k\"", "llm.provider"),
+            (
+                "mode = \"api\"\nprovider = \"nope\"\nkey_file = \"/k\"",
+                "unknown provider nope",
+            ),
+            (
+                "mode = \"api\"\nprovider = \"groq\"\nmodel = \"m\"",
+                "llm.key_file",
+            ),
+            (
+                "mode = \"api\"\nprovider = \"openai_compatible\"\nkey_file = \"/k\"",
+                "llm.base_url",
+            ),
+            (&format!("{api}command = \"npx\""), "llm.command"),
+            (&format!("{api}workdir = \"/w\""), "llm.workdir"),
+            (&format!("{api}fast = true"), "no fast mode"),
+            (&format!("{api}thinking = 512"), "1024"),
+            (&format!("{api}thinking = \"maybe\""), "thinking"),
+            (&format!("{api}effort = \"huge\""), "llm.effort"),
+            (&format!("{api}base_url = \"https://h/v1\""), "llm.base_url"),
+            (&format!("{api}max_tokens = 1"), "llm.max_tokens"),
+            (
+                "mode = \"api\"\nprovider = \"groq\"\nkey_file = \"/k\"\nmodel = \"m\"\neffort = \"low\"",
+                "thinking = \"adaptive\"",
+            ),
+            (
+                "mode = \"api\"\nprovider = \"groq\"\nkey_file = \"/k\"\nmodel = \"m\"\nthinking = \"adaptive\"",
+                "needs llm.effort",
+            ),
+            (
+                "mode = \"api\"\nprovider = \"groq\"\nkey_file = \"/k\"\nmodel = \"claude-opus-5-5\"\nfast = true",
+                "only Anthropic",
+            ),
+            ("mode = \"acp\"", "llm.command"),
+            (
+                "command = \"npx\"\nprovider = \"anthropic\"",
+                "llm.provider",
+            ),
+            ("command = \"npx\"\nkey_file = \"/k\"", "llm.key_file"),
+            ("command = \"npx\"\nfast = true", "no fast mode"),
+            ("command = \"npx\"\nmode = \"rest\"", "mode"),
+        ] {
+            let error = format!("{:#}", with_llm(llm).unwrap_err());
+            assert!(error.contains(says), "{llm}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_missing_key_file_is_found_at_start_up() {
+        let c = with_llm(
+            "mode = \"api\"\nprovider = \"anthropic\"\nkey_file = \"/nonexistent/emory/key\"",
+        )
+        .unwrap();
+        let error = c.llm.check_files().unwrap_err().to_string();
+        assert!(error.contains("/nonexistent/emory/key"), "{error}");
+        let acp = with_llm("command = \"npx\"").unwrap();
+        assert!(acp.llm.check_files().is_ok());
+    }
+
+    #[test]
+    fn the_example_and_development_files_are_valid() {
+        let example = include_str!("../examples/mind.toml");
+        let c: Config = example.parse().unwrap();
+        assert_eq!(c.llm.mode, LlmMode::Acp);
+        // The api section of the example, uncommented in place of the acp one.
+        let start = example.find("# [llm]\n# mode = \"api\"").unwrap();
+        let end = start + example[start..].find("\n\n").unwrap();
+        let api: String = example[start..end]
+            .lines()
+            .map(|l| l.strip_prefix("# ").unwrap_or(l))
+            .filter(|l| !l.starts_with("base_url") && !l.starts_with(' '))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let acp_start = example.find("[llm]\nmode = \"acp\"").unwrap();
+        let swapped = format!(
+            "{}{api}\n{}",
+            &example[..acp_start],
+            &example[example.find("[conversation]").unwrap()..]
+        );
+        let c: Config = swapped.parse().unwrap();
+        assert_eq!(c.llm.mode, LlmMode::Api);
+        assert_eq!(c.llm.provider.as_deref(), Some("anthropic"));
+        for dev in [
+            include_str!("../../dev/mind.toml"),
+            include_str!("../../dev/mind-api.toml"),
+        ] {
+            dev.parse::<Config>().unwrap();
+        }
     }
 }

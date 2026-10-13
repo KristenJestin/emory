@@ -1,9 +1,12 @@
 //! The mind of Emory: receives what the ears heard (`hearing.sentence`, `hearing.turn`, the
-//! presses of `ear.<name>.button`), keeps the conversation, asks the LLM through ACP with what the
+//! presses of `ear.<name>.button`), keeps the conversation, asks the LLM (through ACP or straight
+//! through a provider's API, see [`backend`]) with what the
 //! memory holds, and sends the answer sentence by sentence to the voice (`voice.say`,
 //! `voice.stop`). See `specs/mind.md`.
 
 pub mod acp;
+pub mod api;
+pub mod backend;
 pub mod brain;
 pub mod bus;
 pub mod config;
@@ -26,7 +29,7 @@ use futures_util::StreamExt;
 use tracing::{info, warn};
 
 use crate::{
-    acp::{AcpBrain, SessionSettings},
+    backend::Backend,
     config::Config,
     conversations::Conversations,
     dictionary::{BusVocabulary, Dictionary},
@@ -44,8 +47,9 @@ const TICK: Duration = Duration::from_secs(10);
 /// The dependencies whose logs, below these levels, carry the messages themselves: the requests
 /// to the LLM (what the owner said, the key of Emory's MCP server in `session/new`), the MCP calls and
 /// their headers, the bus payloads. Pinned whatever `RUST_LOG` says.
-const PINNED_LOGS: [(&str, &str); 7] = [
+const PINNED_LOGS: [(&str, &str); 8] = [
     ("agent_client_protocol", "warn"),
+    ("genai", "warn"),
     ("rmcp", "warn"),
     ("reqwest", "warn"),
     ("hyper", "warn"),
@@ -101,7 +105,7 @@ fn hearing_message(subject: &str) -> Option<HearingMessage> {
     }
 }
 
-/// Runs the mind until the program stops (Ctrl-C or SIGTERM). Fails if the adapter of the LLM or a
+/// Runs the mind until the program stops (Ctrl-C or SIGTERM). Fails if the ACP adapter of the LLM or a
 /// bus subscription ends.
 pub async fn run(config: Config) -> Result<()> {
     let system_prompt = prompt::render(
@@ -139,32 +143,13 @@ pub async fn run(config: Config) -> Result<()> {
             conversations.clone(),
         )));
     }
-    let server = tools::serve(
+    let brain = Backend::start(
+        &config.llm,
+        &config.tools,
+        system_prompt,
         Tools::new(modules).observed_by(Arc::new(waiter.clone())),
-        config.tools.bind,
     )
     .await?;
-
-    let workdir = match &config.llm.workdir {
-        Some(dir) => dir.0.clone(),
-        None => std::env::temp_dir().join("emory-mind"),
-    };
-    std::fs::create_dir_all(&workdir)
-        .with_context(|| format!("creating the working folder {}", workdir.display()))?;
-    let brain = AcpBrain::start(
-        &config.llm.command,
-        &config.llm.args,
-        SessionSettings {
-            system_prompt,
-            model: config.llm.model.clone(),
-            effort: config.llm.effort.clone(),
-            workdir,
-            mcp_url: server.url,
-            mcp_key: server.key,
-        },
-    )
-    .await?;
-    info!(model = %config.llm.model, effort = %config.llm.effort, "LLM adapter started");
 
     let mut hearing = client.subscribe(HEARING_SUBJECTS).await?;
     let mut buttons = client.subscribe(subjects::ALL_BUTTONS).await?;

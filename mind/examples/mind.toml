@@ -7,15 +7,35 @@ url = "nats://127.0.0.1:4222"
 # ca = "/etc/emory/ca.pem"
 # nkey = "/etc/emory/mind.nk"
 
-# The LLM, through an ACP adapter that the mind starts and drives over stdio. The adapter inherits
-# the environment: the local Claude Code login in development, `CLAUDE_CODE_OAUTH_TOKEN` when set.
+# The LLM. `mode = "acp"` (the default): an ACP adapter that the mind starts and drives over stdio.
+# The adapter inherits the environment: the local Claude Code login in development,
+# `CLAUDE_CODE_OAUTH_TOKEN` when set.
 [llm]
+mode = "acp"
 command = "npx"
 args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
 model = "claude-haiku-5-5"
 effort = "low"
+# thinking = "off"     # "off" (default), "adaptive", or a budget of tokens (2048)
+# fast = false         # fast mode: Opus 5.5, 5 and 4.8 only, billed from usage credits (extra
+#                      # usage, outside the plan): see specs/mind.md before turning it on
 system_prompt = "mind/prompts/system.fr.md"
 # workdir = "/var/lib/emory/mind"   # default: a folder in the system's temporary directory
+
+# Or `mode = "api"`: the mind calls a provider's API itself and runs Emory's tools in its process.
+# [llm]
+# mode = "api"
+# provider = "anthropic"   # anthropic, openai, openai_resp, gemini, groq, mistral, deepseek, xai,
+#                          # together, fireworks, open_router, cerebras, ollama, openai_compatible
+# model = "claude-haiku-5-5"
+# key_file = "/etc/emory/anthropic.key"   # read at each request, never logged
+# base_url = "https://host/v1/"   # another address (needed with openai_compatible)
+# thinking = "off"
+# effort = "low"           # Anthropic: sent as is; others: the depth of thinking = "adaptive"
+# max_tokens = 2048        # the longest answer, thinking included
+# cache = true             # prompt caching (Anthropic): instructions, tools and the history
+# fast = false             # Anthropic, Opus 5.5, 5 and 4.8 only, at a premium price
+# system_prompt = "mind/prompts/system.fr.md"
 
 [conversation]
 # Minutes without an exchange before a conversation (and its LLM session) closes.
@@ -64,6 +84,7 @@ pulse_delay_ms = 1500   # tone: how long without an answer before the pulse star
 # max_phrases = 2              # at most this many per turn, 2.5 s apart at least
 # phrases = "mind/prompts/waiting.fr.toml"   # the file of phrases; the built-in ones without it
 
-# Emory's MCP server, served to the adapter only: loopback, any free port, a key drawn at start-up.
+# Emory's MCP server, served to the ACP adapter only (none in api mode): loopback, any free port, a
+# key drawn at start-up.
 [tools]
 bind = "127.0.0.1:0"
