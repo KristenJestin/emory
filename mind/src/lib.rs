@@ -7,6 +7,8 @@ pub mod acp;
 pub mod brain;
 pub mod bus;
 pub mod config;
+pub mod conversations;
+pub mod dictionary;
 pub mod hippocampe;
 pub mod memory;
 pub mod mind;
@@ -25,6 +27,8 @@ use tracing::{info, warn};
 use crate::{
     acp::{AcpBrain, SessionSettings},
     config::Config,
+    conversations::Conversations,
+    dictionary::{BusVocabulary, Dictionary},
     hippocampe::Hippocampe,
     mind::{Input, Mind, Settings},
     tools::{HippocampeTools, Tools},
@@ -114,12 +118,25 @@ pub async fn run(config: Config) -> Result<()> {
         config.hippocampe.token_file.0.clone(),
     );
     hippocampe.connect_in_background();
-    let tools = Tools::new(vec![Arc::new(HippocampeTools::new(
+    // The bus first: the dictionary's tool speaks to the hearing on it.
+    let client = bus::connect(&config.nats, "mind", true).await?;
+    info!(url = %config.nats.url, "connected to the bus");
+    let conversations = Conversations::default();
+    let mut modules: Vec<Arc<dyn tools::Module>> = vec![Arc::new(HippocampeTools::new(
         hippocampe.clone(),
         config.hippocampe.tools.clone(),
         config.hippocampe.tool_timeout(),
-    ))]);
-    let server = tools::serve(tools, config.tools.bind).await?;
+    ))];
+    if config.dictionary.enabled {
+        modules.push(Arc::new(Dictionary::new(
+            BusVocabulary {
+                client: client.clone(),
+                timeout: config.dictionary.timeout(),
+            },
+            conversations.clone(),
+        )));
+    }
+    let server = tools::serve(Tools::new(modules), config.tools.bind).await?;
 
     let workdir = match &config.llm.workdir {
         Some(dir) => dir.0.clone(),
@@ -142,8 +159,6 @@ pub async fn run(config: Config) -> Result<()> {
     .await?;
     info!(model = %config.llm.model, effort = %config.llm.effort, "LLM adapter started");
 
-    let client = bus::connect(&config.nats, "mind", true).await?;
-    info!(url = %config.nats.url, "connected to the bus");
     let mut hearing = client.subscribe(HEARING_SUBJECTS).await?;
     let mut buttons = client.subscribe(subjects::ALL_BUTTONS).await?;
 
@@ -158,7 +173,8 @@ pub async fn run(config: Config) -> Result<()> {
             search_limit: config.hippocampe.search_limit,
             nothing_heard: config.conversation.nothing_heard.clone(),
         },
-    );
+    )
+    .with_conversations(conversations);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut shutdown = std::pin::pin!(shutdown_signal());

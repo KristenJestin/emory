@@ -40,7 +40,10 @@ use rmcp::{
 use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
-use crate::hippocampe::Hippocampe;
+use crate::{
+    conversations::{self, ConversationKey},
+    hippocampe::Hippocampe,
+};
 
 /// A group of tools.
 pub trait Module: Send + Sync + 'static {
@@ -50,6 +53,17 @@ pub trait Module: Send + Sync + 'static {
     fn tools(&self) -> BoxFuture<'_, Vec<Tool>>;
     /// Runs one of its tools. A failure is a tool error, for the LLM to read.
     fn call(&self, tool: &str, arguments: Option<JsonObject>) -> BoxFuture<'_, CallToolResult>;
+    /// Runs one of its tools for a conversation (`None` when the call did not say which): for
+    /// the modules whose tools depend on it. By default, the conversation does not matter.
+    fn call_in(
+        &self,
+        tool: &str,
+        arguments: Option<JsonObject>,
+        conversation: Option<ConversationKey>,
+    ) -> BoxFuture<'_, CallToolResult> {
+        let _ = conversation;
+        self.call(tool, arguments)
+    }
 }
 
 /// The tools of all the modules.
@@ -77,6 +91,16 @@ impl Tools {
     }
 
     pub async fn call(&self, name: &str, arguments: Option<JsonObject>) -> CallToolResult {
+        self.call_in(name, arguments, None).await
+    }
+
+    /// Calls a tool for a conversation.
+    pub async fn call_in(
+        &self,
+        name: &str,
+        arguments: Option<JsonObject>,
+        conversation: Option<ConversationKey>,
+    ) -> CallToolResult {
         let started = Instant::now();
         let routed = self.modules.iter().find_map(|m| {
             name.strip_prefix(m.name())
@@ -84,7 +108,7 @@ impl Tools {
                 .map(|tool| (m, tool))
         });
         let mut result = match routed {
-            Some((module, tool)) => module.call(tool, arguments).await,
+            Some((module, tool)) => module.call_in(tool, arguments, conversation).await,
             None => {
                 CallToolResult::error(vec![ContentBlock::text(format!("Outil inconnu : {name}"))])
             }
@@ -121,10 +145,18 @@ impl ServerHandler for Tools {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        // The HTTP request of the call, which carries the key of its conversation.
+        let conversation = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.headers.get(conversations::HEADER))
+            .and_then(|value| value.to_str().ok())
+            .map(|key| ConversationKey(key.to_owned()));
         Ok(CallToolResponse::Complete(
-            self.call(&request.name, request.arguments).await,
+            self.call_in(&request.name, request.arguments, conversation)
+                .await,
         ))
     }
 }

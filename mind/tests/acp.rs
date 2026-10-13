@@ -18,6 +18,7 @@ use agent_client_protocol::{
 use mind::{
     acp::{AcpBrain, SessionSettings},
     brain::{Brain, Event},
+    conversations::ConversationKey,
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -149,7 +150,7 @@ async fn a_session_streams_its_answer_then_ends() {
     let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
         .await
         .unwrap();
-    let session = brain.open().await.unwrap();
+    let session = brain.open(&ConversationKey("c1".to_owned())).await.unwrap();
     assert_eq!(session.0, "session-1");
     let request = seen.new_session.lock().unwrap().clone().unwrap();
     assert_eq!(request["_meta"]["systemPrompt"], "Tu es Emory.");
@@ -158,6 +159,7 @@ async fn a_session_streams_its_answer_then_ends() {
         serde_json::json!([])
     );
     assert_eq!(request["mcpServers"][0]["url"], "http://127.0.0.1:1/mcp");
+    assert_eq!(request["mcpServers"][0]["headers"][1]["value"], "c1");
 
     let mut events = brain.prompt(&session, "dis trois".to_owned());
     // Every piece arrives before the end of the request, in order.
@@ -188,7 +190,7 @@ async fn a_cancelled_request_ends_cancelled_and_the_session_goes_on() {
     let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
         .await
         .unwrap();
-    let session = brain.open().await.unwrap();
+    let session = brain.open(&ConversationKey("c1".to_owned())).await.unwrap();
     let mut events = brain.prompt(&session, "wait".to_owned());
     assert_eq!(events.recv().await, Some(Event::Text("Début. ".into())));
     brain.cancel(&session);
@@ -209,7 +211,7 @@ async fn a_request_on_a_busy_session_is_refused_and_takes_none_of_its_text() {
     let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
         .await
         .unwrap();
-    let session = brain.open().await.unwrap();
+    let session = brain.open(&ConversationKey("c1".to_owned())).await.unwrap();
     let mut first = brain.prompt(&session, "wait".to_owned());
     assert_eq!(first.recv().await, Some(Event::Text("Début. ".into())));
     let mut second = brain.prompt(&session, "encore".to_owned());
@@ -232,7 +234,7 @@ async fn closing_a_session_ends_its_request() {
     let brain = AcpBrain::connect(start_agent(seen.clone()), settings())
         .await
         .unwrap();
-    let session = brain.open().await.unwrap();
+    let session = brain.open(&ConversationKey("c1".to_owned())).await.unwrap();
     let mut events = brain.prompt(&session, "wait".to_owned());
     assert_eq!(events.recv().await, Some(Event::Text("Début. ".into())));
     // The agent does not answer: the close gives the session up.

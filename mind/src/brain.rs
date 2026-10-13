@@ -6,6 +6,8 @@ use std::future::Future;
 
 use tokio::sync::mpsc;
 
+use crate::conversations::ConversationKey;
+
 /// A session of the LLM, open for the life of a conversation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(pub String);
@@ -28,8 +30,12 @@ pub enum Event {
 }
 
 pub trait Brain: Send + Sync + 'static {
-    /// Opens a session for a new conversation.
-    fn open(&self) -> impl Future<Output = anyhow::Result<SessionId>> + Send;
+    /// Opens a session for a conversation; its calls to Emory's MCP server carry the key of the
+    /// conversation (see [`crate::conversations`]).
+    fn open(
+        &self,
+        conversation: &ConversationKey,
+    ) -> impl Future<Output = anyhow::Result<SessionId>> + Send;
 
     /// Sends the text of a turn, before returning: a [`Brain::cancel`] made after this call
     /// reaches the LLM after the request. The answer streams on the receiver, ending with

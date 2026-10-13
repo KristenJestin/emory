@@ -46,6 +46,7 @@ use tracing::{debug, info, warn};
 use crate::{
     brain::{Brain, Event, SessionId},
     config::has_words,
+    conversations::{ConversationKey, Conversations},
     memory::{Found, Memory},
     request,
     sentences::Splitter,
@@ -125,6 +126,8 @@ impl Link {
 }
 
 struct Conversation {
+    /// What the tools know it by.
+    key: ConversationKey,
     link: Arc<Mutex<Link>>,
     last_exchange: Instant,
     /// The last answer: requests go one at a time.
@@ -263,6 +266,7 @@ pub struct Mind<B, M> {
     mail: Mailbox,
     settings: Settings,
     devices: HashMap<Device, DeviceState>,
+    conversations: Conversations,
 }
 
 impl<B: Brain, M: Memory> Mind<B, M> {
@@ -274,7 +278,14 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             mail: Mailbox::start(out),
             settings,
             devices: HashMap::new(),
+            conversations: Conversations::default(),
         }
+    }
+
+    /// Shares the open conversations with the tools.
+    pub fn with_conversations(mut self, conversations: Conversations) -> Self {
+        self.conversations = conversations;
+        self
     }
 
     pub async fn handle(&mut self, input: Input) {
@@ -359,6 +370,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let idle = self.settings.idle_timeout;
         let brain = self.brain.clone();
         let memory = self.memory.clone();
+        let conversations = self.conversations.clone();
         let state = self.state(device);
         if let Some(c) = &state.conversation
             && c.last_exchange.elapsed() >= idle
@@ -367,6 +379,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             if let Some(session) = c.session() {
                 brain.close(&session);
             }
+            conversations.close(&c.key);
             state.conversation = None;
             info!(%device, "conversation closed (idle)");
         }
@@ -375,18 +388,21 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                 let mut link = c.link.lock().unwrap();
                 if link.failed() {
                     info!(%device, "the session failed to open: opening it again");
-                    *link = Link::new(opening(brain, memory, device.clone()));
+                    *link = Link::new(opening(brain, memory, device.clone(), c.key.clone()));
                 }
                 drop(link);
                 c.last_exchange = Instant::now();
             }
             None => {
+                let key = conversations.open();
                 state.conversation = Some(Conversation {
                     link: Arc::new(Mutex::new(Link::new(opening(
                         brain,
                         memory,
                         device.clone(),
+                        key.clone(),
                     )))),
+                    key,
                     last_exchange: Instant::now(),
                     previous: None,
                 });
@@ -473,10 +489,13 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let brain = self.brain.clone();
         let memory = self.memory.clone();
         let mail = self.mail.clone();
+        let conversations = self.conversations.clone();
         let state = self.state(&device);
         let Some(conversation) = state.conversation.as_mut() else {
             return;
         };
+        // The user has spoken: what a tool waited for in an earlier turn may go now.
+        conversations.spoke(&conversation.key, turn.turn);
         let gate = Arc::new(Gate::default());
         let (done, running) = Running::new();
         let job = Job {
@@ -488,6 +507,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
             text: turn.text,
             searches,
             link: conversation.link.clone(),
+            conversation: conversation.key.clone(),
             previous: conversation.previous.take(),
             gate: gate.clone(),
             received,
@@ -537,6 +557,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
                 if let Some(session) = c.session() {
                     self.brain.close(&session);
                 }
+                self.conversations.close(&c.key);
                 state.conversation = None;
                 info!(%device, "conversation closed (idle)");
             }
@@ -545,8 +566,13 @@ impl<B: Brain, M: Memory> Mind<B, M> {
 }
 
 /// Opens a session and reads the heads-up, in a task of their own: the opening goes on while
-/// The owner speaks.
-fn opening<B: Brain, M: Memory>(brain: Arc<B>, memory: Arc<M>, device: Device) -> Opening {
+/// the owner speaks.
+fn opening<B: Brain, M: Memory>(
+    brain: Arc<B>,
+    memory: Arc<M>,
+    device: Device,
+    conversation: ConversationKey,
+) -> Opening {
     let started = Instant::now();
     let task = tokio::spawn(async move {
         let heads_up = async {
@@ -562,7 +588,7 @@ fn opening<B: Brain, M: Memory>(brain: Arc<B>, memory: Arc<M>, device: Device) -
                 }
             }
         };
-        let (session, heads_up) = tokio::join!(brain.open(), heads_up);
+        let (session, heads_up) = tokio::join!(brain.open(&conversation), heads_up);
         let session = session.map_err(|e| format!("{e:#}"))?;
         info!(
             %device,
@@ -591,6 +617,7 @@ struct Job<B, M> {
     text: String,
     searches: Vec<JoinHandle<Vec<Found>>>,
     link: Arc<Mutex<Link>>,
+    conversation: ConversationKey,
     previous: Option<Previous>,
     gate: Arc<Gate>,
     received: Instant,
@@ -638,6 +665,7 @@ impl<B: Brain, M: Memory> Job<B, M> {
                     self.brain.clone(),
                     self.memory.clone(),
                     self.device.clone(),
+                    self.conversation.clone(),
                 ));
             }
             let tell = !link.told;
