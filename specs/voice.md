@@ -71,6 +71,39 @@ pulsation. Jamais écouté.
 (700 ms) si la réponse n'est pas encore là, puis `start` à nouveau : la musique peut remonter
 un instant entre les deux. Un ton ou une pulsation ne baisse pas la musique.
 
+## Le volume de la voix (2026-10-13)
+
+Kris a essayé la chaîne en direct : la voix (Pocket, estelle) est bien plus faible que le ton
+d'attente, et trop faible en général. Le moteur envoie son audio tel quel (pics de Pocket
+mesurés entre 0,3 et 0,5 du maximum) ; le ton, lui, est normalisé à son pic (`[cue] volume`).
+
+**Construit** (`voice/src/gain.rs`) : une clé de configuration, `gain` (à la racine, à côté de
+`voice` : un tableau `[voice]` entrerait en conflit avec la clé `voice`), de 0,1 à 8, 1 par
+défaut. C'est un facteur sur l'amplitude de l'audio de **tout** moteur (Pocket et Kyutai),
+appliqué morceau par morceau juste avant l'envoi : pas d'attente de la phrase entière, pas de
+latence en plus. Le signal d'attente garde son propre `[cue] volume`. Une valeur hors de la
+plage arrête le démarrage avec un message qui nomme la clé.
+
+**Pourquoi un gain simple plutôt qu'un niveau cible** : un niveau cible demande de connaître le
+pic ou le niveau moyen de la phrase, donc de l'attendre (ou de deviner sur le début) ; un gain
+est sans état, réglable à l'oreille et n'ajoute rien. Les moteurs ont des niveaux différents, mais
+`gain` est dans le fichier de chaque `voice` : on règle donc par moteur.
+
+**Contre l'écrêtage** : un échantillon coupé net au maximum crépite. Jusqu'à 0,8 du maximum, un
+échantillon est seulement multiplié ; au-delà, la courbe s'infléchit doucement vers le maximum
+(une `tanh` qui part avec la même pente, sans angle) et ne le dépasse jamais : une syllabe forte
+est arrondie, jamais coupée. La courbe n'a pas de mémoire, donc rien ne claque à la jointure de
+deux morceaux. Avec un gain d'exactement 1, les octets passent tels quels (comportement
+d'avant).
+
+**Mesuré le 2026-10-13** sur un bus à part, avec `voice` et Pocket réels (`voice-try`, cinq
+phrases de 1,6 à 5 s, une fois chacune par gain, rien de joué) : les pics sont de 0,29 à 0,37 à
+`gain = 1` et de 0,58 à 0,93 à `gain = 2` (aucun échantillon au-dessus de 0,976). Pocket n'est
+pas déterministe : sur cinq autres phrases passées d'un trait, le pic allait de 0,49 (`gain = 1`)
+à 0,72 (`gain = 2`) et 0,96 (`gain = 3`). **Réglé à 2,0** dans `dev/voice.toml` ; `dev/voice-kyutai.toml`
+a aussi 2,0, sans mesure (le moteur Kyutai ne tournait pas), le limiteur gardant le son sous le
+maximum. **Jamais écouté** : le niveau perçu par rapport au ton à 0,1 reste à juger à l'oreille.
+
 ## L'interruption
 
 En version 1, un appui sur le bouton pendant qu'Emory parle le fait taire : `emory-mouth` jette le
