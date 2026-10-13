@@ -1,0 +1,19 @@
+# The mind on the PC with the direct API (Haiku 5.5), from the root of the repository:
+# `cargo run -p mind -- dev/mind-api.toml`. Hippocampe is the developer's real memory: in
+# development the mind reads it with the read-only key.
+
+[llm]
+mode = "api"
+provider = "anthropic"
+model = "claude-haiku-5-5"
+key_file = "~/.krisnet/anthropic-api.key"
+thinking = "off"
+system_prompt = "mind/prompts/system.fr.md"
+
+[owner]
+name = "Kris"
+address = "un homme ; tu le tutoies"
+
+[hippocampe]
+url = "https://wiki.krisnet.work/mcp"
+token_file = "~/.krisnet/hippocampe-prod-readonly.token"

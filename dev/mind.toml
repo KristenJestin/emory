@@ -1,7 +1,9 @@
-# The mind on the PC, from the root of the repository: `cargo run -p mind -- dev/mind.toml`.
+# The mind on the PC through ACP (the Claude subscription), from the root of the repository:
+# `cargo run -p mind -- dev/mind.toml`. The direct API: `dev/mind-api.toml`.
 # Hippocampe is the developer's real memory: in development the mind reads it with the read-only key.
 
 [llm]
+mode = "acp"
 command = "npx"
 args = ["-y", "@agentclientprotocol/claude-agent-acp@0.89.1"]
 system_prompt = "mind/prompts/system.fr.md"
