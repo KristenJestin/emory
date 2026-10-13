@@ -93,6 +93,9 @@ Une entrée écrite par Emory n'attend aucune validation ; Kris confirme quand i
   les dates et les heures en toutes lettres.
 - Pas de phrase d'attente (voir [`voice.md`](voice.md)) : celle du signal d'attente (plus bas) est
   dite par le code, pas par le LLM.
+- Changé le 2026-10-13 (essai en direct) : avant un outil, le LLM écrit une phrase de transition
+  qui dit ce qu'il va faire et sur quoi (« Je lis ta fiche sur le déménagement. »), jamais une
+  phrase vide (« je regarde », « un instant »). Elle part à la voix pendant que l'outil tourne.
 - Il cherche dans Hippocampe avant d'affirmer quelque chose sur la vie de Kris, et dit quand il
   ne sait pas.
 
