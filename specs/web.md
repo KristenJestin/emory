@@ -115,7 +115,7 @@ Le signal d'attente sait déjà dire une phrase par outil : le fichier de phrase
   si rien n'est trouvé.
 - Le résultat : `title`, `description`, `extract` (sans le contenu entre crochets qui contient des
   caractères de l'alphabet phonétique, sans « Écouter »), coupé à `max_chars`, `url` (pour
-  `web_read` seulement : ajouté avec W4), `lang`, et `others`, les deux autres titres trouvés (pour que le LLM
+  `web_read` seulement : ajouté avec W4, le 2026-10-14), `lang`, et `others`, les deux autres titres trouvés (pour que le LLM
   choisisse quand la question était ambiguë).
 - Une page d'homonymie (`type: disambiguation`) n'est pas résumée : le résultat donne les titres
   trouvés et le LLM demande lequel.
@@ -280,9 +280,13 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
    `result__a`, décodage de `uddg`, publicités retirées, état et pause sous horloge arrêtée, un
    serveur de test qui sert les pages par le vrai client ; aucun appel réseau dans les tests (voir
    « Ce qui a été décidé en construisant W3 »).
-4. **W4. Lire une page** : `web_read`, adresses trouvées seulement, garde contre les adresses
-   privées (avec les redirections), plafonds, extraction. Vérifié : un serveur HTTP local de test
-   qui redirige vers `127.0.0.1` (refusé), une page trop grosse, un PDF, une page sans texte.
+4. **W4. Lire une page** : **construit le 2026-10-14** (branche `web-read`). `web_read`, adresses
+   trouvées seulement, garde contre les adresses privées (avec les redirections), plafonds,
+   extraction. Vérifié : un serveur HTTP local de test qui redirige vers `127.0.0.1` (refusé), une
+   page trop grosse, un PDF, une page sans texte, une adresse non trouvée dans la conversation
+   (refusée) et une trouvée (lue), les cas IPv6 et IPv4 dans IPv6 de la garde, l'infobox d'un
+   article de Wikipédia ; aucun appel réseau dans les tests (voir « Ce qui a été décidé en
+   construisant W4 »).
 5. **W5. Les consignes et l'attente** : la ligne du prompt, les phrases d'attente des outils web.
    Vérifié : un essai en vrai par Kris (« il va pleuvoir demain ? », « c'est qui Gustave
    Eiffel ? »).
@@ -462,6 +466,107 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
   enregistrement** dès qu'un poste non bloqué en a un. Si la marque réelle est autre, la lecture dira
   `PageChanged` pour une question sans résultat (le mauvais côté de l'erreur : bruyant, pas muet).
 
+## Ce qui a été décidé en construisant W4 (2026-10-14)
+
+- **Comment la conversation arrive à l'outil** : rien de neuf dans `tools.rs`. `Module` avait déjà
+  `call_in(outil, arguments, conversation)` (fait pour le dictionnaire et le temps), que le serveur
+  MCP (clé lue dans l'en-tête `emory-conversation`) et le mode API appellent déjà avec la
+  conversation. Le module `web` l'implémente, et **`Web::new` prend `Conversations`** (le même état
+  partagé que le dictionnaire et le temps), changement d'une ligne dans `lib.rs` et dans
+  `examples/first-word-probe.rs`.
+- **Les adresses trouvées** sont tenues dans le module `web`, par conversation, comme les
+  propositions du dictionnaire : après un succès de `web_search` ou de `web_wikipedia` dans une
+  conversation ouverte, le module relève dans la réponse le champ `url` et ceux de `results` (il
+  lit la réponse JSON de l'outil, sans toucher aux outils eux-mêmes ; une réponse en cache compte
+  aussi). 200 adresses au plus par conversation, les plus anciennes partent ; elles disparaissent
+  avec la conversation. Une adresse est comparée sous sa forme normale (`Url` : accents encodés,
+  hôte en minuscules) **sans la partie après `#`** (que le serveur ne voit jamais) ; tout le reste
+  compte, donc une autre page du même site est refusée. Sans conversation (appel sans clé) :
+  « Cet outil ne sert que dans une conversation. » Non trouvée : « Cette adresse n'a été donnée ni
+  par web_search ni par web_wikipedia dans cette conversation : cherche la page d'abord. », avant
+  toute requête. Une redirection depuis une adresse trouvée est suivie (sous la garde).
+- **`url` dans le résultat de `web_wikipedia`** : `content_urls.desktop.page` du résumé (l'adresse
+  de l'article, `https://fr.wikipedia.org/wiki/…`), seulement pour un article, pas pour une
+  homonymie.
+- **`web_read` n'existe que s'il a quelque chose à lire** : `[web.read] enabled`, et, quand
+  `only_found_urls` est vrai, `web_wikipedia` ou `web_search` présent. Sinon l'outil n'est pas
+  offert.
+- **La garde contre les adresses privées, et le rebinding DNS.** Le client de `web_read` est à part
+  et gardé (`mind/src/web/read.rs`) :
+  - **son propre résolveur** (le `dns_resolver` de `reqwest`) résout le nom, refuse le nom entier si
+    **une** de ses adresses n'est pas publique (un nom qui mêle une adresse publique et une privée
+    est refusé, le client pourrait prendre l'une ou l'autre), et donne au client ces adresses-là,
+    vérifiées, et rien d'autre : la connexion va à l'adresse vérifiée, aucune seconde résolution
+    ne peut la changer (c'est la parade au rebinding : la vérification et la connexion sont la même
+    résolution) ;
+  - **une adresse écrite dans l'URL** (`http://127.0.0.1/`, `http://[::1]/`, `http://0x7f.1/`, que
+    `Url` ramène à `127.0.0.1`) n'est jamais résolue par le client : elle est vérifiée avant la
+    requête ;
+  - **les redirections ne sont pas suivies par `reqwest`** (`Policy::none`) mais par `web_read`, une
+    à une, chaque nouvelle adresse vérifiée comme la première (schéma, adresse écrite, nom par le
+    résolveur) ; au-delà de `max_redirects` : « La page renvoie vers d'autres adresses trop de
+    fois. » ;
+  - **aucun proxy** (`no_proxy`) : un proxy des variables d'environnement résoudrait les noms
+    lui-même, hors de la garde.
+  - Ce qui est public : en IPv4, tout sauf `0.0.0.0/8`, `10/8`, `127/8`, `100.64/10` (adresses
+    partagées des opérateurs), `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.88.99/24`,
+    `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4` et au-delà (multicast,
+    réservé, diffusion). En IPv6, seulement `2000::/3` (le seul bloc donné pour l'internet), sauf
+    `2001:db8::/32` ; donc `::`, `::1`, `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8` sont
+    refusés. Une IPv6 qui porte une IPv4 est jugée par elle : mappée (`::ffff:127.0.0.1`),
+    compatible (`::127.0.0.1`), NAT64 (`64:ff9b::/96`) et 6to4 (`2002::/16`).
+  - « Cette adresse mène à une machine d'un réseau privé : elle n'est pas lue. » Le refus du
+    résolveur est reconnu dans la chaîne d'erreurs de `reqwest`, pour dire cette phrase plutôt que
+    « ne répond pas ».
+- **Les plafonds** : `timeout_ms` est le délai de toute la lecture (redirections et page), tenu par
+  un `tokio::time::timeout` autour de tout, et aussi par le client ; `max_bytes` se compte sur la
+  page décompressée (une bombe gzip s'arrête là) : le reste est jeté et ce qui est lu est extrait,
+  avec `truncated: true`. Pas de cookie (le client n'a pas de magasin de cookies, vérifié par un
+  test), pas de `Referer`. Bornes vérifiées au démarrage : `timeout_ms` 100 à 60 000, `max_bytes`
+  10 000 à 20 000 000, `max_chars` 500 à 50 000, `max_redirects` 10 au plus.
+- **Le type** : seulement `text/html` et `text/plain`, lu dans `Content-Type` avant le corps ; un
+  autre : « Cette page n'est pas du texte (application/pdf) : elle n'est pas lue. » ; sans
+  `Content-Type` : refusée aussi (« La page ne dit pas ce qu'elle est »). `application/xhtml+xml`
+  n'est pas accepté (la spec ne le prévoit pas ; à ajouter si une page en a besoin). Le jeu de
+  caractères vient de l'en-tête, sinon d'un `charset=` dans les 2 premiers Ko de la page HTML,
+  sinon UTF-8 (`encoding_rs`, déjà dans les dépendances de `reqwest`).
+- **Le `User-Agent` de `web_read`** est celui des API (`[web] user_agent`, « Emory/… »), pas le
+  navigateur de la recherche : se faire passer pour un navigateur était le prix de DuckDuckGo
+  seulement. Des sites refuseront peut-être un robot ; à revoir sur des cas réels.
+- **L'extraction : `dom_smoothie` 0.18** (Readability de Mozilla porté en Rust, bâti sur
+  `dom_query` 0.28, déjà dans `mind` ; dernière version le 2026-09-21, une dizaine de versions en
+  2026), plutôt que `readability` (dernière version en 2023). Mode `Formatted` (des lignes, pas du
+  Markdown). Quand Readability ne trouve pas d'article, le texte de tout le `body` sans `script`,
+  `style`, `noscript` et `template`. Les blancs : une espace entre les mots, un saut de ligne entre
+  les lignes, aucune ligne vide. Un texte vide : « La page est vide sans JavaScript : elle ne se
+  lit pas ainsi. » (seulement vide : pas de seuil de longueur, une page qui ne dit que trois mots les
+  donne). Coupé à `max_chars` après un mot (dans la seconde moitié), avec « […] ». Le résultat :
+  `{"title", "site", "text", "truncated"}` (`title` absent quand la page n'en a pas, `site` sans
+  `www.`), le texte précédé de la marque et d'un saut de ligne. 5 crates nouvelles dans
+  `Cargo.lock` (`dom_smoothie`, `flagset`, `gjson`, `html-escape`, `nom`).
+- **L'infobox de Wikipédia est gardée** : c'était le vrai besoin (le 2026-10-13, la population
+  d'une ville, absente du résumé). Mesuré sur l'article « Saint-Véran » en français et en anglais
+  (`mind/tests/fixtures/web/page-fr-saint-veran.html`, la page telle que Wikipédia l'a servie) :
+  Readability garde le tableau `infobox`, **en tête du texte**, ligne par ligne (« Population
+  municipale 160 hab. (2023) », « Superficie 44,75 km2 », les altitudes, le département), puis
+  l'article ; rien du menu ni du pied de page. Il n'a donc pas fallu de chemin propre à Wikipédia
+  (ni l'API en texte brut ni l'API HTML). Ce qui se perd ou gêne : les lignes de cartes
+  (« Géolocalisation sur la carte : France » répété), « modifier », les renvois de notes
+  (`[1]`) ; l'article de 36 000 caractères est coupé à 6 000, donc la fin (démographie détaillée,
+  histoire) n'arrive pas, mais l'infobox, au début, toujours.
+- **Les journaux** de `web_read` disent la durée, le nombre de caractères et la coupure, ou la
+  phrase du refus ; **jamais l'adresse ni l'hôte** (l'hôte d'une page lue en dit autant qu'une
+  question).
+- **Les tests** (`mind/tests/web_read.rs`) : un serveur de test sur `127.0.0.2`, la seule adresse
+  que les tests tiennent pour publique (`Web::read_through`, une exception d'une adresse et un
+  résolveur fixe) : tout le reste du bouclage reste refusé, ce qui permet de refuser pour de vrai
+  une redirection vers `127.0.0.1`. Un test passe par le vrai résolveur du système (`localhost` et
+  `127.0.0.2` refusés sans exception). Un test `#[ignore]`, `real_wikipedia_page`, lit la vraie page.
+- **Mesuré le 2026-10-14** (3 requêtes à Wikipédia en tout : les pages française et anglaise de
+  « Saint-Véran » par `curl`, puis la française par le vrai code) : 80 Ko compressés, 486 Ko de
+  HTML, 36 000 caractères extraits en 24 ms (compilé en mode release), la lecture entière par
+  `web_read` en 461 ms.
+
 ## Questions ouvertes
 
 1. Le lieu par défaut de la météo : lequel mettre dans `dev/mind.toml` ? Recommandation : la ville
@@ -474,7 +579,7 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
    **Décidé le 2026-10-13 avec Kris : oui.**
 3. `web_read` limité aux adresses trouvées : Kris pourrait vouloir « lis la page de la mairie ».
    Recommandation : garder la règle ; Emory cherche la page d'abord, ce qui revient au même pour
-   la voix.
+   la voix. **Gardée en construisant W4 (2026-10-14)** : `only_found_urls = true` par défaut.
 4. La météo dite d'elle-même à l'ouverture d'une conversation (« il va pleuvoir cet
    après-midi ») : recommandation, non pour l'instant ; c'est la même question que le point du
    jour d'Hippocampe (question 4 de `mind.md`), à trancher ensemble.
