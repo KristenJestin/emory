@@ -443,12 +443,15 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
   Une ligne, et un code de sortie : 0 ok, 1 bloqué, 2 page changée, 3 injoignable, 4 aucun résultat,
   5 autre chose (fichier illisible). À ne pas lancer en boucle.
 - **Les phrases d'attente de `web_search`** restent à W5, avec la ligne du prompt.
-- **Mesuré le 2026-10-14** (3 requêtes à DuckDuckGo en tout, 5 permises) : `rust programming language
+- **Mesuré le 2026-10-14** (4 requêtes à DuckDuckGo en tout, 5 permises) : `rust programming language
   latest version` : 200, 31,8 Ko, 0,70 s, 10 résultats, aucune publicité. Huit secondes après, une
   question de mots sans sens : **202 et le captcha de la page HTML** (`anomaly-modal`, `cc=botnet`),
   pas seulement celui de `lite` : la page HTML bloque aussi, et vite (la veille, cette machine avait
   fait deux requêtes, dont une à `lite`). Une dizaine de minutes plus tard, une phrase rare entre
-  guillemets : 202 encore. Je n'ai pas insisté. Retenir : sur ce poste, deux ou trois requêtes à
+  guillemets : 202 encore. Une quatrième, par
+  `web-check` (le vrai code, à froid, une demi-heure plus tard) : `blocked: duckduckgo answered HTTP
+  202`, code de sortie 1, en 230 ms : le programme d'exemple dit bien le cas, et le blocage durait
+  encore. Je n'ai pas insisté. Retenir : sur ce poste, deux ou trois requêtes à
   quelques secondes d'écart suffisent à être pris pour un robot, ce qui est exactement le cas que la
   pause traite ; `min_interval_ms` à 1 s est peut-être trop court, et la durée réelle d'un blocage
   n'est pas mesurée (à surveiller avec `web-check` avant d'allonger quoi que ce soit).
