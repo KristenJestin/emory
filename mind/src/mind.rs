@@ -9,7 +9,8 @@
 //! - **the turn being heard**: each transcribed sentence is searched in the memory at once, as it
 //!   is, given up beyond the search timeout;
 //! - **the answer**: a task that sends the request, cuts the streamed text into sentences and
-//!   publishes each one (`voice.say`), the last one marked `last`.
+//!   publishes each one (`voice.say`) as soon as it is finished; the end of the answer goes on its
+//!   own, an empty sentence marked `last`.
 //!
 //! The presses and what the hearing says come on two subscriptions, in no order between them: a
 //! sentence or a turn older than the newest turn seen on the device is dropped (the turns are
@@ -772,7 +773,7 @@ impl<B: Brain, M: Memory> Mind<B, M> {
         let (done, task) = Running::new();
         let mut splitter = Splitter::new();
         let mut sentences = splitter.push(&text);
-        sentences.extend(splitter.finish());
+        sentences.extend(splitter.flush());
         info!(
             %origin,
             %device,
@@ -1028,10 +1029,14 @@ impl<B: Brain, M: Memory> Job<B, M> {
                 Ok(Some(Event::Text(_))) => {}
                 Ok(Some(Event::Tool(name))) => {
                     debug!(turn = %self.turn, tool = %name, "the LLM calls a tool");
+                    // What was written before the call is said while the tool works.
+                    if !given_up && let Some(pending) = splitter.flush() {
+                        say.publish(pending, false);
+                    }
                 }
                 Ok(Some(Event::Done(result))) => {
-                    if !given_up && let Some(last) = splitter.finish() {
-                        say.publish(last, true);
+                    if !given_up && let Some(rest) = splitter.flush() {
+                        say.publish(rest, false);
                     }
                     say.finish();
                     match result {
@@ -1109,7 +1114,8 @@ impl Sayer {
 
     /// The answer is over, whatever way: the voice gets its `last`. When nothing was said, the owner
     /// is told it failed; otherwise an empty last sentence closes the turn (the voice ends it
-    /// with an empty chunk carrying the end).
+    /// with an empty chunk carrying the end). The sentences leave as soon as they are finished, so
+    /// this is how every answer of the LLM ends.
     fn finish(&mut self) {
         if self.index == 0 {
             self.publish(FAILURE.to_owned(), true);

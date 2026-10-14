@@ -1,5 +1,5 @@
 //! The relay with a fake LLM, a fake memory and the sentences recorded instead of published: the
-//! streaming cut, `last`, the routing, the pre-search and its timeout, the barge-in, the idle close,
+//! streaming cut, the end of an answer, the routing, the pre-search and its timeout, the barge-in, the idle close,
 //! Emory speaking on her own.
 
 use std::{
@@ -357,7 +357,7 @@ fn done() -> Event {
 }
 
 #[tokio::test]
-async fn the_answer_streams_sentence_by_sentence_with_the_last_marked() {
+async fn the_answer_streams_sentence_by_sentence_and_its_end_on_its_own() {
     let mut b = bench(FakeMemory::default());
     let (id, prompt) = b.ask("office", &["bonjour"]).await;
     prompt.events.send(text("Bonjour Léa. Le con")).unwrap();
@@ -367,14 +367,31 @@ async fn the_answer_streams_sentence_by_sentence_with_the_last_marked() {
         b.out.says(),
         [("office".into(), 0, "Bonjour Léa.".into(), false)]
     );
-    prompt.events.send(text("en mars.")).unwrap();
-    prompt.events.send(done()).unwrap();
+    // Finished by its space, it leaves before the end of the answer.
+    prompt.events.send(text("en mars. ")).unwrap();
     b.out.wait_for(2).await;
+    assert_eq!(
+        b.out.says()[1],
+        (
+            "office".into(),
+            1,
+            "Le contrat finit en mars.".into(),
+            false
+        )
+    );
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(3).await;
     assert_eq!(
         b.out.says(),
         [
             ("office".into(), 0, "Bonjour Léa.".into(), false),
-            ("office".into(), 1, "Le contrat finit en mars.".into(), true)
+            (
+                "office".into(),
+                1,
+                "Le contrat finit en mars.".into(),
+                false
+            ),
+            ("office".into(), 2, String::new(), true)
         ]
     );
     assert!(
@@ -386,6 +403,61 @@ async fn the_answer_streams_sentence_by_sentence_with_the_last_marked() {
 }
 
 #[tokio::test]
+async fn what_is_written_before_a_tool_call_is_said_while_the_tool_works() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["cherche"]).await;
+    // Finished, but nothing follows it before the call: it leaves at the call at the latest.
+    prompt.events.send(text("Je regarde.")).unwrap();
+    prompt.events.send(Event::Tool("search".into())).unwrap();
+    b.out.wait_for(1).await;
+    assert_eq!(
+        b.out.says(),
+        [("office".into(), 0, "Je regarde.".into(), false)]
+    );
+    // Even a text without its end leaves at a call.
+    prompt.events.send(text("Encore un")).unwrap();
+    prompt.events.send(Event::Tool("search".into())).unwrap();
+    b.out.wait_for(2).await;
+    assert_eq!(
+        b.out.says()[1],
+        ("office".into(), 1, "Encore un".into(), false)
+    );
+    // A call with nothing pending sends nothing.
+    prompt.events.send(Event::Tool("search".into())).unwrap();
+    prompt.events.send(text("C'est trouvé.")).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(4).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Je regarde.".into(), false),
+            ("office".into(), 1, "Encore un".into(), false),
+            ("office".into(), 2, "C'est trouvé.".into(), false),
+            ("office".into(), 3, String::new(), true)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_answer_ended_by_its_tool_call_alone_ends_the_turn_once() {
+    let mut b = bench(FakeMemory::default());
+    let (_, prompt) = b.ask("office", &["cherche"]).await;
+    prompt.events.send(text("Je regarde.")).unwrap();
+    prompt.events.send(Event::Tool("search".into())).unwrap();
+    prompt.events.send(done()).unwrap();
+    b.out.wait_for(2).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Je regarde.".into(), false),
+            ("office".into(), 1, String::new(), true)
+        ]
+    );
+}
+
+#[tokio::test]
 async fn the_answer_goes_to_the_device_that_heard_in_its_own_conversation() {
     let mut b = bench(FakeMemory::default());
     let (_, office) = b.ask("office", &["un"]).await;
@@ -393,15 +465,17 @@ async fn the_answer_goes_to_the_device_that_heard_in_its_own_conversation() {
     assert_ne!(office.session, salon.session);
     salon.events.send(text("Pour le salon.")).unwrap();
     salon.events.send(done()).unwrap();
-    b.out.wait_for(1).await;
+    b.out.wait_for(2).await;
     office.events.send(text("Pour le bureau.")).unwrap();
     office.events.send(done()).unwrap();
-    b.out.wait_for(2).await;
+    b.out.wait_for(4).await;
     assert_eq!(
         b.out.says(),
         [
-            ("salon".into(), 0, "Pour le salon.".into(), true),
-            ("office".into(), 0, "Pour le bureau.".into(), true)
+            ("salon".into(), 0, "Pour le salon.".into(), false),
+            ("salon".into(), 1, String::new(), true),
+            ("office".into(), 0, "Pour le bureau.".into(), false),
+            ("office".into(), 1, String::new(), true)
         ]
     );
     assert_eq!(*b.brain.opened.lock().unwrap(), 2);
@@ -513,10 +587,13 @@ async fn a_press_while_answering_cancels_the_llm_and_stops_the_voice() {
     assert_eq!(again.session, prompt.session);
     again.events.send(text("Alors rien.")).unwrap();
     again.events.send(done()).unwrap();
-    b.out.wait_for(3).await;
+    b.out.wait_for(4).await;
     assert_eq!(
-        b.out.says()[1],
-        ("office".into(), 0, "Alors rien.".into(), true)
+        b.out.says()[1..],
+        [
+            ("office".into(), 0, "Alors rien.".into(), false),
+            ("office".into(), 1, String::new(), true)
+        ]
     );
 }
 
@@ -526,10 +603,10 @@ async fn a_press_after_the_answer_still_stops_the_voice_without_cancelling() {
     let (first, prompt) = b.ask("office", &["bonjour"]).await;
     prompt.events.send(text("Salut.")).unwrap();
     prompt.events.send(done()).unwrap();
-    b.out.wait_for(1).await;
+    b.out.wait_for(2).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     b.mind.handle(press("office", new_turn())).await;
-    b.out.wait_for(2).await;
+    b.out.wait_for(3).await;
     assert!(b.brain.cancels.lock().unwrap().is_empty());
     assert_eq!(
         b.out.all().last(),
@@ -814,8 +891,14 @@ async fn a_request_waits_for_the_end_of_the_previous_one() {
     assert_eq!(second.session, first.session);
     second.events.send(text("Rien.")).unwrap();
     second.events.send(done()).unwrap();
-    b.out.wait_for(2).await;
-    assert_eq!(b.out.says(), [("office".into(), 0, "Rien.".into(), true)]);
+    b.out.wait_for(3).await;
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Rien.".into(), false),
+            ("office".into(), 1, String::new(), true)
+        ]
+    );
     assert_eq!(b.brain.refused.load(Ordering::SeqCst), 0);
 }
 
@@ -868,7 +951,7 @@ async fn a_session_whose_request_never_ends_is_replaced() {
     let _ = first.events.send(text("Trop tard."));
     second.events.send(text("Voilà.")).unwrap();
     second.events.send(done()).unwrap();
-    b.out.wait_for(2).await;
+    b.out.wait_for(3).await;
     assert_eq!(
         b.out.all(),
         [
@@ -881,6 +964,13 @@ async fn a_session_whose_request_never_ends_is_replaced() {
                 device: device("office"),
                 index: 0,
                 text: "Voilà.".into(),
+                last: false
+            }),
+            Out::Say(Say {
+                turn: next,
+                device: device("office"),
+                index: 1,
+                text: String::new(),
                 last: true
             })
         ]
@@ -952,10 +1042,16 @@ async fn a_late_press_does_not_stop_the_answer_of_its_turn() {
     b.mind.handle(press("office", id)).await;
     prompt.events.send(text("Salut.")).unwrap();
     prompt.events.send(done()).unwrap();
-    b.out.wait_for(1).await;
+    b.out.wait_for(2).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(b.brain.cancels.lock().unwrap().is_empty());
-    assert_eq!(b.out.says(), [("office".into(), 0, "Salut.".into(), true)]);
+    assert_eq!(
+        b.out.says(),
+        [
+            ("office".into(), 0, "Salut.".into(), false),
+            ("office".into(), 1, String::new(), true)
+        ]
+    );
     assert!(b.out.all().iter().all(|o| matches!(o, Out::Say(_))));
 }
 
@@ -1009,13 +1105,14 @@ async fn a_failure_after_some_sentences_still_ends_the_turn() {
         .events
         .send(Event::Done(Err("overloaded".into())))
         .unwrap();
-    b.out.wait_for(3).await;
+    b.out.wait_for(4).await;
     assert_eq!(
         b.out.says(),
         [
             ("office".into(), 0, "Un.".into(), false),
             ("office".into(), 1, "Deux.".into(), false),
-            ("office".into(), 2, "Trois".into(), true)
+            ("office".into(), 2, "Trois".into(), false),
+            ("office".into(), 3, String::new(), true)
         ]
     );
 }
@@ -1184,8 +1281,9 @@ async fn it_waits_for_the_end_of_an_answer_and_for_the_voice_to_say_it() {
     // The answer is over and said (as far as the mind can tell): Emory speaks at once.
     b.after(Duration::from_secs(5)).await;
     let says = b.out.says();
-    assert_eq!(says.len(), 3);
-    assert_eq!(says[2], ("office".into(), 0, OWN.into(), true));
+    assert_eq!(says.len(), 4);
+    assert_eq!(says[2], ("office".into(), 2, String::new(), true));
+    assert_eq!(says[3], ("office".into(), 0, OWN.into(), true));
 }
 
 #[tokio::test(start_paused = true)]

@@ -232,8 +232,11 @@ async fn the_tone_leaves_when_the_turn_closes_before_any_sentence() {
     b.brain.send(Event::Text("Il est midi.".to_owned()));
     b.brain.send(Event::Done(Ok("end_turn".to_owned())));
     tokio::time::sleep(Duration::from_secs(10)).await;
-    // The tone, then the answer: no pulse, the answer came in time.
-    assert_eq!(b.out.all(), [Out::Cue(CueKind::Tone, None), Out::Say(0)]);
+    // The tone, then the answer and its end: no pulse, the answer came in time.
+    assert_eq!(
+        b.out.all(),
+        [Out::Cue(CueKind::Tone, None), Out::Say(0), Out::Say(1)]
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -253,7 +256,7 @@ async fn a_late_answer_gets_the_pulse_and_then_nothing_once_it_starts() {
     b.brain.send(Event::Done(Ok("end_turn".to_owned())));
     tokio::time::sleep(Duration::from_secs(10)).await;
     let all = b.out.all();
-    assert_eq!(all[2..], [Out::Say(0), Out::Say(1)]);
+    assert_eq!(all[2..], [Out::Say(0), Out::Say(1), Out::Say(2)]);
     assert!(!b.waiter.is_waiting(&device()));
 }
 
@@ -288,9 +291,8 @@ async fn a_tool_call_makes_the_phrase_about_what_is_searched() {
     tokio::time::sleep(Duration::from_secs(10)).await;
     b.tool("hippocampe_search", serde_json::json!({"query": "Marc"}));
     settle().await;
-    // The phrase, the answer, and nothing after it.
-    assert_eq!(b.out.all().len(), 2);
-    assert!(matches!(b.out.all()[1], Out::Say(0)));
+    // The phrase, the answer and its end, and nothing after it.
+    assert_eq!(b.out.all()[1..], [Out::Say(0), Out::Say(1)]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -360,6 +362,5 @@ async fn the_silence_after_the_phrase_is_filled_until_the_first_word() {
     b.tool("hippocampe_search", serde_json::json!({"query": "Marc"}));
     settle().await;
     let all = b.out.all();
-    assert_eq!(all.len(), 3, "{all:?}");
-    assert!(matches!(all[2], Out::Say(0)));
+    assert_eq!(all[2..], [Out::Say(0), Out::Say(1)], "{all:?}");
 }
