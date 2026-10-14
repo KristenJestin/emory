@@ -657,8 +657,9 @@ async fn ask(
             }
         }
         call.end_ms = started.elapsed().as_millis() as u64;
-        // A sentence that ends the answer is released at the end of the stream, as in `mind`.
-        if tool_calls.is_empty() && splitter.finish().is_some() {
+        // What is pending leaves at the end of the stream, before a tool call or at the end of the
+        // answer, as in `mind`.
+        if splitter.flush().is_some() {
             call.first_sentence_ms.get_or_insert(call.end_ms);
             turn.first_sentence_ms.get_or_insert(call.end_ms);
         }

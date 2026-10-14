@@ -1,6 +1,6 @@
 # Le contrat
 
-Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11. `hearing.vocabulary.add` ajouté le 2026-10-13. `voice.cue` ajouté le 2026-10-13. Proposés le 2026-10-13 (brouillon, à relire avec Kris) : les actions dont le nom porte un point et `confirm`, `timeout_ms` dans l'annonce, `mind.event.<source>`, `mind.timer.changed` et `mind.timer.fired`.
+Statut : décidé avec Kris le 2026-10-11. Noms passés en anglais le 2026-10-11 ; `last` ajouté à `Say` le 2026-10-11 ; la fin d'une réponse en phrase vide marquée `last` le 2026-10-14. `hearing.vocabulary.add` ajouté le 2026-10-13. `voice.cue` ajouté le 2026-10-13. Proposés le 2026-10-13 (brouillon, à relire avec Kris) : les actions dont le nom porte un point et `confirm`, `timeout_ms` dans l'annonce, `mind.event.<source>`, `mind.timer.changed` et `mind.timer.fired`.
 
 Le contrat est la seule chose que les programmes d'Emory partagent : les sujets du bus et le format
 de chaque message. Il vit dans `contract/`, une crate Rust sans réseau (des types `serde`, des
@@ -143,6 +143,13 @@ la réponse. Alors `voice` sait que rien ne suivra : elle envoie `Speaking` `end
 phrase a fini d'être jouée, sans attendre. Tant qu'aucune phrase n'est marquée `last`, `voice` garde
 un court délai de grâce après le dernier son avant de dire qu'elle a fini, au cas où `mind` enverrait
 une phrase de plus ; ce délai reste le repli quand `last` n'arrive jamais.
+
+Depuis le 2026-10-14, la fin d'une réponse du LLM est une phrase à part : `mind` envoie chaque
+phrase dès qu'elle est finie, sans `last`, puis, à la fin de la réponse, une phrase au texte vide
+marquée `last` (`"text": ""`). Aucun champ ne change : une phrase vide existait déjà pour finir
+après une erreur. `voice` la dit « sans son », un morceau vide qui porte `Emory-End`. Une parole
+d'elle-même, dont le texte est connu en entier, porte encore `last` sur sa dernière phrase : les
+deux formes sont valides (voir [`mind.md`](mind.md), « Le flux sans attente »).
 
 ### `Cue`
 

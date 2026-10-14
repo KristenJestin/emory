@@ -24,7 +24,8 @@ répondeur à Hippocampe).
   conversation se ferme après un temps sans échange, réglable, large pour commencer (30 minutes) ;
 - **le routage** : la réponse part vers l'appareil qui a entendu Kris ;
 - **le flux** : la réponse du LLM est découpée en phrases au fil de l'eau, chaque phrase part
-  aussitôt vers `voice` (`voice.say`), la dernière marquée `last` ;
+  vers `voice` (`voice.say`) dès qu'elle est finie ; la fin de la réponse part à part, une phrase
+  vide marquée `last` (2026-10-14) ;
 - **l'interruption** : un appui pendant qu'Emory parle arrête le LLM et envoie `voice.stop` ;
 - **les outils** : il sert le serveur MCP d'Emory (plus bas) et exécute ce que le LLM demande ;
 - **les minuteurs et les rappels** : il les garde, et à l'échéance Emory le dit sur l'appareil ;
@@ -201,12 +202,14 @@ qu'aux outils du serveur MCP d'Emory (`mcp__emory__*`), une seule fois (`allow_o
 nommément) ; tout autre outil est refusé et journalisé.
 
 **Le flux.** Le texte est coupé en phrases à `.`, `!`, `?`, `…` suivis d'un espace, ou à un retour
-à la ligne ; une phrase part dès que la suivante commence, ce qui garde toujours la dernière pour
-la fin du flux : elle part alors marquée `last`. Une phrase sans fin de plus de 220 caractères est
-coupée à sa dernière virgule. Les marques de mise en forme sont retirées. `voice` reçoit toujours
-un `last`, quelle que soit la fin (erreur après quelques phrases, flux coupé, LLM muet, reste
-vide après nettoyage) : la phrase d'échec si rien n'a été dit, sinon une dernière phrase vide,
-que `voice` termine par un morceau vide qui porte la fin (2026-10-12, revue).
+à la ligne ; une phrase part dès que l'espace qui suit sa fin arrive, sans attendre la suivante
+(2026-10-14, « Le flux sans attente » plus bas). À un appel d'outil, ce qui attend part tel quel,
+même sans ponctuation finale. Une phrase sans fin de plus de 220 caractères est coupée à sa
+dernière virgule. Les marques de mise en forme sont retirées. `voice` reçoit toujours un `last`,
+une seule fois, quelle que soit la fin (fin normale, erreur après quelques phrases, flux coupé, LLM
+muet, reste vide après nettoyage) : la phrase d'échec si rien n'a été dit, sinon une dernière
+phrase vide, que `voice` termine par un morceau vide qui porte la fin (2026-10-12, revue ; depuis
+le 2026-10-14, toute réponse du LLM finit ainsi).
 
 **L'interruption.** Un appui sur un appareil arrête la dernière réponse de cet appareil : la
 demande en cours est annulée (`session/cancel`) et `voice.stop` part. L'interruption prend
@@ -890,3 +893,58 @@ lui demande.
    semaine regardée ensemble.
 4. Le ticket pour Hippocampe (revenir à une version de l'historique) : recommandation, l'écrire
    maintenant, en termes généraux, pour que « annule ça » marche sur toute modification.
+
+## Le flux sans attente (2026-10-14)
+
+**Le problème, mesuré par Kris le 2026-10-13.** Une question qui demande un outil (Wikipédia) :
+Emory reste muette jusqu'à la réponse de l'outil. Le modèle avait écrit sa phrase de transition
+(« Je regarde sur Wikipédia. », premier mot à environ 1,9 s), mais le découpeur gardait chaque
+phrase finie jusqu'à la première lettre de la suivante, pour pouvoir marquer la dernière `last`.
+La suivante ne venait qu'après l'outil : la transition est partie à environ 4,4 s.
+
+**Décidé avec Kris le 2026-10-13, construit le 2026-10-14** (`mind/src/sentences.rs`,
+`mind/src/mind.rs`) :
+
+- **Une phrase finie part tout de suite** : sa ponctuation finale suivie d'un espace ou d'un
+  retour à la ligne suffit. Les autres règles restent (abréviations, coupe d'une longue phrase à
+  une virgule).
+- **À un appel d'outil** (`Event::Tool`), ce qui attend dans le découpeur part aussi, même sans
+  ponctuation finale : la transition est dite pendant que l'outil travaille. Vaut pour nos outils,
+  ceux de Claude et un modèle lent.
+- **La fin de la réponse est un signal à part**, envoyé à `Event::Done` : un `Say` au texte vide
+  marqué `last`, après ce qui restait dans le découpeur (envoyé, lui, sans `last`). Pourquoi cette
+  forme plutôt qu'un message dédié : elle existait déjà (fin après une erreur, un flux coupé, un
+  reste vide) et `voice` la sait dire « sans son » (un morceau vide qui porte `Emory-End`) ; le
+  contrat ne change pas, `last` garde son sens (« rien ne suivra »), seulement il n'est plus porté
+  par une phrase qui a des mots. Une seule forme de fin pour toutes les réponses du LLM.
+- **La parole d'elle-même** (minuteurs, entrée interne) ne change pas : son texte est connu en
+  entier, sa dernière phrase porte `last`.
+
+**Les points qui ne sont pas des fins**, maintenant qu'aucune lettre suivante n'est attendue :
+
+- un point sans espace après lui ne coupe jamais : « 3.5 », « 1.000 habitants », « v0.7 », une
+  adresse comme « exemple.org » ;
+- les abréviations (`M`, `Mme`, `Mlle`, `Dr`, `St`) ne coupent pas ;
+- un point après un nombre (« le 3. », « il y en a 12. ») ou après « etc. » attend la lettre
+  suivante : une minuscule (« le 3. juin », « etc. et des noix ») et la phrase continue, sinon elle
+  finit. Le seul cas qui attend encore, et il est rare ; un appel d'outil ou la fin de la réponse
+  le libère de toute façon ;
+- un nombre suivi d'un point en début de ligne est un élément de liste (« 1. Paris ») : jamais une
+  fin. La ligne part à son retour à la ligne, numéro compris ;
+- dans une citation ouverte par « , l'espace après la ponctuation peut précéder le » fermant :
+  le découpeur attend le caractère suivant pour garder le » avec sa phrase.
+
+**Ce qui reposait sur `last` reste juste** (vérifié dans le code, tests à l'appui) : `voice`
+termine la réponse à la phrase vide marquée `last` sans délai de grâce ; la file de l'esprit
+estime la parole sans compter les textes vides ; la fin du signal d'attente vient avec la première
+phrase, qui n'est jamais vide (une réponse sans rien dit envoie la phrase d'échec) ; la parole
+d'elle-même (E1, T2) attend la fin de la tâche de la réponse et la parole estimée, qui ne
+dépendent pas de `last`. Une réponse sans texte (« Je n'ai rien entendu. », une erreur, un appui
+qui l'arrête) finit toujours le tour une seule fois.
+
+**Une conséquence voulue** : la phrase de transition du modèle, partie avant l'outil, arrête le
+signal d'attente (comme toute première phrase) ; la phrase d'attente sur ce que l'outil cherche
+n'est donc plus dite quand le modèle a écrit sa transition. **Une limite** : pendant un outil
+long après une transition, `voice` envoie `Speaking` `end` au bout du délai de grâce, puis `start`
+à la phrase suivante (la même limite qu'après une phrase d'attente, voir `voice.md`).
+
