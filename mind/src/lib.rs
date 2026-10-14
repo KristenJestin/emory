@@ -151,7 +151,7 @@ pub async fn run(config: Config) -> Result<()> {
             conversations.clone(),
         )));
     }
-    if let Some(web) = web::Web::new(&config.web)? {
+    if let Some(web) = web::Web::new(&config.web, conversations.clone())? {
         modules.push(Arc::new(web));
     }
     if let Some(time) = time::Time::new(&config.time, &config.data, conversations.clone())? {

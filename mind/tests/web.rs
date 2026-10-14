@@ -16,6 +16,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use mind::{
+    conversations::Conversations,
     tools::{self, Module, Tools},
     web::{Fetch, FetchError, Http, Web, WebConfig},
 };
@@ -132,7 +133,7 @@ fn config(toml: &str) -> WebConfig {
 /// The module, asking the fake instead of Wikipedia and Open-Meteo.
 fn web_at(address: SocketAddr, config: &WebConfig) -> Web {
     let origin = format!("http://{address}");
-    Web::new(config)
+    Web::new(config, Conversations::default())
         .unwrap()
         .unwrap()
         .wikipedia_at(&origin)
@@ -167,7 +168,10 @@ async fn the_tool_reaches_the_llm_through_emorys_server_and_answers() {
     let offered = client.list_all_tools().await.unwrap();
     let mut names: Vec<_> = offered.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    assert_eq!(names, ["web_search", "web_weather", "web_wikipedia"]);
+    assert_eq!(
+        names,
+        ["web_read", "web_search", "web_weather", "web_wikipedia"]
+    );
     let tool = offered.iter().find(|t| t.name == "web_wikipedia").unwrap();
     let description = tool.description.as_deref().unwrap();
     assert!(description.contains("Wikipédia") && description.len() < 100);
@@ -255,21 +259,31 @@ async fn an_answer_heavier_than_the_cap_is_given_up() {
 
 #[test]
 fn the_module_is_not_there_when_it_is_disabled() {
-    assert!(Web::new(&WebConfig::default()).unwrap().is_some());
     assert!(
-        Web::new(&config("enabled = false")).unwrap().is_none(),
+        Web::new(&WebConfig::default(), Conversations::default())
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        Web::new(&config("enabled = false"), Conversations::default())
+            .unwrap()
+            .is_none(),
         "[web] enabled = false"
     );
     assert!(
-        Web::new(&config("[wikipedia]\nenabled = false"))
-            .unwrap()
-            .is_some(),
+        Web::new(
+            &config("[wikipedia]\nenabled = false"),
+            Conversations::default()
+        )
+        .unwrap()
+        .is_some(),
         "the weather is left"
     );
     assert!(
-        Web::new(&config(
-            "[weather]\nenabled = false\n[wikipedia]\nenabled = false"
-        ))
+        Web::new(
+            &config("[weather]\nenabled = false\n[wikipedia]\nenabled = false"),
+            Conversations::default()
+        )
         .unwrap()
         .is_some(),
         "the search is left"
@@ -277,7 +291,7 @@ fn the_module_is_not_there_when_it_is_disabled() {
     assert!(
         Web::new(&config(
             "[weather]\nenabled = false\n[wikipedia]\nenabled = false\n[search]\nprovider = \"none\""
-        ))
+        ), Conversations::default())
         .unwrap()
         .is_none(),
         "no tool left"
@@ -545,9 +559,12 @@ async fn a_slow_search_is_an_error_in_time() {
 
 #[test]
 fn provider_none_takes_the_search_tool_away() {
-    let web = Web::new(&config("[search]\nprovider = \"none\""))
-        .unwrap()
-        .unwrap();
+    let web = Web::new(
+        &config("[search]\nprovider = \"none\""),
+        Conversations::default(),
+    )
+    .unwrap()
+    .unwrap();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -556,7 +573,7 @@ fn provider_none_takes_the_search_tool_away() {
         .iter()
         .map(|t| t.name.to_string())
         .collect();
-    assert_eq!(names, ["weather", "wikipedia"]);
+    assert_eq!(names, ["weather", "wikipedia", "read"]);
 }
 
 /// By hand, against the real Open-Meteo (a handful of requests):
@@ -564,9 +581,12 @@ fn provider_none_takes_the_search_tool_away() {
 #[tokio::test]
 #[ignore = "reaches the real Open-Meteo"]
 async fn real_open_meteo() {
-    let web = Web::new(&config("[weather]\nplace = \"Valence, France\""))
-        .unwrap()
-        .unwrap();
+    let web = Web::new(
+        &config("[weather]\nplace = \"Valence, France\""),
+        Conversations::default(),
+    )
+    .unwrap()
+    .unwrap();
     // The default place (geocoding and forecast), the same again (kept: no request), a place
     // asked with its country, then a nonsense word.
     for arguments in [
@@ -591,7 +611,9 @@ async fn real_open_meteo() {
 #[tokio::test]
 #[ignore = "reaches the real Wikipedia"]
 async fn real_wikipedia() {
-    let web = Web::new(&WebConfig::default()).unwrap().unwrap();
+    let web = Web::new(&WebConfig::default(), Conversations::default())
+        .unwrap()
+        .unwrap();
     // The subject is the Eiffel Tower, then a nonsense word (two editions asked).
     for query in ["tour eiffel", "zzqxvkj"] {
         let started = Instant::now();

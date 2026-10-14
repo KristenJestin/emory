@@ -30,6 +30,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 dom_query = { version = "0.28", default-features = false }
+# The main text of a page read (`web_read`), Readability's way, on the same `dom_query`.
+dom_smoothie = "0.18"
+# The character set of a page read that is not UTF-8.
+encoding_rs = "0.8"
 
 [[bin]]
 name = "mind"

@@ -1,19 +1,27 @@
 //! The web: a module of Emory's MCP server (`web_<tool>`), for what the owner asks about the
-//! world (`specs/web.md`). In this version, the weather (`web_weather`), Wikipedia
-//! (`web_wikipedia`) and the search of the web (`web_search`); the reading of a page comes as a
-//! tool of the same module.
+//! world (`specs/web.md`): the weather (`web_weather`), Wikipedia (`web_wikipedia`), the search
+//! of the web (`web_search`) and the reading of a page (`web_read`).
+//!
+//! `web_read` reads only an address that `web_search` or `web_wikipedia` gave in the same
+//! conversation (`only_found_urls`): a page read may hold orders, and the LLM must not be able to
+//! send what it knows to an address of its own making. The addresses found are kept here, by
+//! conversation, and go with it.
 //!
 //! The module listens to nothing and publishes nothing on the bus: it is called by the LLM only.
-//! One HTTP client is kept open for all its tools. The logs say the host, the status, the size and
-//! the time of each request, never the question.
+//! Its HTTP clients are kept open: one for the APIs, one for the search, and the guarded one of
+//! the pages read ([`read`]). The logs say the host, the status, the size and the time of each
+//! request to a service, never the question; nothing of a page's address.
 
 pub mod config;
+pub mod read;
 pub mod search;
 pub mod weather;
 pub mod wikipedia;
 
 use std::{
-    sync::Arc,
+    collections::{HashMap, VecDeque},
+    net::IpAddr,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -24,12 +32,16 @@ use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-pub use config::{SearchConfig, WebConfig};
+pub use config::{ReadConfig, SearchConfig, WebConfig};
+use read::{Lookup, Reader};
 use search::Search;
 use weather::Weather;
 use wikipedia::Wikipedia;
 
-use crate::tools::Module;
+use crate::{
+    conversations::{ConversationKey, Conversations},
+    tools::Module,
+};
 
 /// The most an API answer may weigh, in bytes: the answers used are a few kilobytes.
 const MAX_ANSWER_BYTES: usize = 1_000_000;
@@ -144,6 +156,74 @@ impl Fetch for Http {
     }
 }
 
+/// The most addresses kept for one conversation: the oldest go first.
+const MAX_FOUND: usize = 200;
+
+/// The addresses the tools gave, by conversation.
+struct Found {
+    conversations: Conversations,
+    urls: Mutex<HashMap<ConversationKey, VecDeque<String>>>,
+}
+
+impl Found {
+    fn new(conversations: Conversations) -> Self {
+        Self {
+            conversations,
+            urls: Mutex::default(),
+        }
+    }
+
+    fn urls(&self) -> std::sync::MutexGuard<'_, HashMap<ConversationKey, VecDeque<String>>> {
+        let mut urls = self
+            .urls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The addresses of the conversations that closed go with them.
+        urls.retain(|key, _| self.conversations.is_open(key));
+        urls
+    }
+
+    /// Keeps the addresses of an answer of a tool: its `url`, and that of each of its `results`.
+    fn note(&self, conversation: &ConversationKey, answer: &str) {
+        if !self.conversations.is_open(conversation) {
+            return;
+        }
+        let Ok(answer) = serde_json::from_str::<Value>(answer) else {
+            return;
+        };
+        let results = answer["results"].as_array().into_iter().flatten();
+        let given = std::iter::once(&answer["url"])
+            .chain(results.map(|r| &r["url"]))
+            .filter_map(Value::as_str)
+            .filter_map(|u| Url::parse(u).ok());
+        let mut urls = self.urls();
+        let known = urls.entry(conversation.clone()).or_default();
+        for url in given {
+            let key = found_key(&url);
+            if !known.contains(&key) {
+                known.push_back(key);
+            }
+        }
+        while known.len() > MAX_FOUND {
+            known.pop_front();
+        }
+    }
+
+    fn has(&self, conversation: &ConversationKey, url: &Url) -> bool {
+        self.urls()
+            .get(conversation)
+            .is_some_and(|known| known.contains(&found_key(url)))
+    }
+}
+
+/// An address as it is compared: in its normal form (`Url` writes it so), without the part
+/// after `#`, which the server never sees.
+fn found_key(url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    url.into()
+}
+
 /// The `web` module: the tools that are enabled.
 pub struct Web {
     weather: Option<Weather>,
@@ -151,35 +231,40 @@ pub struct Web {
     search: Option<Search>,
     /// What the search was built from, to build it again elsewhere (`search_at`).
     search_from: (SearchConfig, Arc<dyn Fetch>),
+    reader: Option<Reader>,
+    /// What the reader was built from, to build it again (`read_through`).
+    read_from: (ReadConfig, String),
+    found: Found,
 }
 
 impl Web {
-    /// The module of this configuration, or `None` when it has no tool left.
-    pub fn new(config: &WebConfig) -> Result<Option<Self>> {
+    /// The module of this configuration, or `None` when it has no tool left. The addresses
+    /// found are kept for the open conversations of `conversations`.
+    pub fn new(config: &WebConfig, conversations: Conversations) -> Result<Option<Self>> {
         if !config.any_tool() {
             return Ok(None);
         }
         // The search has a client of its own: another `User-Agent`, another time-out.
         let search = Arc::new(Http::for_search(&config.search)?);
-        Ok(Self::with_fetches(
-            config,
-            Arc::new(Http::new(config)?),
-            search,
-        ))
+        Self::with_fetches(config, Arc::new(Http::new(config)?), search, conversations)
     }
 
-    /// The same, fetching through `fetch` (the search too).
-    pub fn with_fetch(config: &WebConfig, fetch: Arc<dyn Fetch>) -> Option<Self> {
-        Self::with_fetches(config, fetch.clone(), fetch)
-    }
-
-    /// The same, the APIs fetched through `api` and the search through `search`.
+    /// The same, the APIs fetched through `api` and the search through `search`. A page read
+    /// is always fetched by the guarded client of [`Reader`].
     pub fn with_fetches(
         config: &WebConfig,
         api: Arc<dyn Fetch>,
         search: Arc<dyn Fetch>,
-    ) -> Option<Self> {
-        config.any_tool().then(|| Self {
+        conversations: Conversations,
+    ) -> Result<Option<Self>> {
+        if !config.any_tool() {
+            return Ok(None);
+        }
+        let reader = match config.reads() {
+            true => Some(Reader::new(&config.read, config.user_agent())?),
+            false => None,
+        };
+        Ok(Some(Self {
             weather: config
                 .weather
                 .enabled
@@ -190,7 +275,52 @@ impl Web {
                 .then(|| Wikipedia::new(&config.wikipedia, api)),
             search: Search::new(&config.search, search.clone()),
             search_from: (config.search.clone(), search),
-        })
+            reader,
+            read_from: (config.read.clone(), config.user_agent()),
+            found: Found::new(conversations),
+        }))
+    }
+
+    /// Reads the pages with the names found by `lookup`, and `exception` taken as a public
+    /// address: for the tests, whose server is on the loopback.
+    pub fn read_through(mut self, lookup: Arc<dyn Lookup>, exception: IpAddr) -> Result<Self> {
+        if self.reader.is_some() {
+            let (config, user_agent) = &self.read_from;
+            self.reader = Some(Reader::with_lookup(
+                config,
+                user_agent.clone(),
+                lookup,
+                Some(exception),
+            )?);
+        }
+        Ok(self)
+    }
+
+    /// Whether `web_read` may read `url` in `conversation`.
+    fn may_read(&self, conversation: Option<&ConversationKey>, url: &Url) -> Result<(), String> {
+        if !self.read_from.0.only_found_urls {
+            return Ok(());
+        }
+        match conversation {
+            None => Err("Cet outil ne sert que dans une conversation.".to_owned()),
+            Some(c) if self.found.has(c, url) => Ok(()),
+            Some(_) => {
+                info!("web: read refused, an address not found");
+                Err(NOT_FOUND.to_owned())
+            }
+        }
+    }
+
+    async fn read(
+        &self,
+        conversation: Option<&ConversationKey>,
+        arguments: &JsonObject,
+    ) -> Result<String, String> {
+        let given = text(arguments, "url")?;
+        let url = Url::parse(&given).map_err(|_| "Cette adresse est illisible.".to_owned())?;
+        self.may_read(conversation, &url)?;
+        let page = self.reader.as_ref().unwrap().read(url).await?;
+        Ok(page.told())
     }
 
     /// Searches at another address (the pages of DuckDuckGo): for the tests, with a server of
@@ -220,6 +350,9 @@ impl Web {
         self
     }
 }
+
+const NOT_FOUND: &str = "Cette adresse n'a été donnée ni par web_search ni par web_wikipedia dans \
+                         cette conversation : cherche la page d'abord.";
 
 fn schema(value: Value) -> Arc<JsonObject> {
     match value {
@@ -296,11 +429,31 @@ impl Module for Web {
                     })),
                 ));
             }
+            if self.reader.is_some() {
+                tools.push(Tool::new(
+                    "read",
+                    "Lit le texte d'une page trouvée par web_search ou web_wikipedia.",
+                    schema(json!({
+                        "type": "object",
+                        "properties": {"url": {"type": "string", "description": "l'adresse, telle que l'outil l'a donnée"}},
+                        "required": ["url"]
+                    })),
+                ));
+            }
             tools
         })
     }
 
     fn call(&self, tool: &str, arguments: Option<JsonObject>) -> BoxFuture<'_, CallToolResult> {
+        self.call_in(tool, arguments, None)
+    }
+
+    fn call_in(
+        &self,
+        tool: &str,
+        arguments: Option<JsonObject>,
+        conversation: Option<ConversationKey>,
+    ) -> BoxFuture<'_, CallToolResult> {
         let tool = tool.to_owned();
         Box::pin(async move {
             let arguments = arguments.unwrap_or_default();
@@ -316,8 +469,17 @@ impl Module for Web {
                     Ok(query) => self.search.as_ref().unwrap().search(&query).await,
                     Err(e) => Err(e),
                 },
+                "read" if self.reader.is_some() => {
+                    self.read(conversation.as_ref(), &arguments).await
+                }
                 _ => Err(format!("Outil inconnu : web_{tool}")),
             };
+            // The addresses given are those `web_read` may read next, in this conversation.
+            if let (Ok(answer), Some(conversation)) = (&outcome, &conversation)
+                && matches!(tool.as_str(), "wikipedia" | "search")
+            {
+                self.found.note(conversation, answer);
+            }
             match outcome {
                 Ok(answer) => CallToolResult::success(vec![ContentBlock::text(answer)]),
                 Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),

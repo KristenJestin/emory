@@ -19,6 +19,25 @@ pub struct WebConfig {
     pub weather: WeatherConfig,
     pub wikipedia: WikipediaConfig,
     pub search: SearchConfig,
+    pub read: ReadConfig,
+}
+
+/// `web_read`: the text of a page found by `web_search` or `web_wikipedia`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReadConfig {
+    pub enabled: bool,
+    /// Only an address that a tool of the module gave in the same conversation: a page read
+    /// may hold orders, and the LLM must not be able to send what it knows anywhere.
+    pub only_found_urls: bool,
+    /// Milliseconds for the whole reading: the redirections and the page.
+    pub timeout_ms: u64,
+    /// The most read of a page, in bytes; the rest is dropped.
+    pub max_bytes: usize,
+    /// The longest text given to the LLM, in characters.
+    pub max_chars: usize,
+    /// How many redirections are followed at most.
+    pub max_redirects: usize,
 }
 
 /// `web_search`: the search of the web, through a provider that can be replaced.
@@ -81,6 +100,20 @@ impl Default for WebConfig {
             weather: WeatherConfig::default(),
             wikipedia: WikipediaConfig::default(),
             search: SearchConfig::default(),
+            read: ReadConfig::default(),
+        }
+    }
+}
+
+impl Default for ReadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            only_found_urls: true,
+            timeout_ms: 8000,
+            max_bytes: 2_000_000,
+            max_chars: 6000,
+            max_redirects: 5,
         }
     }
 }
@@ -137,7 +170,18 @@ impl WebConfig {
 
     /// Whether any web tool is left.
     pub fn any_tool(&self) -> bool {
-        self.enabled && (self.weather.enabled || self.wikipedia.enabled || self.search.enabled())
+        self.enabled && (self.weather.enabled || self.finds() || self.reads())
+    }
+
+    /// Whether a tool gives addresses (`web_wikipedia`, `web_search`).
+    fn finds(&self) -> bool {
+        self.wikipedia.enabled || self.search.enabled()
+    }
+
+    /// Whether `web_read` is there: enabled, and with something to read when it may only read
+    /// the addresses found.
+    pub fn reads(&self) -> bool {
+        self.enabled && self.read.enabled && (self.finds() || !self.read.only_found_urls)
     }
 
     /// Refuses absurd values, naming the key.
@@ -154,7 +198,34 @@ impl WebConfig {
         }
         self.weather.check()?;
         self.wikipedia.check()?;
-        self.search.check()
+        self.search.check()?;
+        self.read.check()
+    }
+}
+
+impl ReadConfig {
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
+
+    fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            (100..=60_000).contains(&self.timeout_ms),
+            "web.read.timeout_ms must be between 100 and 60000"
+        );
+        anyhow::ensure!(
+            (10_000..=20_000_000).contains(&self.max_bytes),
+            "web.read.max_bytes must be between 10000 and 20000000"
+        );
+        anyhow::ensure!(
+            (500..=50_000).contains(&self.max_chars),
+            "web.read.max_chars must be between 500 and 50000"
+        );
+        anyhow::ensure!(
+            self.max_redirects <= 10,
+            "web.read.max_redirects must be 10 at most"
+        );
+        Ok(())
     }
 }
 

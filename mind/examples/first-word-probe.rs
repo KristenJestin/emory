@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         if config.dictionary.enabled {
             modules.push(Arc::new(Dictionary::new(NoHearing, conversations.clone())));
         }
-        if let Some(web) = web::Web::new(&config.web)? {
+        if let Some(web) = web::Web::new(&config.web, conversations.clone())? {
             modules.push(Arc::new(web));
         }
         if let Some(time) =

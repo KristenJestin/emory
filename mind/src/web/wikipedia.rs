@@ -56,6 +56,17 @@ struct Summary {
     title: Option<String>,
     description: Option<String>,
     extract: Option<String>,
+    content_urls: Option<ContentUrls>,
+}
+
+#[derive(Deserialize)]
+struct ContentUrls {
+    desktop: Option<PageUrl>,
+}
+
+#[derive(Deserialize)]
+struct PageUrl {
+    page: Option<String>,
 }
 
 impl Wikipedia {
@@ -114,6 +125,11 @@ impl Wikipedia {
             }
             if !others.is_empty() {
                 answer["others"] = json!(others);
+            }
+            // For `web_read`, when the summary is not enough (the figures of an infobox).
+            let page = summary.content_urls.and_then(|u| u.desktop?.page);
+            if let Some(url) = page.filter(|u| Url::parse(u).is_ok()) {
+                answer["url"] = json!(url);
             }
             return Ok(answer.to_string());
         }
@@ -427,13 +443,14 @@ mod tests {
             a["extract"],
             "La tour Eiffel est une tour autoportante de fer puddlé de 330 m de hauteur située à Paris, à l’extrémité nord-ouest du parc du Champ-de-Mars en bordure de la Seine dans le 7e arrondissement. Son adresse officielle est 5, avenue Anatole-France."
         );
-        // The two other titles are offered; no address, no identifier, nothing to read out.
+        // The two other titles are offered, and the address of the article for web_read; no
+        // identifier, nothing else to read out.
         assert_eq!(
             a["others"],
             json!(["Histoire de la tour Eiffel", "Gustave Eiffel"])
         );
-        assert_eq!(a.as_object().unwrap().len(), 5, "{text}");
-        assert!(!text.contains("http"));
+        assert_eq!(a["url"], "https://fr.wikipedia.org/wiki/Tour_Eiffel");
+        assert_eq!(a.as_object().unwrap().len(), 6, "{text}");
         // One search, one summary, in the first language only.
         assert_eq!(
             recorded.asked(),
