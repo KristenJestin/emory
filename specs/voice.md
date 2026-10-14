@@ -464,4 +464,4 @@ choisies sont à juger à l'oreille.
    premier. Restent la lecture des nombres, des dates et des heures, et le comportement de
    Kyutai avec ce lexique.
 3. Le format du flux entre l'esprit et la bouche (texte phrase par phrase, annulation des phrases
-   pas encore dites) : sujets `voice.say` et `voice.stop` du bus, format fixé dans `contract/` (`Say`, avec `last` sur la dernière phrase ; voir [`contract.md`](contract.md)).
+   pas encore dites) : sujets `voice.say` et `voice.stop` du bus, format fixé dans `contract/` (`Say`, avec `last` sur la dernière phrase ; depuis le 2026-10-14, une réponse du LLM finit par une phrase vide marquée `last`, dite sans son par un morceau vide qui porte `Emory-End`, rien à changer dans `voice` ; voir [`contract.md`](contract.md)).
