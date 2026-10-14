@@ -72,7 +72,7 @@ enabled = true
 timeout_ms = 2000   # how long to wait for the hearing's reply
 
 # The web (`web_weather`: the weather; `web_wikipedia`: the summary of a Wikipedia article, French
-# first). Every key has the value shown; without this section the module is on with these values.
+# first; `web_search`: a search of the web). Every key has the value shown; without this section the module is on with these values.
 # No key, no account.
 [web]
 enabled = true         # false takes every web tool away
@@ -92,6 +92,19 @@ cache_minutes = 10     # a forecast is kept this long (0: never)
 enabled = true
 languages = ["fr", "en"]   # tried in this order: the next one is asked when the previous has nothing
 max_chars = 1200           # the longest summary given to the LLM
+
+# The search reads DuckDuckGo's light HTML page: no key, nothing hosted, and it breaks when
+# DuckDuckGo changes the page (or takes the program for a robot). Emory sees it and says it:
+# `cargo run -p mind --example web-check` tells which case it is. The provider can be replaced.
+[web.search]
+provider = "duckduckgo"    # or "none": the tool `web_search` is taken away
+region = "fr-fr"           # DuckDuckGo's region: "us-en", "uk-en", "wt-wt" (none)...
+max_results = 5            # 1 to 10, what the LLM gets at most
+timeout_ms = 5000          # for one search
+min_interval_ms = 1000     # at least this long between two requests to DuckDuckGo
+cache_minutes = 10         # the same question is not asked again for this long (0: never)
+backoff_minutes = 30       # after a block or a changed page, DuckDuckGo is left alone for this long
+# user_agent = "..."       # a browser's: the page refuses a robot more willingly (the default is Firefox's)
 
 # Where `mind` keeps what must outlive it (the timers today). Created if missing; in a container,
 # a volume.

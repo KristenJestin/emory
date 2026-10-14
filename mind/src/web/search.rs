@@ -379,14 +379,16 @@ impl Search {
     fn answer_without_asking(&self, key: &str) -> Option<Result<String, String>> {
         let kept = self.kept.lock().unwrap();
         let now = Instant::now();
-        if let Some((at, answer)) = kept.answers.get(key) {
-            if now < *at + self.cache {
-                info!(
-                    provider = self.provider.name(),
-                    "web: search from the cache"
-                );
-                return Some(Ok(answer.clone()));
-            }
+        if let Some((_, answer)) = kept
+            .answers
+            .get(key)
+            .filter(|(at, _)| now < *at + self.cache)
+        {
+            info!(
+                provider = self.provider.name(),
+                "web: search from the cache"
+            );
+            return Some(Ok(answer.clone()));
         }
         match kept.paused_until {
             Some(until) if now < until => Some(Err(

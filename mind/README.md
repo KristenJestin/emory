@@ -61,10 +61,19 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   `web_wikipedia(query)`: searches the title on Wikipedia (French
   first, then English, `[web.wikipedia] languages`), gives the summary of the first one without its
   pronunciation, cut to `max_chars`, or the other titles found when the page is a disambiguation
-  page. Failures are said to the LLM in one sentence. No key, no account; `[web] user_agent` is
+  page. `web_search(query)`: a search of the web through a provider that can be replaced
+  (`[web.search] provider`; DuckDuckGo's light HTML page, read with a browser's `User-Agent`),
+  `max_results` results with title, site, snippet and address (the address is for the reading of a
+  page, never to be read out). It sees when the page breaks and says it: a captcha (`Blocked`), a
+  page without the results `mind` reads (`PageChanged`), the network or a server error
+  (`Unreachable`) each give the LLM one sentence, a `warn` in the logs when the state changes only,
+  and, for the first two, a pause of `backoff_minutes` during which DuckDuckGo is left alone. Requests
+  are `min_interval_ms` apart and a question is kept `cache_minutes`. `cargo run -p mind --example
+  web-check` makes one search and tells which case it is (exit code 0 ok, 1 blocked, 2 page changed,
+  3 unreachable, 4 no result). Failures are said to the LLM in one sentence. No key, no account; `[web] user_agent` is
   where the owner puts a contact for Wikimedia. `enabled = false` takes the tools away. The logs
   give the host, the status, the size and the time of each request, never the question. The tests
-  serve recorded answers (`tests/fixtures/web/`); `cargo test -p mind --test web real_wikipedia --
+  serve recorded answers and pages (`tests/fixtures/web/`); `cargo test -p mind --test web real_wikipedia --
   --ignored --nocapture` (or `real_open_meteo`) asks the real service, by hand.
 - **The time** (`src/time/`, `[data]`, `[time]`, `specs/time.md`): the module `time`.
   `time_timer(seconds, label?)` (1 s to 24 h), `time_reminder(text, at | in_seconds)` (`at` is a local

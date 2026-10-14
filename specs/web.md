@@ -273,9 +273,13 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
    prévision de 7 jours, les noms de jours, un lieu inconnu, le lieu par défaut, la table des codes,
    la configuration), aucun appel réseau dans les tests ; un essai à la main (voir « Ce qui a été
    décidé en construisant W2 »).
-3. **W3. La recherche** : le trait `SearchProvider`, DuckDuckGo, les trois cas de panne, la pause,
-   le cache, `examples/web-check.rs`. Vérifié : pages enregistrées (résultats, captcha, page sans
-   résultat, page sans `result__a`), décodage de `uddg`, publicités retirées.
+3. **W3. La recherche** : **construit le 2026-10-14** (branche `web-search`). Le trait
+   `SearchProvider`, DuckDuckGo, les trois cas de panne, la pause, le cache,
+   `examples/web-check.rs`. Vérifié : pages enregistrées (résultats, captcha), une page sans
+   résultat reconstituée (DuckDuckGo a bloqué l'enregistrement, voir plus bas), une page sans
+   `result__a`, décodage de `uddg`, publicités retirées, état et pause sous horloge arrêtée, un
+   serveur de test qui sert les pages par le vrai client ; aucun appel réseau dans les tests (voir
+   « Ce qui a été décidé en construisant W3 »).
 4. **W4. Lire une page** : `web_read`, adresses trouvées seulement, garde contre les adresses
    privées (avec les redirections), plafonds, extraction. Vérifié : un serveur HTTP local de test
    qui redirige vers `127.0.0.1` (refusé), une page trop grosse, un PDF, une page sans texte.
@@ -373,6 +377,87 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
   d'un essai de qualificatif) : le lieu par défaut (géocodage et prévision) en 305 ms, la même
   question ensuite en 0 ms (cache), un lieu demandé (Lyon, 3 jours) en 68 ms, un lieu inconnu en
   34 ms. Les réponses enregistrées sont dans `mind/tests/fixtures/web/weather-*.json`.
+
+## Ce qui a été décidé en construisant W3 (2026-10-14)
+
+- **Lire la page : `dom_query` 0.28** (sans ses options par défaut), le même analyseur HTML que
+  `dom_smoothie` (la candidate de W4) : une seule pile HTML dans `mind`, et pas de lecture de la
+  page à la main. `reqwest::Url` sert au décodage de `uddg`.
+- **Le trait garde sa forme, avec deux écarts** : `SearchError` porte le code HTTP quand il y en a un
+  (`Unreachable(Option<u16>)`, `Blocked(u16)`, `PageChanged(u16)`, `Refused(String)`), parce que le
+  journal doit le dire ; et le trait a `label()` (« DuckDuckGo »), parce que la phrase de la page
+  changée nomme le fournisseur. `Refused` est une phrase pour le LLM sans changement d'état (question
+  vide ou de plus de 300 caractères).
+- **Comment la réponse est classée** (`search::read_page`) : 5xx : `Unreachable` ; 202, 403, 429, ou
+  `anomaly-modal` dans la page même sous un 200 : `Blocked` ; tout autre code que 200 (404, 3xx) :
+  `PageChanged` (l'adresse ne répond plus ce qu'elle répondait) ; 200 avec des `a.result__a` : les
+  résultats ; 200 sans `result__a` : « aucun résultat » si la page porte la marque de DuckDuckGo
+  (un bloc `.no-results`, ou la phrase « No results » dans le corps), sinon `PageChanged` ; des
+  liens dont aucun ne donne d'adresse utilisable : `PageChanged` ; seulement des publicités : aucun
+  résultat. Un échec du réseau (délai, connexion, réponse trop grosse) : `Unreachable(None)`.
+- **Les publicités** : un résultat dont un ancêtre porte `result--ad` est retiré. Une adresse qui reste
+  chez DuckDuckGo sans être une redirection `/l/?uddg=` (ses pages, ses redirections de publicité
+  `y.js`) n'est pas un résultat non plus ; une adresse qui n'est ni `http` ni `https` (`javascript:`,
+  `mailto:`), ou qui renvoie vers DuckDuckGo, non plus. Les doublons d'adresse sont retirés. Aucune
+  publicité n'est dans les pages enregistrées : le test des publicités est sur un morceau de page
+  écrit à la main.
+- **L'état** (`Working`, `Unreachable`, `Blocked`, `PageChanged`) : le `warn` est écrit quand l'état
+  change, jamais à chaque appel (trois blocages d'affilée, pauses finies comprises : un seul `warn`),
+  avec le fournisseur, le cas, le code HTTP et la pause ; le retour à la normale est un `info`
+  (« works again »), dit une fois. Un premier succès, sans panne avant, ne dit rien. La pause
+  de `backoff_minutes` ne suit que `Blocked` et `PageChanged` ; `Unreachable` n'en a pas (rappeler un
+  serveur qui ne répond pas ne l'aggrave pas, et une coupure du réseau doit se rétablir seule). Une
+  pause finie qui retombe sur un blocage en recommence une. Un succès efface la pause. Pendant la
+  pause, toute question reçoit la phrase du cas, aussitôt, sauf une question dont la réponse est déjà
+  en cache (le cache est lu d'abord).
+- **Les phrases** sont celles de la spec ; `PageChanged` nomme le fournisseur par `label()`.
+  Une question vide : « « query » manque. » ; trop longue : « La question est trop longue pour une
+  recherche. »
+- **Le cache et l'intervalle** : les requêtes passent une à une (un verrou tenu pendant la requête),
+  `min_interval_ms` après la fin de la précédente ; trois questions lancées ensemble sont donc
+  espacées, et la même question lancée deux fois ensemble n'est posée qu'une fois (la seconde
+  relit le cache une fois son tour venu). La clé du cache est la question en minuscules, blancs
+  ramenés à une espace ; 100 réponses au plus ; une réponse « aucun résultat » est gardée aussi ; une
+  erreur ne l'est jamais. Le temps est celui de `tokio::time`, ce qui permet de tester la pause et le
+  cache avec une horloge arrêtée (`tokio` avec `test-util` en dépendance de développement).
+- **Ce que reçoit le LLM** : `{"results": [{"title", "site", "snippet", "url"}]}`, au plus
+  `max_results` ; titre coupé à 150 caractères et extrait à 300, après un mot. **L'adresse (`url`) est
+  donnée dès maintenant** : la description de l'outil dit au LLM qu'elle sert à `web_read` et de ne
+  jamais la lire. Aucun résultat : `{"results": [], "note": "Aucun résultat."}` (un résultat vide
+  est une réponse, pas une panne). La liste des adresses trouvées par conversation, et la règle
+  `only_found_urls`, restent à W4 : `Module::call` ne connaît pas la conversation.
+- **Un client HTTP à part** pour la recherche (`Http::for_search`) : le `User-Agent` de navigateur de
+  `[web.search] user_agent`, `Accept: text/html`, le délai de `[web.search] timeout_ms`, trois
+  redirections. Les API (Wikipédia, météo) gardent le leur. Les journaux de `Http` disent l'hôte, le
+  code, la taille et la durée ; ceux de la recherche, le fournisseur, le nombre de résultats et la durée ;
+  jamais la question (un test le vérifie sur les `info` et les `warn`).
+- **La configuration vérifiée au démarrage** (la clé fautive est nommée) : `provider` (`duckduckgo` ou
+  `none`), `region` (deux lettres, un tiret, deux lettres : elle va telle quelle dans l'adresse),
+  `max_results` 1 à 10, `timeout_ms` 100 à 60 000, `min_interval_ms` 60 000 au plus, `cache_minutes`
+  1 440 au plus (0 : pas de cache), `backoff_minutes` **1 à 1 440** (0 est refusé : une pause toujours
+  là, marteler un blocage l'aggrave), `user_agent` non vide et sans saut de ligne. Une section
+  `[web.search]` absente donne DuckDuckGo avec ces valeurs : la recherche est donc **active par
+  défaut**, et `provider = "none"` la retire. Le module `web` reste tant qu'un des trois outils est là.
+- **`examples/web-check.rs`** fait une seule recherche (`rust programming language`, ou la question
+  donnée), sans cache ni pause, avec le `[web]` d'un `mind.toml` (`--config`) ou les valeurs par défaut.
+  Une ligne, et un code de sortie : 0 ok, 1 bloqué, 2 page changée, 3 injoignable, 4 aucun résultat,
+  5 autre chose (fichier illisible). À ne pas lancer en boucle.
+- **Les phrases d'attente de `web_search`** restent à W5, avec la ligne du prompt.
+- **Mesuré le 2026-10-14** (3 requêtes à DuckDuckGo en tout, 5 permises) : `rust programming language
+  latest version` : 200, 31,8 Ko, 0,70 s, 10 résultats, aucune publicité. Huit secondes après, une
+  question de mots sans sens : **202 et le captcha de la page HTML** (`anomaly-modal`, `cc=botnet`),
+  pas seulement celui de `lite` : la page HTML bloque aussi, et vite (la veille, cette machine avait
+  fait deux requêtes, dont une à `lite`). Une dizaine de minutes plus tard, une phrase rare entre
+  guillemets : 202 encore. Je n'ai pas insisté. Retenir : sur ce poste, deux ou trois requêtes à
+  quelques secondes d'écart suffisent à être pris pour un robot, ce qui est exactement le cas que la
+  pause traite ; `min_interval_ms` à 1 s est peut-être trop court, et la durée réelle d'un blocage
+  n'est pas mesurée (à surveiller avec `web-check` avant d'allonger quoi que ce soit).
+- **La page « aucun résultat » n'est pas enregistrée** : le blocage ci-dessus l'a empêché. Le fichier
+  `search-ddg-no-result.html` est la page de résultats enregistrée dont le bloc de résultats est
+  remplacé par `<div class="no-results">No  results.</div>`, comme la page légère l'écrit d'après ma
+  mémoire de ses pages, non vérifiée ici ; le fichier le dit en tête. **À remplacer par un
+  enregistrement** dès qu'un poste non bloqué en a un. Si la marque réelle est autre, la lecture dira
+  `PageChanged` pour une question sans résultat (le mauvais côté de l'erreur : bruyant, pas muet).
 
 ## Questions ouvertes
 
