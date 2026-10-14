@@ -265,8 +265,18 @@ pub fn sayable(value: &str) -> Option<String> {
             && !(has_digit && has_letter)
             && !w.chars().any(|c| "_/\\@#=<>{}[]|*~^`$%&+".contains(c))
             && !(words.len() == 1 && w.contains('-'))
+            && !is_host_name(w)
     });
     spoken.then(|| words.join(" "))
+}
+
+/// A word with a dot between two letters (`example.org`, `fr.wikipedia.org`): a host name, written
+/// and not said. `3.5`, `M. Dupont` and a full stop at the end are not.
+fn is_host_name(word: &str) -> bool {
+    let chars: Vec<char> = word.chars().collect();
+    chars
+        .windows(3)
+        .any(|w| w[1] == '.' && w[0].is_alphabetic() && w[2].is_alphabetic())
 }
 
 /// Picks at random without repeating the last picks of the same pool.
@@ -1234,6 +1244,10 @@ silent = true
             ("C:\\notes", None),
             ("ali@example.org", None),
             ("https://example.org/x", None),
+            ("example.org", None),
+            ("www.example.org", None),
+            ("les nouvelles de example.org", None),
+            ("version 3.5 de Rust", Some("version 3.5 de Rust")),
             ("un deux trois quatre cinq six", None),
             ("x".repeat(41).as_str(), None),
             ("Jean-Pierre et Marie", Some("Jean-Pierre et Marie")),
@@ -1299,5 +1313,100 @@ silent = true
         let weather = &phrases.tools["web_weather"];
         assert_eq!(weather.argument.as_deref(), Some("place"));
         assert!(!weather.phrases.is_empty() && !weather.plain.is_empty());
+        let search = &phrases.tools["web_search"];
+        assert_eq!(search.argument.as_deref(), Some("query"));
+        assert!(!search.phrases.is_empty() && !search.plain.is_empty());
+        let read = &phrases.tools["web_read"];
+        assert!(read.argument.is_none() && read.phrases.is_empty() && !read.plain.is_empty());
+    }
+
+    /// The two files of phrases that name the web tools: the one shipped, and the developer's.
+    const WEB_FILES: [&str; 2] = [
+        include_str!("../prompts/waiting.fr.toml"),
+        include_str!("../../dev/waiting.fr.toml"),
+    ];
+
+    #[tokio::test(start_paused = true)]
+    async fn the_web_tools_say_what_is_searched_and_never_an_address() {
+        for file in WEB_FILES {
+            let said = |name: &str, arguments: serde_json::Value| {
+                let b = Bench::new(settings(Mode::Speech, Source::Contextual), file);
+                b.begin();
+                b.tool(name, arguments);
+                b.kinds()
+                    .into_iter()
+                    .filter_map(|k| k.1)
+                    .collect::<Vec<_>>()
+            };
+            let phrases = Phrases::parse(file).unwrap();
+            // A search with a few words says them; anything else, the phrase without a subject.
+            let search = said("web_search", json!({"query": "dernière version de Rust"}));
+            assert!(
+                [
+                    "Je cherche dernière version de Rust sur le web.",
+                    "Je regarde ce que dit le web sur dernière version de Rust."
+                ]
+                .contains(&search[0].as_str()),
+                "{search:?}"
+            );
+            for query in [
+                json!({"query": "qui a gagné le match de football hier soir à Marseille"}),
+                json!({"query": "https://fr.wikipedia.org/wiki/Tour_Eiffel"}),
+                json!({"query": "fr.wikipedia.org"}),
+                json!({"query": "www.example.org"}),
+                json!({"query": 3}),
+                json!({}),
+            ] {
+                let phrase = said("web_search", query.clone());
+                assert!(
+                    phrases.tools["web_search"].plain.contains(&phrase[0]),
+                    "{query}: {phrase:?}"
+                );
+            }
+            // A page: a phrase without a subject, whatever the address, and no phrase asks for it.
+            let read = &phrases.tools["web_read"];
+            assert!(read.argument.is_none() && read.phrases.is_empty() && !read.plain.is_empty());
+            for url in [
+                "https://fr.wikipedia.org/wiki/Tour_Eiffel",
+                "http://127.0.0.1:8080/x?q=1",
+                "fr.wikipedia.org",
+                "Tour Eiffel",
+            ] {
+                let phrase = said("web_read", json!({"url": url}));
+                assert!(read.plain.contains(&phrase[0]), "{url}: {phrase:?}");
+            }
+            // Nothing in the file puts an address, or what holds one, in a phrase.
+            for (name, tool) in &phrases.tools {
+                assert_ne!(tool.argument.as_deref(), Some("url"), "{name}");
+                for phrase in tool.phrases.iter().chain(&tool.plain) {
+                    for mark in ["http", "www", "://", ".org", ".com", ".fr"] {
+                        assert!(!phrase.contains(mark), "{name}: {phrase}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transition_written_by_the_model_spares_the_phrase_of_the_web_tools() {
+        // The model writes « Je regarde sur Wikipédia. » before its tool call: the answer has
+        // started, so the phrase of the tool, which would say « je regarde » again, is not said.
+        for file in WEB_FILES {
+            let b = Bench::new(settings(Mode::Speech, Source::Both), file);
+            let turn = b.begin();
+            pass(50).await;
+            b.waiter.answer_started(&device(), turn);
+            b.tool("web_wikipedia", json!({"query": "Gustave Eiffel"}));
+            b.tool(
+                "web_read",
+                json!({"url": "https://fr.wikipedia.org/wiki/X"}),
+            );
+            pass(5_000).await;
+            assert!(
+                b.kinds().iter().all(|k| k.0 != CueKind::Speech),
+                "{:?}",
+                b.kinds()
+            );
+        }
     }
 }

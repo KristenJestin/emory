@@ -121,6 +121,30 @@ plain = [
   "Je cherche sur Wikipédia.",
 ]
 
+# La recherche sur le web : la requête est dite si elle est dicible (quelques mots, jamais une
+# adresse), sinon une phrase sans sujet.
+[tools.web_search]
+argument = "query"
+phrases = [
+  "Je cherche {} sur le web.",
+  "Je regarde ce que dit le web sur {}.",
+]
+plain = [
+  "Je cherche sur le web.",
+  "Je regarde sur le web.",
+  "Je fais une recherche.",
+]
+
+# La lecture d'une page : son argument est une adresse, qui n'est jamais dite (d'où l'absence
+# d'`argument`). Des verbes autres que « regarder » et « chercher » : la page se lit après une
+# recherche ou un résumé, qui les ont déjà dits.
+[tools.web_read]
+plain = [
+  "Je lis la page.",
+  "Je lis cette page.",
+  "J'ouvre la page.",
+]
+
 # Les minuteurs et rappels : posés, listés, annulés en un instant, la réponse suit aussitôt.
 [tools.time_timer]
 silent = true
