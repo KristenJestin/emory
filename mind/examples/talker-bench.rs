@@ -385,6 +385,7 @@ async fn run(args: RunArgs) -> Result<()> {
         &std::fs::read_to_string(&config.llm.system_prompt)
             .with_context(|| format!("reading {}", config.llm.system_prompt.0.display()))?,
         &config.owner,
+        &config.web.tool_names(),
     );
     let questions: Questions = toml::from_str(&std::fs::read_to_string(&args.questions)?)?;
 

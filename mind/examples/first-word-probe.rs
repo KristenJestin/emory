@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let system_prompt = prompt::render(
         &std::fs::read_to_string(&config.llm.system_prompt)?,
         &config.owner,
+        &config.web.tool_names(),
     );
     let hippocampe = Hippocampe::new(
         config.hippocampe.url.clone(),

@@ -184,6 +184,23 @@ impl WebConfig {
         self.enabled && self.read.enabled && (self.finds() || !self.read.only_found_urls)
     }
 
+    /// The tools offered to the LLM, as it sees them and in the order of the module: what the
+    /// prompt needs to know to speak only of the tools that are there.
+    pub fn tool_names(&self) -> Vec<&'static str> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        [
+            (self.weather.enabled, "web_weather"),
+            (self.wikipedia.enabled, "web_wikipedia"),
+            (self.search.enabled(), "web_search"),
+            (self.reads(), "web_read"),
+        ]
+        .into_iter()
+        .filter_map(|(offered, name)| offered.then_some(name))
+        .collect()
+    }
+
     /// Refuses absurd values, naming the key.
     pub fn check(&self) -> Result<()> {
         anyhow::ensure!(

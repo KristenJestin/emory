@@ -121,6 +121,7 @@ pub async fn run(config: Config) -> Result<()> {
             )
         })?,
         &config.owner,
+        &config.web.tool_names(),
     );
 
     let hippocampe = Hippocampe::new(

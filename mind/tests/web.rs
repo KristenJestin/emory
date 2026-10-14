@@ -298,6 +298,35 @@ fn the_module_is_not_there_when_it_is_disabled() {
     );
 }
 
+/// The prompt speaks only of the tools that are there: the names it is given (`tool_names`) are
+/// exactly the tools the module offers, whatever the configuration.
+#[tokio::test]
+async fn the_tool_names_of_the_configuration_are_the_tools_the_module_offers() {
+    for toml in [
+        "",
+        "enabled = false",
+        "[weather]\nenabled = false",
+        "[wikipedia]\nenabled = false",
+        "[search]\nprovider = \"none\"",
+        "[read]\nenabled = false",
+        "[wikipedia]\nenabled = false\n[search]\nprovider = \"none\"",
+        "[wikipedia]\nenabled = false\n[search]\nprovider = \"none\"\n[read]\nonly_found_urls = false",
+        "[weather]\nenabled = false\n[wikipedia]\nenabled = false\n[search]\nprovider = \"none\"",
+    ] {
+        let config = config(toml);
+        let offered: Vec<String> = match Web::new(&config, Conversations::default()).unwrap() {
+            Some(web) => web
+                .tools()
+                .await
+                .iter()
+                .map(|tool| format!("web_{}", tool.name))
+                .collect(),
+            None => Vec::new(),
+        };
+        assert_eq!(config.tool_names(), offered, "{toml:?}");
+    }
+}
+
 #[tokio::test]
 async fn the_weather_tool_reaches_the_llm_through_emorys_server_and_answers() {
     let (address, seen) = serve_fake().await;
