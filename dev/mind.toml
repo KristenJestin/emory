@@ -35,7 +35,7 @@ mode = "off"
 
 # The web: Emory answers from Wikipedia (French first, then English) with `web_wikipedia`, and about
 # the weather with `web_weather` (Open-Meteo), and searches the web with `web_search` (DuckDuckGo's
-# light page). No key. The reading of a page comes later (specs/web.md).
+# light page), and reads a page they gave with `web_read`. No key (specs/web.md).
 [web]
 enabled = true
 
@@ -50,6 +50,9 @@ enabled = true
 
 [web.search]
 provider = "duckduckgo"
+
+[web.read]
+enabled = true
 
 # Les minuteurs et rappels (specs/time.md) : gardés dans le dossier de données, relus après un
 # redémarrage. Le dossier est celui de l'état de l'utilisateur (XDG_STATE_HOME), avec un nom à lui

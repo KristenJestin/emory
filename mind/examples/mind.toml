@@ -106,6 +106,15 @@ cache_minutes = 10         # the same question is not asked again for this long 
 backoff_minutes = 30       # after a block or a changed page, DuckDuckGo is left alone for this long
 # user_agent = "..."       # a browser's: the page refuses a robot more willingly (the default is Firefox's)
 
+# `web_read`: the text of a page that `web_search` or `web_wikipedia` gave. Never a private address.
+[web.read]
+enabled = true
+only_found_urls = true     # only an address a tool gave in the same conversation
+timeout_ms = 8000          # for the whole reading, redirections included
+max_bytes = 2000000        # the most read of a page; the rest is dropped
+max_chars = 6000           # the longest text given to the LLM (about 1 500 tokens)
+max_redirects = 5
+
 # Where `mind` keeps what must outlive it (the timers today). Created if missing; in a container,
 # a volume.
 [data]

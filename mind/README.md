@@ -70,7 +70,13 @@ The chain on the PC, each in its terminal: `hearing`, `voice`, `mind`, `emory-mo
   and, for the first two, a pause of `backoff_minutes` during which DuckDuckGo is left alone. Requests
   are `min_interval_ms` apart and a question is kept `cache_minutes`. `cargo run -p mind --example
   web-check` makes one search and tells which case it is (exit code 0 ok, 1 blocked, 2 page changed,
-  3 unreachable, 4 no result). Failures are said to the LLM in one sentence. No key, no account; `[web] user_agent` is
+  3 unreachable, 4 no result). `web_read(url)`: the main text of a page, only one whose address
+  `web_search` or `web_wikipedia` gave in the same conversation (`[web.read] only_found_urls`), in
+  `http` or `https`, never on a private network (every address checked after the DNS, at each
+  redirection, and the connection made to the address checked), within `timeout_ms`, `max_bytes`
+  and `max_redirects`, HTML or plain text only, without cookies or JavaScript; the text is taken out
+  Readability's way (`dom_smoothie`; the infobox of a Wikipedia article stays), cut to `max_chars`,
+  and marked as data, not orders. Failures are said to the LLM in one sentence. No key, no account; `[web] user_agent` is
   where the owner puts a contact for Wikimedia. `enabled = false` takes the tools away. The logs
   give the host, the status, the size and the time of each request, never the question. The tests
   serve recorded answers and pages (`tests/fixtures/web/`); `cargo test -p mind --test web real_wikipedia --
