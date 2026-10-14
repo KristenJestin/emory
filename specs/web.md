@@ -287,9 +287,13 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
    (refusée) et une trouvée (lue), les cas IPv6 et IPv4 dans IPv6 de la garde, l'infobox d'un
    article de Wikipédia ; aucun appel réseau dans les tests (voir « Ce qui a été décidé en
    construisant W4 »).
-5. **W5. Les consignes et l'attente** : la ligne du prompt, les phrases d'attente des outils web.
-   Vérifié : un essai en vrai par Kris (« il va pleuvoir demain ? », « c'est qui Gustave
-   Eiffel ? »).
+5. **W5. Les consignes et l'attente** : **construit le 2026-10-14** (branche `web-voice`). Les
+   lignes du prompt, les phrases d'attente de `web_search` et `web_read`. Vérifié : tests (chaque
+   ligne n'est dans le prompt qu'avec ses outils, aucune adresse ne peut entrer dans une phrase
+   d'attente, les phrases des deux outils, le silence des phrases quand le modèle a écrit sa
+   transition) ; aucun appel à un LLM. **Reste à faire : un essai en vrai par Kris** (« il va
+   pleuvoir demain ? », « c'est qui Gustave Eiffel ? », la population d'une ville, une question
+   d'actualité qui demande la recherche), voir « Ce qui a été décidé en construisant W5 ».
 
 ## Ce qui a été décidé en construisant W1 (2026-10-13)
 
@@ -566,6 +570,49 @@ Vérifié au démarrage, en nommant la clé fautive : `latitude` sans `longitude
   « Saint-Véran » par `curl`, puis la française par le vrai code) : 80 Ko compressés, 486 Ko de
   HTML, 36 000 caractères extraits en 24 ms (compilé en mode release), la lecture entière par
   `web_read` en 461 ms.
+
+## Ce qui a été décidé en construisant W5 (2026-10-14)
+
+- **Le prompt ne parle que des outils qu'il a.** Le gabarit `system.fr.md` accepte des lignes
+  `{if outil}` (`prompt.rs`, voir `mind.md`) ; `lib.rs` lui donne `WebConfig::tool_names()` (les
+  outils web offerts, dans l'ordre du module, un test vérifie qu'ils sont exactement ceux que le
+  module offre pour neuf configurations). Les deux exemples (`talker-bench`, `first-word-probe`)
+  font de même. Sans outil web, le prompt est celui d'avant, octet pour octet.
+- **Les trois lignes** (112, 103 et 75 caractères, 290 en tout, avec les trois outils ; sans elles
+  le prompt fait 4 286 caractères, soit environ 7 % de plus au plus) :
+  1. avec `web_wikipedia` ou `web_search` : « Ce que tu tires du web, dis d'où ça vient quand ça
+     compte (« d'après Wikipédia »), sans jamais lire une adresse. » (la ligne de la spec) ;
+  2. avec `web_wikipedia` et `web_read` : « Un chiffre absent du résumé de Wikipédia (population,
+     superficie, dates) : lis l'article avec web_read. » (le cas du 2026-10-13) ;
+  3. avec `web_wikipedia` et `web_search` : « Si web_search ne marche pas, essaie web_wikipedia
+     quand le sujet s'y prête. » (DuckDuckGo bloque ce poste après une ou deux requêtes : le
+     repli sera courant).
+- **Ce qui n'est pas dans le prompt** : « `web_read` seulement sur une adresse qu'un outil a
+  donnée » (la description de l'outil le dit, son argument aussi, et `web_read` refuse le reste
+  avant toute requête : le redire coûterait des caractères à chaque tour pour rien) ; la météo
+  (son outil se décrit seul) ; « cherche sur le web pour l'actualité » (dans la description de
+  `web_search`).
+- **La météo n'a rien de plus à W5** : ses phrases d'attente étaient faites en W2, et elle n'a pas
+  de ligne.
+- **Les phrases d'attente** (fichier livré `mind/prompts/waiting.fr.toml` et `dev/`) :
+  `web_search`, `argument = "query"` : « Je cherche {} sur le web. », « Je regarde ce que dit le
+  web sur {}. », et sans sujet « Je cherche sur le web. », « Je regarde sur le web. », « Je fais
+  une recherche. » ; `web_read` : **aucun `argument`** (il est une adresse), seulement « Je lis la
+  page. », « Je lis cette page. », « J'ouvre la page. » (d'autres verbes que « regarder » et
+  « chercher » : la page se lit après un résumé ou une recherche qui les ont déjà dits).
+- **Une adresse, nom de machine compris, n'est jamais dite** : `sayable` refuse aussi un mot qui
+  a un point entre deux lettres (`example.org`, `fr.wikipedia.org`), que la règle des caractères
+  laissait passer ; `3.5` et « M. Dupont » passent. Une requête qui est un nom de site donne la
+  phrase sans sujet. Un test lit les deux fichiers de phrases : aucun outil n'a `url` pour
+  `argument`, aucune phrase ne contient `http`, `www`, `://`, `.org`, `.com`, `.fr`.
+- **Avec la transition écrite par le modèle (sentence-flow)** : le prompt demande déjà une phrase
+  avant tout outil (« mémoire, météo, Wikipédia ou autre »), et une phrase écrite par le modèle
+  fait commencer la réponse, ce qui arrête le signal d'attente (aucune phrase d'attente une fois
+  la réponse commencée). Il n'y a donc pas de double « je regarde » : les phrases d'attente ne
+  servent que lorsque le modèle appelle l'outil sans rien écrire avant, et alors, seules. Un test
+  le fixe avec les phrases livrées. Le prompt n'a pas été touché à ce sujet.
+- **Pas vérifié** : ce que fait un vrai LLM de ces lignes (se repli-t-il sur Wikipédia ? lit-il
+  l'article pour la population ? évite-t-il de lire une adresse ?). C'est l'essai de Kris.
 
 ## Questions ouvertes
 

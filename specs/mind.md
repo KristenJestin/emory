@@ -296,7 +296,10 @@ parler, par exemple « un homme ; tu le tutoies »). Les deux sont facultatifs. 
 (`prompts/system.fr.md`) est un gabarit : `{owner}` devient `name`, ou « la personne qui te parle »
 sans nom ; `{address}` devient `address`, ou « tu tutoies cette personne » sans adresse. Une section
 absente donne donc des consignes qui ne nomment personne, et non un refus de démarrer (un nom ou une
-adresse vides sont refusés). Les marqueurs envoyés au LLM ne nomment personne non plus
+adresse vides sont refusés). Une ligne qui commence par `{if outil}` n'est gardée que si l'outil est
+offert (`{if web_wikipedia|web_search web_read}` : tous les termes, `a|b` pour « a ou b ») : le
+prompt, payé à chaque tour, ne parle d'aucun outil qu'il n'a pas (les lignes du web, voir
+[`web.md`](web.md), « Ce qui a été décidé en construisant W5 »). Les marqueurs envoyés au LLM ne nomment personne non plus
 (`[On te dit]`, `[Fiches trouvées pendant qu'on te parlait]`) : le nom dans chaque demande coûterait
 des jetons sans rien apporter. Trois retouches aux consignes, tirées de l'essai : Emory parle au
 propriétaire à la deuxième personne et reformule les fiches (« tu as… », pas « Kris a… »), sans dire
@@ -450,7 +453,8 @@ bout de `pulse_delay_ms`, il envoie un `Cue` `pulse`, que `voice` répète jusqu
   (`hippocampe_search`, `query` = « Ali » donne « Je regarde ce que j'ai sur Ali. »), des phrases
   `plain` sans `{}`, et `silent = true` pour les outils qui répondent tout de suite. **Une valeur
   n'est dite que si elle est dicible** : cinq mots au plus, quarante caractères, sans chiffre
-  collé à des lettres, ni `_ / \ @ # = < >`, ni mot unique à tiret (`mon-contrat-internet`). Un
+  collé à des lettres, ni `_ / \ @ # = < >`, ni mot unique à tiret (`mon-contrat-internet`), ni nom
+  de machine (un point entre deux lettres : `example.org`, 2026-10-14). Un
   identifiant, un chemin, une adresse ne sont jamais lus. Sinon : la phrase `plain` de l'outil,
   puis une pré-écrite. `hippocampe_read` (dont l'argument est un identifiant) n'a que des `plain`.
 - **quand** : `source = "prewritten"`, une pré-écrite après `speech_delay_ms` sans réponse ;
@@ -868,7 +872,8 @@ Une unité par fil de travail ; le détail et les vérifications de chacune sont
    sans risque.
 3. **E1. La parole d'elle-même** ([`events.md`](events.md)), **T1, T2. Les minuteurs**
    ([`time.md`](time.md)).
-4. **W3, W4, W5. La recherche, la lecture d'une page, les consignes** ([`web.md`](web.md)).
+4. **W3, W4, W5. La recherche, la lecture d'une page, les consignes** ([`web.md`](web.md)) :
+   construites le 2026-10-14, l'essai en vrai par Kris reste à faire.
 5. **H1 à H6. Les mains** ([`hands.md`](hands.md)) : `emory-hands`, les mains dans `mind`,
    `commands`, la confirmation commune, MPRIS, la configuration de Kris.
 6. **E2, E3. L'entrée interne `say`, puis `task`** ([`events.md`](events.md)).
