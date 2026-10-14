@@ -595,6 +595,23 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_last_sentence_ends_the_answer_after_the_others() {
+        // `mind` sends each sentence once finished, then the end alone: an empty text marked `last`.
+        let (mut q, t0, turn) = (Queue::new(GRACE, GAP), Instant::now(), TurnId::new());
+        assert_eq!(said(&q.say(&say(turn, 0, "un"), t0)), [(0, "un", 0)]);
+        q.sound_sent(turn, ms(100), t0);
+        q.finished(turn, 0, 2, t0);
+        // Before the end comes, the grace still holds.
+        assert_eq!(q.deadline(), Some(t0 + ms(100) + GRACE));
+        // The end goes to the device like a sentence: its empty chunk carries `Emory-End`.
+        assert_eq!(said(&q.say(&say_last(turn, 1, ""), t0)), [(1, "", 2)]);
+        assert_eq!(q.deadline(), None, "running");
+        q.finished(turn, 1, 3, t0);
+        assert_eq!(q.deadline(), Some(t0 + ms(100)), "no grace");
+        assert_eq!(q.expire(t0 + ms(100)), [Effect::Speaking(State::End)]);
+    }
+
+    #[test]
     fn the_last_sentence_may_arrive_before_the_ones_it_follows() {
         let (mut q, t0, turn) = (Queue::new(GRACE, GAP), Instant::now(), TurnId::new());
         assert!(q.say(&say_last(turn, 1, "deux"), t0).is_empty());
