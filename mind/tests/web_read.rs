@@ -18,7 +18,7 @@ use axum::{
 use futures_util::future::BoxFuture;
 use mind::{
     conversations::{ConversationKey, Conversations},
-    tools::Tools,
+    tools::{Module, Tools},
     web::{Web, WebConfig, read::Lookup},
 };
 use serde_json::{Value, json};
@@ -404,4 +404,60 @@ fn web_read_needs_a_tool_that_finds_addresses_unless_it_may_read_any() {
     assert!(config(&format!("{none}\n[read]\nonly_found_urls = false")).reads());
     assert!(!config("[read]\nenabled = false").reads());
     assert!(config("").reads());
+}
+
+/// The resolver of the system: `localhost` is found as the loopback, and refused.
+#[tokio::test]
+async fn the_system_resolver_is_guarded_too() {
+    let web = Web::new(
+        &config("[read]\nonly_found_urls = false"),
+        Conversations::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let tools = Tools::new(vec![Arc::new(web)]);
+    let address = serve().await;
+    for url in [
+        format!("http://localhost:{}/plain", address.port()),
+        format!("http://{address}/plain"),
+    ] {
+        let result = tools
+            .call("web_read", json!({ "url": url }).as_object().cloned())
+            .await;
+        assert_eq!(result.is_error, Some(true));
+        let said = result.content[0].as_text().unwrap().text.clone();
+        assert_eq!(
+            said,
+            "Cette adresse mène à une machine d'un réseau privé : elle n'est pas lue."
+        );
+    }
+}
+
+/// One page of the real Wikipedia, by the real resolver: run by hand.
+#[tokio::test]
+#[ignore = "reaches the real Wikipedia"]
+async fn real_wikipedia_page() {
+    let web = Web::new(
+        &config("[read]\nonly_found_urls = false"),
+        Conversations::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let started = std::time::Instant::now();
+    let result = web
+        .call(
+            "read",
+            json!({"url": "https://fr.wikipedia.org/wiki/Saint-V%C3%A9ran"})
+                .as_object()
+                .cloned(),
+        )
+        .await;
+    let said = result.content[0].as_text().unwrap().text.clone();
+    println!(
+        "{} ms: {}",
+        started.elapsed().as_millis(),
+        &said[..said.len().min(1500)]
+    );
+    assert_ne!(result.is_error, Some(true), "{said}");
+    assert!(said.contains("Superficie"));
 }
