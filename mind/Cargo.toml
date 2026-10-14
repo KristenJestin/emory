@@ -29,6 +29,7 @@ toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+dom_query = { version = "0.28", default-features = false }
 
 [[bin]]
 name = "mind"
@@ -36,3 +37,5 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time, for the pause and the cache of the search.
+tokio = { version = "1", features = ["test-util"] }

@@ -18,6 +18,30 @@ pub struct WebConfig {
     pub timeout_ms: u64,
     pub weather: WeatherConfig,
     pub wikipedia: WikipediaConfig,
+    pub search: SearchConfig,
+}
+
+/// `web_search`: the search of the web, through a provider that can be replaced.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SearchConfig {
+    /// `"duckduckgo"` (its light HTML page, no key), or `"none"`, which takes the tool away.
+    pub provider: String,
+    /// The region of the results, as DuckDuckGo spells it (`fr-fr`, `us-en`, `wt-wt`).
+    pub region: String,
+    /// How many results the LLM gets at most.
+    pub max_results: usize,
+    /// Milliseconds for one search.
+    pub timeout_ms: u64,
+    /// The least time between two requests to the provider, in milliseconds.
+    pub min_interval_ms: u64,
+    /// How long the answer to a query is kept, in minutes (0: never).
+    pub cache_minutes: u64,
+    /// The pause after a block or a changed page, in minutes: the tool answers at once, without
+    /// asking the provider again.
+    pub backoff_minutes: u64,
+    /// The `User-Agent` of the searches: the page refuses a robot more willingly than a browser.
+    pub user_agent: String,
 }
 
 /// `web_weather`: the weather now and in the next days, from Open-Meteo.
@@ -56,6 +80,23 @@ impl Default for WebConfig {
             timeout_ms: 5000,
             weather: WeatherConfig::default(),
             wikipedia: WikipediaConfig::default(),
+            search: SearchConfig::default(),
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: "duckduckgo".to_owned(),
+            region: "fr-fr".to_owned(),
+            max_results: 5,
+            timeout_ms: 5000,
+            min_interval_ms: 1000,
+            cache_minutes: 10,
+            backoff_minutes: 30,
+            user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"
+                .to_owned(),
         }
     }
 }
@@ -96,7 +137,7 @@ impl WebConfig {
 
     /// Whether any web tool is left.
     pub fn any_tool(&self) -> bool {
-        self.enabled && (self.weather.enabled || self.wikipedia.enabled)
+        self.enabled && (self.weather.enabled || self.wikipedia.enabled || self.search.enabled())
     }
 
     /// Refuses absurd values, naming the key.
@@ -112,8 +153,79 @@ impl WebConfig {
             );
         }
         self.weather.check()?;
-        self.wikipedia.check()
+        self.wikipedia.check()?;
+        self.search.check()
     }
+}
+
+impl SearchConfig {
+    /// Whether `web_search` is there: a provider is named.
+    pub fn enabled(&self) -> bool {
+        self.provider != "none"
+    }
+
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
+
+    pub fn min_interval(&self) -> Duration {
+        Duration::from_millis(self.min_interval_ms)
+    }
+
+    pub fn cache(&self) -> Duration {
+        Duration::from_secs(self.cache_minutes * 60)
+    }
+
+    pub fn backoff(&self) -> Duration {
+        Duration::from_secs(self.backoff_minutes * 60)
+    }
+
+    fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            matches!(self.provider.as_str(), "duckduckgo" | "none"),
+            "web.search.provider must be \"duckduckgo\" or \"none\", not \"{}\"",
+            self.provider
+        );
+        // The region goes into the address as it is: nothing else than a region may pass.
+        anyhow::ensure!(
+            is_region(&self.region),
+            "web.search.region \"{}\" is not a region like \"fr-fr\", \"us-en\" or \"wt-wt\"",
+            self.region
+        );
+        anyhow::ensure!(
+            (1..=10).contains(&self.max_results),
+            "web.search.max_results must be between 1 and 10"
+        );
+        anyhow::ensure!(
+            (100..=60_000).contains(&self.timeout_ms),
+            "web.search.timeout_ms must be between 100 and 60000"
+        );
+        anyhow::ensure!(
+            self.min_interval_ms <= 60_000,
+            "web.search.min_interval_ms must be 60000 at most"
+        );
+        anyhow::ensure!(
+            self.cache_minutes <= 1440,
+            "web.search.cache_minutes must be 1440 at most (0: no cache)"
+        );
+        // Hammering a blocked page makes the block worse: a pause is always there.
+        anyhow::ensure!(
+            (1..=1440).contains(&self.backoff_minutes),
+            "web.search.backoff_minutes must be between 1 and 1440"
+        );
+        anyhow::ensure!(
+            !self.user_agent.trim().is_empty()
+                && reqwest::header::HeaderValue::from_str(&self.user_agent).is_ok(),
+            "web.search.user_agent must be a non-blank header value (no line break)"
+        );
+        Ok(())
+    }
+}
+
+/// Two letters, a hyphen, two letters: `fr-fr`, `us-en`, `wt-wt`.
+fn is_region(region: &str) -> bool {
+    let b = region.as_bytes();
+    b.len() == 5 && b[2] == b'-' && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_lowercase())
 }
 
 impl WeatherConfig {
@@ -207,6 +319,17 @@ mod tests {
         assert_eq!(c.timeout(), Duration::from_secs(5));
         assert_eq!(c.wikipedia.languages, ["fr", "en"]);
         assert_eq!(c.wikipedia.max_chars, 1200);
+        let search = &c.search;
+        assert!(search.enabled() && search.provider == "duckduckgo" && search.region == "fr-fr");
+        assert_eq!((search.max_results, search.cache_minutes), (5, 10));
+        assert_eq!(search.timeout(), Duration::from_secs(5));
+        assert_eq!(search.min_interval(), Duration::from_secs(1));
+        assert_eq!(search.backoff(), Duration::from_secs(30 * 60));
+        assert!(
+            search.user_agent.starts_with("Mozilla/5.0 "),
+            "{}",
+            search.user_agent
+        );
         assert!(c.user_agent().starts_with("Emory/"), "{}", c.user_agent());
         assert!(WebConfig::default().check().is_ok());
     }
@@ -232,13 +355,46 @@ mod tests {
     }
 
     #[test]
+    fn the_search_keys_are_read() {
+        let c = parse(
+            "[search]\nprovider = \"duckduckgo\"\nregion = \"us-en\"\nmax_results = 3\n\
+             timeout_ms = 2000\nmin_interval_ms = 0\ncache_minutes = 0\nbackoff_minutes = 5\n\
+             user_agent = \"Some Browser/1.0\"\n",
+        )
+        .unwrap();
+        let s = &c.search;
+        assert_eq!((s.region.as_str(), s.max_results), ("us-en", 3));
+        assert_eq!(s.timeout(), Duration::from_secs(2));
+        assert_eq!(s.min_interval(), Duration::ZERO);
+        assert_eq!(s.cache(), Duration::ZERO);
+        assert_eq!(s.backoff(), Duration::from_secs(300));
+        assert_eq!(s.user_agent, "Some Browser/1.0");
+        // The API calls keep their own User-Agent.
+        assert!(c.user_agent().starts_with("Emory/"));
+    }
+
+    #[test]
+    fn provider_none_takes_the_search_away() {
+        let c = parse("[search]\nprovider = \"none\"").unwrap();
+        assert!(!c.search.enabled() && c.any_tool());
+        // Search alone keeps the module; nothing left removes it.
+        let only = "[weather]\nenabled = false\n[wikipedia]\nenabled = false\n";
+        assert!(parse(only).unwrap().any_tool());
+        assert!(
+            !parse(&format!("{only}[search]\nprovider = \"none\""))
+                .unwrap()
+                .any_tool()
+        );
+    }
+
+    #[test]
     fn the_module_can_be_disabled_whole_or_by_tool() {
         assert!(!parse("enabled = false").unwrap().any_tool());
         // One tool left is enough; none is no module.
         assert!(parse("[wikipedia]\nenabled = false").unwrap().any_tool());
         assert!(parse("[weather]\nenabled = false").unwrap().any_tool());
         assert!(
-            !parse("[weather]\nenabled = false\n[wikipedia]\nenabled = false")
+            !parse("[weather]\nenabled = false\n[wikipedia]\nenabled = false\n[search]\nprovider = \"none\"")
                 .unwrap()
                 .any_tool()
         );
@@ -284,6 +440,30 @@ mod tests {
                 "web.wikipedia.languages",
             ),
             ("[wikipedia]\nlanguages = [\"\"]", "web.wikipedia.languages"),
+            ("[search]\nprovider = \"bing\"", "web.search.provider"),
+            ("[search]\nprovider = \"\"", "web.search.provider"),
+            ("[search]\nregion = \"FR-fr\"", "web.search.region"),
+            ("[search]\nregion = \"fr\"", "web.search.region"),
+            ("[search]\nregion = \"fr-fr&x=1\"", "web.search.region"),
+            ("[search]\nmax_results = 0", "web.search.max_results"),
+            ("[search]\nmax_results = 11", "web.search.max_results"),
+            ("[search]\ntimeout_ms = 10", "web.search.timeout_ms"),
+            ("[search]\ntimeout_ms = 100000", "web.search.timeout_ms"),
+            (
+                "[search]\nmin_interval_ms = 70000",
+                "web.search.min_interval_ms",
+            ),
+            ("[search]\ncache_minutes = 2000", "web.search.cache_minutes"),
+            (
+                "[search]\nbackoff_minutes = 0",
+                "web.search.backoff_minutes",
+            ),
+            (
+                "[search]\nbackoff_minutes = 5000",
+                "web.search.backoff_minutes",
+            ),
+            ("[search]\nuser_agent = \" \"", "web.search.user_agent"),
+            ("[search]\nuser_agent = \"a\\nb\"", "web.search.user_agent"),
             ("[wikipedia]\nmax_chars = 10", "web.wikipedia.max_chars"),
             ("[wikipedia]\nmax_chars = 90000", "web.wikipedia.max_chars"),
         ] {
@@ -297,6 +477,8 @@ mod tests {
             "[weather]\nplace = 3",
             "[wikipedia]\nlang = [\"fr\"]",
             "[wikipedi]\nenabled = true",
+            "[search]\nengine = \"duckduckgo\"",
+            "[search]\nmax_results = \"five\"",
             "timeout_ms = \"fast\"",
         ] {
             assert!(parse(bad).is_err(), "{bad}");

@@ -1,6 +1,6 @@
 //! The web module through Emory's MCP server, and its HTTP client, against a server of the tests
-//! on the loopback that serves recorded answers of Wikipedia and Open-Meteo
-//! (`tests/fixtures/web/`). Nothing reaches the internet, except the tests marked `#[ignore]`, run
+//! on the loopback that serves recorded answers of Wikipedia and Open-Meteo, and recorded pages of
+//! DuckDuckGo (`tests/fixtures/web/`). Nothing reaches the internet, except the tests marked `#[ignore]`, run
 //! by hand.
 
 use std::{
@@ -33,6 +33,9 @@ const SUMMARY_EIFFEL: &str = include_str!("fixtures/web/summary-fr-tour-eiffel.j
 const GEOCODE_VALENCE: &str = include_str!("fixtures/web/weather-geocode-valence.json");
 const GEOCODE_UNKNOWN: &str = include_str!("fixtures/web/weather-geocode-unknown.json");
 const FORECAST_VALENCE: &str = include_str!("fixtures/web/weather-forecast-valence.json");
+const DDG_RESULTS: &str = include_str!("fixtures/web/search-ddg-results.html");
+const DDG_CAPTCHA: &str = include_str!("fixtures/web/search-ddg-captcha.html");
+const DDG_NO_RESULT: &str = include_str!("fixtures/web/search-ddg-no-result.html");
 
 /// What the fake Wikipedia was asked: the path and query, and the headers that matter.
 #[derive(Default)]
@@ -41,8 +44,10 @@ struct Seen(Mutex<Vec<Asked>>);
 /// The address asked, the `User-Agent` and the `Accept` of a request.
 type Asked = (String, Option<String>, Option<String>);
 
-/// The fake Wikipedia and Open-Meteo: the Eiffel Tower, a search that never ends, an answer too
-/// heavy, a nonsense subject with nothing; the weather of Valence, and a place nobody knows.
+/// The fake Wikipedia, Open-Meteo and DuckDuckGo: the Eiffel Tower, a search that never ends, an
+/// answer too heavy, a nonsense subject with nothing; the weather of Valence, and a place nobody
+/// knows; the search page of DuckDuckGo with results, the captcha, no result, a page that has
+/// changed, a server that is down.
 async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response {
     let headers: &HeaderMap = request.headers();
     let header = |name| {
@@ -80,6 +85,31 @@ async fn wikipedia(State(seen): State<Arc<Seen>>, request: Request) -> Response 
         }
         "/v1/forecast" => (StatusCode::BAD_REQUEST, "{\"error\":true}").into_response(),
         "/heavy" => json("x".repeat(3000)),
+        "/html/" => {
+            let html = |status: StatusCode, body: String| {
+                (status, [(header::CONTENT_TYPE, "text/html")], body).into_response()
+            };
+            if uri.contains("q=blocked") {
+                html(StatusCode::ACCEPTED, DDG_CAPTCHA.to_owned())
+            } else if uri.contains("q=empty") {
+                html(StatusCode::OK, DDG_NO_RESULT.to_owned())
+            } else if uri.contains("q=changed") {
+                html(
+                    StatusCode::OK,
+                    DDG_RESULTS.replace("result__a", "result__link"),
+                )
+            } else if uri.contains("q=down") {
+                html(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "<html>down</html>".to_owned(),
+                )
+            } else if uri.contains("q=slow") {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                html(StatusCode::OK, DDG_RESULTS.to_owned())
+            } else {
+                html(StatusCode::OK, DDG_RESULTS.to_owned())
+            }
+        }
         _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -107,6 +137,7 @@ fn web_at(address: SocketAddr, config: &WebConfig) -> Web {
         .unwrap()
         .wikipedia_at(&origin)
         .weather_at(&origin, &origin)
+        .search_at(&origin)
 }
 
 fn said(result: &rmcp::model::CallToolResult) -> String {
@@ -132,11 +163,11 @@ async fn the_tool_reaches_the_llm_through_emorys_server_and_answers() {
         .await
         .unwrap();
 
-    // What the LLM is offered: the weather and Wikipedia, with short descriptions.
+    // What the LLM is offered: the weather, the search and Wikipedia, with short descriptions.
     let offered = client.list_all_tools().await.unwrap();
     let mut names: Vec<_> = offered.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    assert_eq!(names, ["web_weather", "web_wikipedia"]);
+    assert_eq!(names, ["web_search", "web_weather", "web_wikipedia"]);
     let tool = offered.iter().find(|t| t.name == "web_wikipedia").unwrap();
     let description = tool.description.as_deref().unwrap();
     assert!(description.contains("Wikipédia") && description.len() < 100);
@@ -178,7 +209,9 @@ async fn the_tool_reaches_the_llm_through_emorys_server_and_answers() {
     for (tool, arguments) in [
         ("web_wikipedia", json!({"query": "  "})),
         ("web_wikipedia", json!({})),
-        ("web_search", json!({"query": "x"})),
+        ("web_search", json!({"query": "  "})),
+        ("web_search", json!({})),
+        ("web_read", json!({"url": "https://example.org/"})),
     ] {
         let mut call = CallToolRequestParams::new(tool);
         call.arguments = arguments.as_object().cloned();
@@ -236,6 +269,14 @@ fn the_module_is_not_there_when_it_is_disabled() {
     assert!(
         Web::new(&config(
             "[weather]\nenabled = false\n[wikipedia]\nenabled = false"
+        ))
+        .unwrap()
+        .is_some(),
+        "the search is left"
+    );
+    assert!(
+        Web::new(&config(
+            "[weather]\nenabled = false\n[wikipedia]\nenabled = false\n[search]\nprovider = \"none\""
         ))
         .unwrap()
         .is_none(),
@@ -348,6 +389,174 @@ async fn a_slow_or_broken_weather_service_is_an_error_in_time() {
         "{}",
         said(&result)
     );
+}
+
+/// The search through the MCP server, against the fake DuckDuckGo: the request, what the LLM is
+/// offered and gets back, the three ways it fails, the pause, the cache.
+#[tokio::test]
+async fn the_search_tool_reaches_the_llm_through_emorys_server_and_answers() {
+    let (address, seen) = serve_fake().await;
+    let web = web_at(
+        address,
+        &config(
+            "user_agent = \"Emory/test (contact)\"\n[search]\nmin_interval_ms = 0\nregion = \"us-en\"",
+        ),
+    );
+    let server = tools::serve(Tools::new(vec![Arc::new(web)]), ([127, 0, 0, 1], 0).into())
+        .await
+        .unwrap();
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(server.url.as_str())
+                .auth_header(server.key.clone()),
+        ))
+        .await
+        .unwrap();
+
+    let offered = client.list_all_tools().await.unwrap();
+    let tool = offered.iter().find(|t| t.name == "web_search").unwrap();
+    assert_eq!(
+        tool.description.as_deref(),
+        Some(
+            "Cherche sur le web. Pour l'actualité ou ce que tu ne sais pas. Les adresses servent à web_read, ne les lis jamais."
+        )
+    );
+    let schema = Value::Object((*tool.input_schema).clone());
+    assert_eq!(schema["required"], json!(["query"]));
+    assert_eq!(schema["properties"]["query"]["type"], "string");
+
+    let call = |query: &'static str| {
+        let client = &client;
+        async move {
+            let mut ask = CallToolRequestParams::new("web_search");
+            ask.arguments = json!({ "query": query }).as_object().cloned();
+            client.call_tool(ask).await.unwrap()
+        }
+    };
+
+    // A normal page: five results (the default), with the real addresses and no advertisement.
+    let result = call("  rust   news ").await;
+    assert_ne!(result.is_error, Some(true), "{}", said(&result));
+    let answer: Value = serde_json::from_str(&said(&result)).unwrap();
+    let results = answer["results"].as_array().unwrap();
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0]["title"], "Rust Programming Language");
+    assert_eq!(results[0]["url"], "https://rust-lang.org/");
+    assert_eq!(results[0]["site"], "rust-lang.org");
+    assert!(
+        results[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("Rust community")
+    );
+    assert!(!said(&result).contains("duckduckgo"));
+    // The request: the browser User-Agent of the search (not the one of the APIs), HTML, the
+    // question and the region.
+    let asked = seen.0.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].0, "/html/?q=rust+news&kl=us-en");
+    assert!(
+        asked[0].1.as_deref().unwrap().starts_with("Mozilla/5.0 "),
+        "{asked:?}"
+    );
+    assert!(
+        asked[0].2.as_deref().unwrap().starts_with("text/html"),
+        "{asked:?}"
+    );
+
+    // The same question again: kept, not asked.
+    call("rust news").await;
+    assert_eq!(seen.0.lock().unwrap().len(), 1);
+
+    // No result: an answer, with a note.
+    let answer: Value = serde_json::from_str(&said(&call("empty").await)).unwrap();
+    assert_eq!(answer, json!({"results": [], "note": "Aucun résultat."}));
+
+    // A captcha: a tool error in one sentence; then the pause answers without asking again.
+    let result = call("blocked").await;
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        said(&result),
+        "La recherche web est bloquée pour le moment."
+    );
+    let count = seen.0.lock().unwrap().len();
+    let result = call("anything else").await;
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        said(&result),
+        "La recherche web est bloquée pour le moment."
+    );
+    assert_eq!(seen.0.lock().unwrap().len(), count);
+    // The other tools are still there.
+    let mut wikipedia = CallToolRequestParams::new("web_wikipedia");
+    wikipedia.arguments = json!({"query": "tour eiffel"}).as_object().cloned();
+    assert_ne!(
+        client.call_tool(wikipedia).await.unwrap().is_error,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn a_changed_page_and_a_server_down_are_told_apart() {
+    async fn ask(web: &Web, query: &str) -> rmcp::model::CallToolResult {
+        web.call("search", json!({ "query": query }).as_object().cloned())
+            .await
+    }
+    let (address, seen) = serve_fake().await;
+    let web = web_at(address, &config("[search]\nmin_interval_ms = 0"));
+    // The page has no result link and no « no results » mark: it has changed. Paused.
+    let result = ask(&web, "changed").await;
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        said(&result),
+        "La recherche web ne marche plus : DuckDuckGo a changé sa page."
+    );
+    let count = seen.0.lock().unwrap().len();
+    assert_eq!(said(&ask(&web, "other").await), said(&result));
+    assert_eq!(seen.0.lock().unwrap().len(), count, "paused: not asked");
+
+    // A server error: unreachable, no pause (the next question is asked).
+    let web = web_at(address, &config("[search]\nmin_interval_ms = 0"));
+    for _ in 0..2 {
+        let result = ask(&web, "down").await;
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(said(&result), "La recherche web ne répond pas.");
+    }
+    // A search that works again right after.
+    assert_ne!(ask(&web, "fine").await.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn a_slow_search_is_an_error_in_time() {
+    let (address, _) = serve_fake().await;
+    let web = web_at(address, &config("[search]\ntimeout_ms = 300"));
+    let started = Instant::now();
+    let result = web
+        .call("search", json!({"query": "slow"}).as_object().cloned())
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(said(&result), "La recherche web ne répond pas.");
+}
+
+#[test]
+fn provider_none_takes_the_search_tool_away() {
+    let web = Web::new(&config("[search]\nprovider = \"none\""))
+        .unwrap()
+        .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let names: Vec<_> = rt
+        .block_on(web.tools())
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    assert_eq!(names, ["weather", "wikipedia"]);
 }
 
 /// By hand, against the real Open-Meteo (a handful of requests):
