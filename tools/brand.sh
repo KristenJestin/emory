@@ -15,6 +15,6 @@ cat >"$run/fonts.conf" <<CONF
 CONF
 export FONTCONFIG_FILE="$run/fonts.conf"
 
-for name in social-preview social-preview-en card card-en; do
+for name in social-preview social-preview-en card card-en screen screen-en; do
   rsvg-convert "$brand/$name.svg" -o "$brand/png/$name.png"
 done
