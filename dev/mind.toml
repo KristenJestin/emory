@@ -1,6 +1,8 @@
 # The mind on the PC through ACP (the Claude subscription), from the root of the repository:
 # `cargo run -p mind -- dev/mind.toml`. The direct API: `dev/mind-api.toml`.
 # Hippocampe is the developer's real memory: the mind reads and writes it with its own key `emory` (Kris, 2026-10-13).
+# The Hippocampe address and the key files below are placeholders: copy this file to
+# `dev/mind.local.toml` (ignored by git), put your own there, and run that one.
 
 [llm]
 mode = "acp"
@@ -15,8 +17,8 @@ name = "Kris"
 address = "un homme ; tu le tutoies"
 
 [hippocampe]
-url = "https://wiki.krisnet.work/mcp"
-token_file = "~/.krisnet/hippocampe-emory.token"
+url = "https://hippocampe.example.org/mcp"
+token_file = "~/.config/emory/hippocampe.token"
 
 # While the answer is prepared the owner hears a short acknowledgement, a contextual phrase if the LLM
 # searches (spaced 800 ms after the end of the first one: its tool call comes about 2.5 s in), and
