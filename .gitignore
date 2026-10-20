@@ -1,2 +1,4 @@
 /target
 /target-cuda
+# The developer's own copies of the dev/ configurations, with their addresses and keys.
+/dev/*.local.toml

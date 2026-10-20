@@ -1,12 +1,14 @@
 # The mind on the PC with the direct API (Haiku 5.5), from the root of the repository:
 # `cargo run -p mind -- dev/mind-api.toml`. Hippocampe is the developer's real memory: the
 # mind reads and writes it with its own key `emory` (Kris, 2026-10-13).
+# The Hippocampe address and the key files below are placeholders: copy this file to
+# `dev/mind-api.local.toml` (ignored by git), put your own there, and run that one.
 
 [llm]
 mode = "api"
 provider = "anthropic"
 model = "claude-haiku-5-5"
-key_file = "~/.krisnet/anthropic-api.key"
+key_file = "~/.config/emory/anthropic.key"
 thinking = "off"
 system_prompt = "mind/prompts/system.fr.md"
 
@@ -15,5 +17,5 @@ name = "Kris"
 address = "un homme ; tu le tutoies"
 
 [hippocampe]
-url = "https://wiki.krisnet.work/mcp"
-token_file = "~/.krisnet/hippocampe-emory.token"
+url = "https://hippocampe.example.org/mcp"
+token_file = "~/.config/emory/hippocampe.token"
